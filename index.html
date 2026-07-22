@@ -1,0 +1,2284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Afterlight Circuit</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#05060A; }
+  canvas { display:block; }
+  #hint {
+    position:fixed; left:22px; bottom:16px; z-index:2; pointer-events:none;
+    color:rgba(213,198,176,0.48); font:12px/1.4 system-ui, sans-serif;
+    letter-spacing:0.14em; user-select:none;
+  }
+  #nogl {
+    position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+    color:#D5C6B0; font:14px system-ui, sans-serif; background:#05060A; z-index:3;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hint">W/S speed &middot; A/D line &middot; mouse look &middot; Space pause &middot; R restart</div>
+<div id="nogl">This experience needs WebGL2.</div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ============================================================
+   AFTERLIGHT CIRCUIT — a seeded night cycling route
+   Default seed: 1189  (choose another with ?seed=<integer>)
+   ============================================================ */
+
+// ---------- seeded PRNG (no Math.random anywhere) ----------
+const qs = new URLSearchParams(location.search);
+const seedParam = Number.parseInt(qs.get('seed'), 10);
+const SEED = (Number.isFinite(seedParam) ? seedParam : 1189) >>> 0;
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+const R  = mulberry32(SEED);                 // world-construction stream
+const RF = mulberry32((SEED ^ 0x9E3779B9)>>>0); // runtime effect stream (respawns etc.)
+const rr = (a,b)=>a+(b-a)*R();
+const ri = (a,b)=>Math.floor(a+(b-a+1)*R());
+const pick = arr=>arr[Math.floor(R()*arr.length)];
+const chance = p=>R()<p;
+const clamp = THREE.MathUtils.clamp;
+
+// ---------- palette (8 anchors, converted to linear by THREE.Color) ----------
+const HEX = { ink:0x05060A, aub:0x150A24, vio:0x3C204D, teal:0x7EA8B8, rose:0xC45D8C, ora:0xC85A2B, amb:0xE4AE59, pap:0xD5C6B0 };
+const col = h=>new THREE.Color(h);
+function vary(c, v){ const o=c.clone(); const m=1+(R()*2-1)*v; o.r=clamp(o.r*m,0,1); o.g=clamp(o.g*m,0,1); o.b=clamp(o.b*m,0,1); return o; }
+function scale(c, m){ const o=c.clone(); o.multiplyScalar(m); return o; }
+const BLACK = col(0x000000);
+
+// facade base tones (dark, deliberate — no neutral grey anywhere)
+const FACADES = [ col(0x1B1030), col(0x241738), col(0x160C26), col(0x1F1526), col(0x11182A), col(0x261320), col(0x2A2030), col(0x121022) ];
+// window light tints
+function winTint(){ const r=R(); if(r<0.55) return scale(col(HEX.amb), rr(0.75,1.0)); if(r<0.77) return scale(col(HEX.pap), rr(0.5,0.72)); if(r<0.9) return scale(col(HEX.teal), rr(0.5,0.75)); return scale(col(HEX.rose), rr(0.65,0.9)); }
+
+// ---------- renderer ----------
+const cv = document.createElement('canvas');
+document.body.appendChild(cv);
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas: cv, antialias:false, powerPreference:'high-performance' });
+} catch(e) { document.getElementById('nogl').style.display='flex'; throw e; }
+if (!renderer.capabilities.isWebGL2){ document.getElementById('nogl').style.display='flex'; throw new Error('WebGL2 required'); }
+const DPR = Math.min(window.devicePixelRatio||1, 1.5);
+renderer.setPixelRatio(DPR);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;   // deliberate filmic response
+renderer.toneMappingExposure = 1.2;                   // deliberate exposure
+renderer.outputColorSpace = THREE.SRGBColorSpace;     // deliberate output space
+renderer.shadowMap.enabled = false;                   // deliberate: night scene — depth is built from
+                                                      // baked facade grime, fog layering and emissive
+                                                      // light instead of a moon shadow pass.
+const scene = new THREE.Scene();
+scene.background = col(HEX.ink);
+scene.fog = new THREE.Fog(0x140B20, 26, 930);         // deliberate linear fog, retuned per chapter
+
+const camera = new THREE.PerspectiveCamera(64, window.innerWidth/window.innerHeight, 0.1, 1700);
+
+// lights for the few classic (Lambert) materials
+scene.add(new THREE.HemisphereLight(0x2A1840, 0x0A0810, 1.4));
+const moon = new THREE.DirectionalLight(0x7EA8B8, 0.5); moon.position.set(-0.4,1,0.25); scene.add(moon);
+const fill = new THREE.DirectionalLight(0xC45D8C, 0.14); fill.position.set(0.6,0.7,-0.4); scene.add(fill);
+
+// ---------- shared uniforms + GLSL chunks ----------
+const U = {
+  uTime:{value:0}, uCam:{value:new THREE.Vector3()},
+  uFogColor:{value:col(0x140B20)}, uFogNear:{value:26}, uFogFar:{value:930},
+};
+const GLSL_H = `
+float h11(float p){ vec3 q=fract(vec3(p)*vec3(0.1031,0.1030,0.0973)); q+=dot(q,q.yzx+33.33); return fract((q.x+q.y)*q.z); }
+float h21(vec2 p){ vec3 q=fract(vec3(p.xyx)*vec3(0.1031,0.1030,0.0973)); q+=dot(q,q.yzx+33.33); return fract((q.x+q.y)*q.z); }
+float n2(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=h21(i),b=h21(i+vec2(1.0,0.0)),c=h21(i+vec2(0.0,1.0)),d=h21(i+vec2(1.0,1.0));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }
+float flick(float mode,float ph,float t){
+  if(mode<0.5) return 0.86+0.14*sin(t*0.7+ph*6.2831);
+  if(mode<1.5) return 0.55+0.5*sin(t*1.9+ph*6.2831);
+  if(mode<2.5){ float h=h11(floor(t*11.0)+ph*97.0); float g=h11(floor(t*2.3)+ph*31.0);
+    return (h<0.14?0.12:1.0)*(0.72+0.35*g); }
+  if(mode<3.5){ return 0.12+step(mod(t*1.1+ph*3.0,3.0),1.15); }
+  float h=h11(floor(t*6.0)+ph*53.0); return h<0.7?0.05:(0.9+0.4*h11(floor(t*29.0)+ph)); }
+`;
+const GLSL_FOG = `
+uniform vec3 uFogColor; uniform float uFogNear; uniform float uFogFar;
+float fogF(float z){ return clamp((z-uFogNear)/(uFogFar-uFogNear),0.0,1.0); }
+`;
+function shaderMat(o){
+  const u = Object.assign({}, o.uniforms||{});
+  u.uTime=U.uTime; u.uCam=U.uCam; u.uFogColor=U.uFogColor; u.uFogNear=U.uFogNear; u.uFogFar=U.uFogFar;
+  return new THREE.ShaderMaterial({ vertexShader:o.vs, fragmentShader:o.fs, uniforms:u,
+    transparent:o.transparent||false, depthWrite:o.depthWrite!==undefined?o.depthWrite:true,
+    depthTest:o.depthTest!==undefined?o.depthTest:true, blending:o.blending||THREE.NormalBlending,
+    side:o.side||THREE.FrontSide, polygonOffset:o.polygonOffset||false,
+    polygonOffsetFactor:o.polygonOffsetFactor||0, polygonOffsetUnits:o.polygonOffsetUnits||0 });
+}
+
+// ============================================================
+// ROUTE — one coherent representation drives everything
+// ============================================================
+const G = 56;                       // grid pitch (street centre to street centre)
+const STREET_HALF = 8;              // street half-width (road + sidewalks)
+const NODES = [ [5,15],[5,12],[6,12],[6,10],[4,10],[4,8],[7,8],[7,7],[9,7],[9,5],
+                [7,5],[7,3],[8,3],[8,1],[10,1],[10,3],[12,3],[12,6],[12,8],[11,8] ];
+const NODEH = [ 0,0,0,0,0,0,0,0,1,10, 18,26,29,34,29,14,3.5,1.2,1.2,1.2 ];
+// seeded jitter of interior nodes (route stays in its streets; layout breathes with the seed)
+const nPts = NODES.map((n,i)=>{
+  let jx=0,jz=0;
+  if(i>0 && i<NODES.length-1 && i!==13){ jx=rr(-2.4,2.4); jz=rr(-2.4,2.4); }
+  return new THREE.Vector3(n[0]*G+jx, NODEH[i], n[1]*G+jz);
+});
+// rounded-corner polyline for the spline
+const plPts=[]; const nodePl=[];   // nodePl[i] = index into plPts nearest node i
+{
+  const RC=15;
+  for(let i=0;i<nPts.length;i++){
+    const P=nPts[i];
+    if(i===0){ plPts.push(P.clone()); nodePl.push(plPts.length-1); continue; }
+    const Q=nPts[i-1];
+    const seg=new THREE.Vector3().subVectors(P,Q); const segL=Math.hypot(seg.x,seg.z);
+    const dirIn=new THREE.Vector3(seg.x/segL,0,seg.z/segL);
+    const rc=Math.min(RC, segL*0.38);
+    // straight subdivision from previous exit to this entry
+    const prevExit = plPts[plPts.length-1];
+    const entry = new THREE.Vector3(P.x-dirIn.x*rc, 0, P.z-dirIn.z*rc);
+    entry.y = THREE.MathUtils.lerp(Q.y,P.y, 1-rc/segL);
+    const span = new THREE.Vector3().subVectors(entry, prevExit); const spanL=Math.hypot(span.x,span.z);
+    const steps=Math.max(1,Math.round(spanL/34));
+    for(let s2=1;s2<steps;s2++){
+      const t=s2/steps;
+      plPts.push(new THREE.Vector3(prevExit.x+span.x*t, prevExit.y+(entry.y-prevExit.y)*t, prevExit.z+span.z*t));
+    }
+    plPts.push(entry);
+    if(i===nPts.length-1){ plPts.push(P.clone()); nodePl.push(plPts.length-1); break; }
+    // corner: entry, pulled midpoint, exit
+    const N2=nPts[i+1];
+    const seg2=new THREE.Vector3().subVectors(N2,P); const seg2L=Math.hypot(seg2.x,seg2.z);
+    const dirOut=new THREE.Vector3(seg2.x/seg2L,0,seg2.z/seg2L);
+    const rc2=Math.min(RC, seg2L*0.38);
+    const exit=new THREE.Vector3(P.x+dirOut.x*rc2, 0, P.z+dirOut.z*rc2);
+    exit.y = THREE.MathUtils.lerp(P.y,N2.y, rc2/seg2L);
+    const mid=new THREE.Vector3((entry.x+exit.x)/2,(entry.y+exit.y)/2,(entry.z+exit.z)/2).lerp(P,0.55);
+    plPts.push(mid); nodePl.push(plPts.length-1);
+    plPts.push(exit);
+  }
+}
+const routeCurve = new THREE.CatmullRomCurve3(plPts, false, 'centripetal');
+const ROUTE_LEN = routeCurve.getLength();
+const NF = Math.ceil(ROUTE_LEN/0.7);
+const STEP = ROUTE_LEN/NF;
+const rPts = routeCurve.getSpacedPoints(NF);
+const FR = { x:new Float32Array(NF+1), y:new Float32Array(NF+1), z:new Float32Array(NF+1),
+             tx:new Float32Array(NF+1), ty:new Float32Array(NF+1), tz:new Float32Array(NF+1),
+             lx:new Float32Array(NF+1), lz:new Float32Array(NF+1), k:new Float32Array(NF+1) };
+{
+  for(let i=0;i<=NF;i++){ FR.x[i]=rPts[i].x; FR.y[i]=rPts[i].y; FR.z[i]=rPts[i].z; }
+  const yawArr=new Float32Array(NF+1);
+  for(let i=0;i<=NF;i++){
+    const a=Math.max(0,i-1), b=Math.min(NF,i+1);
+    let tx=FR.x[b]-FR.x[a], ty=FR.y[b]-FR.y[a], tz=FR.z[b]-FR.z[a];
+    const l=Math.hypot(tx,ty,tz)||1; tx/=l; ty/=l; tz/=l;
+    FR.tx[i]=tx; FR.ty[i]=ty; FR.tz[i]=tz;
+    const hl=Math.hypot(tx,tz)||1;
+    FR.lx[i]=tz/hl; FR.lz[i]=-tx/hl;      // left = up x tangent
+    yawArr[i]=Math.atan2(-tx,-tz);
+  }
+  const wrapPi = a=>{ while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; };
+  const kRaw=new Float32Array(NF+1);
+  for(let i=1;i<NF;i++) kRaw[i]=wrapPi(yawArr[i+1]-yawArr[i-1])/(2*STEP);
+  for(let i=0;i<=NF;i++){                 // box blur for calm banking
+    let s=0,n=0; for(let j=Math.max(0,i-12);j<=Math.min(NF,i+12);j++){ s+=kRaw[j]; n++; }
+    FR.k[i]=s/n;
+  }
+}
+const _fr = {};
+function getFrame(d){
+  d = clamp(d, 0, ROUTE_LEN-0.001);
+  const f=d/STEP, i=Math.min(NF-1,Math.floor(f)), t=f-i;
+  _fr.x=FR.x[i]+(FR.x[i+1]-FR.x[i])*t; _fr.y=FR.y[i]+(FR.y[i+1]-FR.y[i])*t; _fr.z=FR.z[i]+(FR.z[i+1]-FR.z[i])*t;
+  _fr.tx=FR.tx[i]+(FR.tx[i+1]-FR.tx[i])*t; _fr.ty=FR.ty[i]+(FR.ty[i+1]-FR.ty[i])*t; _fr.tz=FR.tz[i]+(FR.tz[i+1]-FR.tz[i])*t;
+  _fr.lx=FR.lx[i]+(FR.lx[i+1]-FR.lx[i])*t; _fr.lz=FR.lz[i]+(FR.lz[i+1]-FR.lz[i])*t;
+  _fr.k=FR.k[i]+(FR.k[i+1]-FR.k[i])*t;
+  return _fr;
+}
+// distance to route (2D spatial hash of frames) — the protected-corridor test
+const rHash=new Map();
+{
+  for(let i=0;i<=NF;i+=3){
+    const key=(Math.floor(FR.x[i]/16)+512)*4096+(Math.floor(FR.z[i]/16)+512);
+    let a=rHash.get(key); if(!a){ a=[]; rHash.set(key,a); } a.push(i);
+  }
+}
+const _q={d:1e9,h:0,i:0};
+function distToRoute(x,z){
+  _q.d=1e9;
+  const cx=Math.floor(x/16)+512, cz=Math.floor(z/16)+512;
+  for(let a=-1;a<=1;a++) for(let b=-1;b<=1;b++){
+    const lst=rHash.get((cx+a)*4096+(cz+b)); if(!lst) continue;
+    for(let m=0;m<lst.length;m++){ const i=lst[m];
+      const dx=FR.x[i]-x, dz=FR.z[i]-z, dd=Math.hypot(dx,dz);
+      if(dd<_q.d){ _q.d=dd; _q.h=FR.y[i]; _q.i=i; }
+    }
+  }
+  return _q;
+}
+// clearance test for ground objects: keep 2D distance OR vertical separation
+function corridorClear(x,z,margin,y0,y1){
+  const q=distToRoute(x,z);
+  if(q.d>margin) return true;
+  if(y1!==undefined && (y1<q.h-1 || y0>q.h+5)) return true;
+  return false;
+}
+// cumulative route distance at each design node
+const nodeD = NODES.map((n,i)=>{
+  const px=nPts[i].x, pz=nPts[i].z; let best=1e9,bd=0;
+  for(let f=0;f<=NF;f+=2){ const dd=(FR.x[f]-px)**2+(FR.z[f]-pz)**2; if(dd<best){ best=dd; bd=f*STEP; } }
+  return bd;
+});
+const D_TRAM=nodeD[5], D_CLIMB=nodeD[8], D_PEAK=nodeD[13], D_FLOOD=nodeD[16], D_END=ROUTE_LEN;
+const startD=clamp(Number.parseFloat(qs.get('d'))||6,0,ROUTE_LEN-40);
+
+// ============================================================
+// GEOMETRY BUILDERS
+// ============================================================
+function Builder(ext){ return { p:[], n:[], c:[], u:ext?[]:null, i4:ext?[]:null, k:ext?[]:null, t:ext?[]:null, idx:[], vc:0, ext:!!ext }; }
+function face(B,pts,nrm,colr,uvfn,kind,tint,inf){
+  for(let m=0;m<4;m++){ const p=pts[m];
+    B.p.push(p[0],p[1],p[2]); B.n.push(nrm[0],nrm[1],nrm[2]); B.c.push(colr.r,colr.g,colr.b);
+    if(B.ext){ const uv=uvfn(p); B.u.push(uv[0],uv[1]);
+      B.i4.push(inf[0],inf[1],inf[2],inf[3]); B.k.push(kind); B.t.push(tint.r,tint.g,tint.b); } }
+  B.idx.push(B.vc,B.vc+1,B.vc+2, B.vc,B.vc+2,B.vc+3); B.vc+=4;
+}
+const INF0=[3,3,0,0];
+// kinds: 0 solid, 1 windows, 2 glowing storefront, 3 panel/concrete, 4 roll door, 5 roof
+function box(B,x0,y0,z0,x1,y1,z1,o){
+  o=o||{};
+  const c=o.c||BLACK, ct=o.cTop||c, k=o.kind||0, kt=(o.kindTop!==undefined)?o.kindTop:5;
+  const tn=o.tint||BLACK, inf=o.inf||INF0;
+  const kPX=(o.kPX!==undefined)?o.kPX:k, kNX=(o.kNX!==undefined)?o.kNX:k;
+  const kPZ=(o.kPZ!==undefined)?o.kPZ:k, kNZ=(o.kNZ!==undefined)?o.kNZ:k;
+  if(!o.noPX) face(B,[[x1,y0,z1],[x1,y0,z0],[x1,y1,z0],[x1,y1,z1]],[1,0,0],c,p=>[p[2],p[1]],kPX,tn,inf);
+  if(!o.noNX) face(B,[[x0,y0,z0],[x0,y0,z1],[x0,y1,z1],[x0,y1,z0]],[-1,0,0],c,p=>[p[2],p[1]],kNX,tn,inf);
+  if(!o.noPZ) face(B,[[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]],[0,0,1],c,p=>[p[0],p[1]],kPZ,tn,inf);
+  if(!o.noNZ) face(B,[[x1,y0,z0],[x0,y0,z0],[x0,y1,z0],[x1,y1,z0]],[0,0,-1],c,p=>[p[0],p[1]],kNZ,tn,inf);
+  if(o.top!==false) face(B,[[x0,y1,z1],[x1,y1,z1],[x1,y1,z0],[x0,y1,z0]],[0,1,0],ct,p=>[p[0],p[2]],kt,tn,inf);
+  if(o.bottom) face(B,[[x0,y0,z0],[x1,y0,z0],[x1,y0,z1],[x0,y0,z1]],[0,-1,0],c,p=>[p[0],p[2]],0,tn,inf);
+}
+function buildGeom(B){
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(B.p,3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(B.n,3));
+  if(B.ext){
+    g.setAttribute('aCol', new THREE.Float32BufferAttribute(B.c,3));
+    g.setAttribute('aUvm', new THREE.Float32BufferAttribute(B.u,2));
+    g.setAttribute('aInf', new THREE.Float32BufferAttribute(B.i4,4));
+    g.setAttribute('aKind', new THREE.Float32BufferAttribute(B.k,1));
+    g.setAttribute('aTint', new THREE.Float32BufferAttribute(B.t,3));
+  } else {
+    g.setAttribute('color', new THREE.Float32BufferAttribute(B.c,3));
+  }
+  g.setIndex(B.idx);
+  return g;
+}
+
+// facade shader — every building face is drawn by this
+const facadeMat = shaderMat({
+  vs:`
+  attribute vec3 aCol; attribute vec2 aUvm; attribute vec4 aInf; attribute float aKind; attribute vec3 aTint;
+  varying vec3 vC; varying vec2 vUvm; varying vec4 vInf; varying float vK; varying vec3 vT;
+  varying vec3 vN; varying vec3 vW; varying float vZ;
+  void main(){
+    vC=aCol; vUvm=aUvm; vInf=aInf; vK=aKind; vT=aTint; vN=normal;
+    vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+    vec4 mv=viewMatrix*wp; vZ=-mv.z;
+    gl_Position=projectionMatrix*mv;
+  }`,
+  fs:`
+  ${GLSL_H}${GLSL_FOG}
+  uniform float uTime; uniform vec3 uCam;
+  varying vec3 vC; varying vec2 vUvm; varying vec4 vInf; varying float vK; varying vec3 vT;
+  varying vec3 vN; varying vec3 vW; varying float vZ;
+  void main(){
+    vec3 alb=vC; vec3 emi=vec3(0.0); float k=vK;
+    float wW=vInf.x, wH=vInf.y, litR=vInf.z, sd=vInf.w;
+    if(k>0.5&&k<1.5){
+      vec2 g=vUvm/vec2(wW,wH);
+      vec2 cell=floor(g); vec2 f=fract(g);
+      vec2 gw=fwidth(g);
+      float fade=clamp(1.45-max(gw.x,gw.y)*3.2,0.0,1.0);  // stop grid aliasing at range
+      float hh=h21(cell+vec2(sd,sd*1.7));
+      float winO=step(0.20,f.x)*step(f.x,0.82)*step(0.26,f.y)*step(f.y,0.78);
+      float win=step(0.24,f.x)*step(f.x,0.78)*step(0.30,f.y)*step(f.y,0.74);
+      float frame=winO-win;
+      float lit=step(1.0-litR,hh);
+      float rare=step(0.962,h21(cell+vec2(sd*2.3,5.1)));
+      float tw=mix(1.0, step(0.35,h21(cell+vec2(floor(uTime*0.12))+vec2(sd,0.0))), rare);
+      float fl=mix(1.0, flick(2.0,hh,uTime), step(0.985,hh));
+      float bright=0.75+0.85*h21(cell+vec2(3.3,sd));
+      float curt=mix(1.0, smoothstep(0.72,0.40,f.y), step(0.62,h21(cell+vec2(2.2,sd))));
+      alb=mix(alb, alb*0.35+vec3(0.006,0.009,0.017), win*fade);  // unlit glass still reads
+      alb*=1.0+0.30*frame*fade;                                   // sills and reveals
+      alb*=0.86+0.14*step(0.10,f.y);                              // floor slab shadow line
+      vec3 winGlow=win*lit*tw*fl*vT*bright*curt*0.95;
+      vec3 avgGlow=vT*litR*0.36;
+      emi+=mix(avgGlow,winGlow,fade);
+      alb*=0.92+0.08*sin(cell.x*2.4+sd*9.0);
+    } else if(k>1.5&&k<2.5){
+      if(wW<1.4){ // signature stripe on towers
+        float dashv=step(0.16,fract(vUvm.y/2.3));
+        emi+=vT*(0.75+0.3*sin(uTime*0.5+vUvm.y*0.3+sd))*dashv*0.85;
+        alb*=0.5;
+      } else {   // storefront glass: mullions, transom, dark bays
+        float mull=step(0.10,fract(vUvm.x/1.5));
+        float trans=1.0-0.6*smoothstep(2.35,2.6,vUvm.y);
+        float seg=0.22+0.78*step(0.52,h21(vec2(floor(vUvm.x/3.8),sd)));
+        emi+=vT*(0.8+0.22*sin(uTime*0.6+sd*6.0))*mull*trans*seg*0.5;
+        alb*=0.42;
+      }
+    } else if(k>2.5&&k<3.5){
+      float sx=step(0.05,fract(vUvm.x/2.6)); float sy=step(0.06,fract(vUvm.y/2.2));
+      alb*=0.76+0.24*sx*sy;
+    } else if(k>3.5&&k<4.5){
+      alb*=0.80+0.20*sin(vUvm.x*7.0);
+      alb*=0.72+0.28*smoothstep(0.0,0.7,vUvm.y);
+    } else if(k>4.5){
+      alb=alb*1.12+vec3(0.008)*n2(vW.xz*0.8);
+    }
+    vec3 n=normalize(vN);
+    float sky=n.y*0.42+0.58;
+    vec3 li=vec3(0.055,0.038,0.085)*sky + vec3(0.012,0.010,0.016)*(1.0-sky);
+    li+=vec3(0.10,0.14,0.16)*max(dot(n,normalize(vec3(-0.4,1.0,0.25))),0.0)*0.5;
+    li+=vec3(0.10,0.05,0.07)*max(dot(n,normalize(vec3(0.6,0.7,-0.4))),0.0)*0.35;
+    vec3 c=alb*li*8.5;
+    c*=0.62+0.38*smoothstep(0.2,5.5,vW.y - 0.0);
+    c+=vec3(0.30,0.17,0.07)*exp(-max(vW.y-0.5,0.0)*0.30)*0.16;
+    c+=emi;
+    c=mix(c,uFogColor,fogF(vZ));
+    gl_FragColor=vec4(c,1.0);
+  }`,
+});
+
+// chunked facade geometry (3x3 city regions + far ring)
+const CHUNKS=[]; for(let i=0;i<10;i++) CHUNKS.push(Builder(true));
+function chunkFor(x,z){ if(x<-40||x>824||z<-40||z>904) return CHUNKS[9];
+  return CHUNKS[clamp(Math.floor(x/262),0,2)*3+clamp(Math.floor(z/302),0,2)]; }
+
+// furniture: curbs, girders, decks, plinths, platforms… classic lit vertex-colour geometry
+const FURN = Builder(false);
+
+// ---------- instanced prop pools ----------
+const POOLS = {};
+function defPool(name, geom){ POOLS[name]={ geom, mats:[], cols:[] }; }
+const _pm=new THREE.Matrix4(), _pq=new THREE.Quaternion(), _ps=new THREE.Vector3(), _pv=new THREE.Vector3(), _pe=new THREE.Euler();
+function addInst(name, px,py,pz, ry, sx,sy,sz, c){
+  const P=POOLS[name];
+  _pe.set(0,ry,0); _pq.setFromEuler(_pe);
+  _pm.compose(_pv.set(px,py,pz), _pq, _ps.set(sx,sy,sz));
+  P.mats.push(_pm.clone()); P.cols.push(c);
+}
+const _sv=new THREE.Vector3(), _sd=new THREE.Vector3(), UPV=new THREE.Vector3(0,1,0);
+function strut(name,ax,ay,az,bx,by,bz,t,c){
+  const P=POOLS[name];
+  _sd.set(bx-ax,by-ay,bz-az); const l=_sd.length(); if(l<0.01) return;
+  _pq.setFromUnitVectors(UPV,_sd.normalize());
+  _pm.compose(_sv.set(ax,ay,az), _pq, _ps.set(t,l,t));
+  P.mats.push(_pm.clone()); P.cols.push(c);
+}
+// pool geometries (unit shapes, scaled per instance)
+{
+  const bx=(w,h,d,ox=0,oy=0,oz=0)=>{ const g=new THREE.BoxGeometry(w,h,d); g.translate(ox,oy,oz); return g; };
+  const merge=(gs)=>{ // tiny local merge (positions/normals/uv dropped)
+    let p=[],n=[],idx=[],off=0;
+    for(const g of gs){ const gp=g.getAttribute('position'), gn=g.getAttribute('normal'), gi=g.getIndex();
+      for(let i=0;i<gp.count;i++){ p.push(gp.getX(i),gp.getY(i),gp.getZ(i)); n.push(gn.getX(i),gn.getY(i),gn.getZ(i)); }
+      if(gi) for(let i=0;i<gi.count;i++) idx.push(gi.getX(i)+off);
+      else for(let i=0;i<gp.count;i++) idx.push(i+off);
+      off+=gp.count; g.dispose(); }
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(p,3));
+    g.setAttribute('normal',new THREE.Float32BufferAttribute(n,3));
+    g.setIndex(idx); return g; };
+  defPool('strutB', bx(1,1,1,0,0.5,0));                       // generic strut, origin at base
+  defPool('rail', merge([ bx(3,0.05,0.05,0,1.0,0), bx(3,0.05,0.05,0,0.62,0),
+    bx(0.05,1.05,0.05,-1.45,0.52,0), bx(0.05,1.05,0.05,0,0.52,0), bx(0.05,1.05,0.05,1.45,0.52,0) ]));
+  defPool('fireEsc', merge([ bx(2.6,0.08,1.1,0,0,0), bx(2.6,0.05,0.05,0,0.95,-0.5),
+    bx(0.05,0.95,0.05,-1.25,0.5,-0.5), bx(0.05,0.95,0.05,1.25,0.5,-0.5),
+    (()=>{ const s=bx(0.9,0.06,2.9,0,0,0); s.rotateX(-0.9); s.translate(-0.8,-1.35,0.0); return s; })() ]));
+  defPool('ac', merge([ bx(0.9,0.6,0.55,0,0.3,0), bx(0.7,0.42,0.06,0,0.3,0.29) ]));
+  defPool('ventBox', merge([ bx(1.4,0.9,1.0,0,0.45,0), bx(1.0,0.18,0.7,0,0.99,0) ]));
+  defPool('tank', (()=>{ const g=new THREE.CylinderGeometry(1,1,1,10); g.translate(0,0.5,0); return g; })());
+  defPool('antenna', merge([ bx(0.06,1,0.06,0,0.5,0), bx(0.3,0.03,0.03,0,0.8,0), bx(0.2,0.03,0.03,0,0.62,0) ]));
+  defPool('pipe', (()=>{ const g=new THREE.CylinderGeometry(0.5,0.5,1,7); g.translate(0,0.5,0); return g; })());
+  defPool('awning', (()=>{ const s=bx(1,0.06,1,0,0,0.0); s.rotateX(0.36);
+    return merge([ s, bx(0.05,0.05,1.05,-0.45,-0.18,0), bx(0.05,0.05,1.05,0.45,-0.18,0) ]); })());
+  defPool('lamp', merge([ (()=>{ const g=new THREE.CylinderGeometry(0.07,0.09,4.4,6); g.translate(0,2.2,0); return g; })(),
+    bx(1.3,0.07,0.07,0.6,4.36,0), bx(0.5,0.1,0.22,1.15,4.3,0) ]));
+  defPool('ladder', merge([ bx(0.05,3,0.05,-0.25,1.5,0), bx(0.05,3,0.05,0.25,1.5,0),
+    bx(0.55,0.04,0.04,0,0.4,0), bx(0.55,0.04,0.04,0,1.0,0), bx(0.55,0.04,0.04,0,1.6,0),
+    bx(0.55,0.04,0.04,0,2.2,0), bx(0.55,0.04,0.04,0,2.8,0) ]));
+  defPool('duct', (()=>{ const g=new THREE.CylinderGeometry(0.5,0.5,1,7); g.rotateZ(Math.PI/2); g.translate(0.5,0,0); return g; })());
+  defPool('bollard', (()=>{ const g=new THREE.CylinderGeometry(0.09,0.11,0.95,6); g.translate(0,0.47,0); return g; })());
+  defPool('pier', bx(1,1,1,0,0.5,0));
+  defPool('signback', bx(1,1,0.12,0,0,-0.07));
+  defPool('chair', merge([ bx(0.45,0.05,0.45,0,0.45,0), bx(0.05,0.45,0.05,-0.18,0.22,-0.18),
+    bx(0.05,0.45,0.05,0.18,0.22,-0.18), bx(0.05,0.45,0.05,-0.18,0.22,0.18), bx(0.05,0.45,0.05,0.18,0.22,0.18) ]));
+}
+
+// ---------- effect registries (filled during construction, finalized later) ----------
+const glowList=[];    // {x,y,z,size,c,mode,phase,fogR}
+const streakList=[];  // {x,y,z,yaw,len,wid,c,mode,phase,inten}
+const signList=[];    // {x,y,z,yaw,sx,sy,cell,c,mode,phase}
+const flowList=[];    // {x,y,z,quat,sx,sy,c,speed,lanes,alpha,phase,rep}
+const steamList=[];   // {x,y,z,sx,sy,phase,a}
+const signAnchors=[]; // {x,y,z,yaw,kind:'flush'|'blade',big}
+const cableAnchors=[];// {x,y,z}
+const roofPads=[];    // drone landing spots
+function glow(x,y,z,size,c,mode,phase,fogR){ glowList.push({x,y,z,size,c,mode,phase,fogR:fogR||0}); }
+function streak(x,y,z,yaw,len,wid,c,mode,phase,inten){ streakList.push({x,y,z,yaw,len,wid,c,mode,phase,inten}); }
+const _fq=new THREE.Quaternion(), _fe=new THREE.Euler();
+function flow(x,y,z,rx,ry,rz,sx,sy,c,speed,lanes,alpha,phase){
+  _fe.set(rx,ry,rz,'YXZ'); _fq.setFromEuler(_fe);
+  flowList.push({x,y,z,q:_fq.clone(),sx,sy,c,speed,lanes,alpha,phase,rep:Math.max(1,sy/1.2)});
+}
+
+// ============================================================
+// GROUND — blocks, sidewalks, flooded basin, plaza
+// ============================================================
+const FLOOD={x0:538,z0:86,x1:800,z1:414, wy:0.5};
+const LM={x:448,z:56};   // Raincatcher centre
+function blockInfo(i,j){
+  const x0=i*G+STREET_HALF, z0=j*G+STREET_HALF, x1=i*G+G-STREET_HALF, z1=j*G+G-STREET_HALF;
+  const cx=(x0+x1)/2, cz=(z0+z1)/2;
+  const flood = cx>FLOOD.x0&&cx<FLOOD.x1&&cz>FLOOD.z0&&cz<FLOOD.z1;
+  const plaza = Math.abs(cx-LM.x)<98 && cz<126 && !flood;
+  let district = 'mid';
+  if(cz<230) district='core';
+  if(cz>560) district='south';
+  if(cx<120) district='ware';
+  const q=distToRoute(cx,cz);
+  return {x0,z0,x1,z1,cx,cz,flood,plaza,district,dRoute:q.d};
+}
+{
+  // far ground plane
+  const gp=new THREE.Mesh(new THREE.PlaneGeometry(4200,4200),
+    new THREE.MeshLambertMaterial({color:col(0x07060D)}));
+  gp.rotation.x=-Math.PI/2; gp.position.set(392,-0.04,392); scene.add(gp);
+
+  const slabA=col(0x100A1E), slabB=col(0x171028), walkC=col(0x1C1430);
+  for(let i=0;i<14;i++) for(let j=0;j<14;j++){
+    const b=blockInfo(i,j);
+    if(b.flood) continue;
+    const sc=vary(chance(0.5)?slabA:slabB,0.18);
+    box(FURN,b.x0,0,b.z0,b.x1,0.16,b.z1,{c:sc});
+    const wc=vary(walkC,0.15);
+    box(FURN,b.x0-3.4,0,b.z0-3.4,b.x1+3.4,0.13,b.z0,{c:wc});
+    box(FURN,b.x0-3.4,0,b.z1,b.x1+3.4,0.13,b.z1+3.4,{c:wc});
+    box(FURN,b.x0-3.4,0,b.z0,b.x0,0.13,b.z1,{c:wc});
+    box(FURN,b.x1,0,b.z0,b.x1+3.4,0.13,b.z1,{c:wc});
+  }
+  // start-approach sidewalks (south extension of col-5 street)
+  const wc2=vary(walkC,0.1);
+  box(FURN,280-STREET_HALF-3.4,0,784,280-STREET_HALF,0.13,872,{c:wc2});
+  box(FURN,280+STREET_HALF,0,784,280+STREET_HALF+3.4,0.13,872,{c:wc2});
+}
+
+// ============================================================
+// ROAD — the ribbon the rider owns
+// ============================================================
+const ROAD_HALF=4.7;
+{
+  const P=[],UV=[],IDX=[]; let vc=0;
+  const stride=2;
+  for(let i=0;i<=NF;i+=stride){
+    const y=FR.y[i]+0.055;
+    P.push(FR.x[i]-FR.lx[i]*ROAD_HALF, y, FR.z[i]-FR.lz[i]*ROAD_HALF);
+    P.push(FR.x[i]+FR.lx[i]*ROAD_HALF, y, FR.z[i]+FR.lz[i]*ROAD_HALF);
+    UV.push(-1, i*STEP, 1, i*STEP);
+    if(i>0){ IDX.push(vc-2,vc,vc+1, vc-2,vc+1,vc-1); }
+    vc+=2;
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('uv',new THREE.Float32BufferAttribute(UV,2));
+  g.setIndex(IDX);
+  const roadMat=shaderMat({
+    vs:`varying vec2 vUv; varying vec3 vW; varying float vZ;
+    void main(){ vUv=uv; vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+      vec4 mv=viewMatrix*wp; vZ=-mv.z; gl_Position=projectionMatrix*mv; }`,
+    fs:`${GLSL_H}${GLSL_FOG}
+    uniform float uTime; uniform vec3 uCam;
+    varying vec2 vUv; varying vec3 vW; varying float vZ;
+    void main(){
+      float u=vUv.x, d=vUv.y;
+      vec3 c=vec3(0.0065,0.008,0.014);
+      c+=0.005*n2(vW.xz*1.7);
+      c*=1.0-0.12*exp(-pow((abs(u)-0.36)/0.16,2.0));
+      float dash=step(fract(d/9.0),0.42)*(1.0-smoothstep(0.02,0.05,abs(u)));
+      c=mix(c,vec3(0.12,0.11,0.085),dash*0.16*(0.4+0.6*h11(floor(d/9.0))));
+      float eg=smoothstep(0.88,0.91,abs(u))*(1.0-smoothstep(0.955,0.985,abs(u)));
+      c=mix(c,vec3(0.10,0.095,0.075),eg*0.13);
+      float pd=n2(vW.xz*0.13);
+      float sh=smoothstep(0.30,0.9,abs(u));
+      float puddle=smoothstep(0.56,0.74,pd+sh*0.16);
+      vec3 V=normalize(uCam-vW);
+      float fr=pow(1.0-max(V.y,0.0),3.0);
+      vec3 skyRef=uFogColor*1.5+vec3(0.05,0.03,0.07);
+      c+=fr*(0.03+puddle*0.45)*skyRef;
+      float sp=n2(vW.xz*5.5+vec2(0.0,uTime*2.4));
+      sp=smoothstep(0.80,0.97,sp);
+      c+=puddle*sp*fr*vec3(0.30,0.38,0.44)*0.30;
+      c=mix(c,uFogColor,fogF(vZ));
+      gl_FragColor=vec4(c,1.0);
+    }`,
+    polygonOffset:true, polygonOffsetFactor:-1, polygonOffsetUnits:-2,
+  });
+  scene.add(new THREE.Mesh(g,roadMat));
+}
+// curbs / viaduct girder / railings / piers / causeway piles
+{
+  const curbC=col(0x1B1430), girdC=col(0x191129), fascC=col(0x2A1C40), railC=col(0x342647);
+  const stride=4; // ~2.8m
+  let lastPier=-99, lastPile=-99, lastRail=-99;
+  for(let i=0;i<NF;i+=stride){
+    const y=FR.y[i], x=FR.x[i], z=FR.z[i], lx=FR.lx[i], lz=FR.lz[i];
+    const x2=FR.x[i+stride]||x, z2=FR.z[i+stride]||z, y2=FR.y[Math.min(NF,i+stride)];
+    const lx2=FR.lx[Math.min(NF,i+stride)], lz2=FR.lz[Math.min(NF,i+stride)];
+    const d=i*STEP;
+    if(y<2.5){
+      // street curbs
+      for(const s of [-1,1]){
+        const c=vary(curbC,0.08);
+        face(FURN,[[x+lx*s*4.72,y+0.0,z+lz*s*4.72],[x2+lx2*s*4.72,y2+0.0,z2+lz2*s*4.72],
+                   [x2+lx2*s*4.72,y2+0.19,z2+lz2*s*4.72],[x+lx*s*4.72,y+0.19,z+lz*s*4.72]],
+                   [lx*s,0,lz*s],c,null,0,null,null);
+        face(FURN,[[x+lx*s*4.72,y+0.19,z+lz*s*4.72],[x2+lx2*s*4.72,y2+0.19,z2+lz2*s*4.72],
+                   [x2+lx2*s*5.12,y2+0.19,z2+lz2*s*5.12],[x+lx*s*5.12,y+0.19,z+lz*s*5.12]],
+                   [0,1,0],c,null,0,null,null);
+      }
+    } else {
+      // viaduct girder
+      for(const s of [-1,1]){
+        face(FURN,[[x+lx*s*4.95,y-1.6,z+lz*s*4.95],[x2+lx2*s*4.95,y2-1.6,z2+lz2*s*4.95],
+                   [x2+lx2*s*4.95,y2+0.05,z2+lz2*s*4.95],[x+lx*s*4.95,y+0.05,z+lz*s*4.95]],
+                   [lx*s,0,lz*s],vary(fascC,0.06),null,0,null,null);
+      }
+      face(FURN,[[x-lx*4.95,y-1.6,z-lz*4.95],[x2-lx2*4.95,y2-1.6,z2-lz2*4.95],
+                 [x2+lx2*4.95,y2-1.6,z2+lz2*4.95],[x+lx*4.95,y-1.6,z+lz*4.95]],
+                 [0,-1,0],girdC,null,0,null,null);
+      // rails on both edges
+      if(d-lastRail>2.7){
+        lastRail=d;
+        for(const s of [-1,1]){
+          for(const hh of [0.55,1.0]){
+            face(FURN,[[x+lx*s*4.6,y+hh,z+lz*s*4.6],[x2+lx2*s*4.6,y2+hh,z2+lz2*s*4.6],
+                       [x2+lx2*s*4.6,y2+hh+0.07,z2+lz2*s*4.6],[x+lx*s*4.6,y+hh+0.07,z+lz*s*4.6]],
+                       [lx*s,0,lz*s],railC,null,0,null,null);
+          }
+          strut('strutB',x+lx*s*4.6,y+0.05,z+lz*s*4.6, x+lx*s*4.6,y+1.1,z+lz*s*4.6,0.08,railC);
+        }
+      }
+    }
+    // piers with a fixed-depth cap under the girder
+    if(y>4 && d-lastPier>14){
+      lastPier=d;
+      const pc=vary(girdC,0.1), pyaw=Math.atan2(lx,lz);
+      addInst('pier', x, 0, z, pyaw, 2.3, y-2.9, 2.6, pc);
+      addInst('strutB', x, y-2.9, z, pyaw, 3.5, 1.2, 3.0, pc);
+    }
+    // causeway piles + low parapet
+    if(y>0.8&&y<2.5){
+      const inFlood = x>FLOOD.x0-20&&x<FLOOD.x1&&z>FLOOD.z0-10&&z<FLOOD.z1+40;
+      if(inFlood && d-lastPile>7){
+        lastPile=d;
+        for(const s of [-1,1]) strut('strutB', x+lx*s*3.8,-1.4,z+lz*s*3.8, x+lx*s*3.8,y-0.3,z+lz*s*3.8, 0.55, girdC);
+      }
+      if(inFlood){
+        for(const s of [-1,1]){
+          face(FURN,[[x+lx*s*4.75,y-0.5,z+lz*s*4.75],[x2+lx2*s*4.75,y2-0.5,z2+lz2*s*4.75],
+                     [x2+lx2*s*4.75,y2+0.38,z2+lz2*s*4.75],[x+lx*s*4.75,y+0.38,z+lz*s*4.75]],
+                     [lx*s,0,lz*s],vary(curbC,0.1),null,0,null,null);
+          face(FURN,[[x+lx*s*4.75,y+0.38,z+lz*s*4.75],[x2+lx2*s*4.75,y2+0.38,z2+lz2*s*4.75],
+                     [x2+lx2*s*5.05,y2+0.38,z2+lz2*s*5.05],[x+lx*s*5.05,y+0.38,z+lz*s*5.05]],
+                     [0,1,0],vary(curbC,0.1),null,0,null,null);
+        }
+      }
+    }
+  }
+  // street lamps + their road reflections
+  const ambC=col(HEX.amb), teaC=col(HEX.teal);
+  let side=1;
+  for(let d=16;d<ROUTE_LEN-30;d+=21){
+    const f=getFrame(d);
+    side=-side;
+    const inFlood = f.x>FLOOD.x0-20&&f.x<FLOOD.x1&&f.z>FLOOD.z0-10&&f.z<FLOOD.z1+40 && f.y<2.5;
+    if(inFlood){
+      // low amber bollards instead of lamps
+      for(const s of [-1,1]){
+        addInst('bollard', f.x+f.lx*s*4.35, f.y+0.05, f.z+f.lz*s*4.35, 0, 1,1,1, col(0x241A28));
+        glow(f.x+f.lx*s*4.35, f.y+0.95, f.z+f.lz*s*4.35, 0.55, scale(ambC,0.8), 0, RF(), 0);
+      }
+      streak(f.x, f.y+0.10, f.z, Math.atan2(-f.tx,-f.tz), 10, 2.6, scale(ambC,0.5), 0, RF(), 0.5);
+      continue;
+    }
+    const onVia = f.y>2.5;
+    const yaw=Math.atan2(f.lx*side,f.lz*side)+Math.PI/2;
+    const lat = onVia?4.45:4.7;
+    const px=f.x+f.lx*side*lat, pz=f.z+f.lz*side*lat;
+    const nearNode = nodeD.some(nd=>Math.abs(nd-d)<16);
+    const c = nearNode? teaC : ambC;
+    addInst('lamp', px, f.y+(onVia?0.08:0.16), pz, Math.atan2(f.lz*side,-f.lx*side), 1, onVia?0.78:1, 1, col(0x241A30));
+    const hx=px - f.lx*side*1.15, hz=pz - f.lz*side*1.15;
+    glow(hx, f.y+(onVia?3.5:4.42), hz, 0.85, scale(c, nearNode?0.7:0.85), 0, RF(), 0);
+    streak(f.x+f.lx*side*1.6, f.y+0.09, f.z+f.lz*side*1.6, Math.atan2(-f.tx,-f.tz),
+           rr(13,20), rr(1.6,2.4), scale(c,0.85), 0, RF(), 0.75);
+  }
+  // gutter runoff along the early chapters
+  for(let d=24;d<D_CLIMB;d+=rr(26,44)){
+    const f=getFrame(d); if(f.y>2.5) continue;
+    for(const s of chance(0.6)?[-1,1]:[side]){
+      const yaw=Math.atan2(-f.tx,-f.tz);
+      flow(f.x+f.lx*s*4.35, f.y+0.10, f.z+f.lz*s*4.35, -Math.PI/2, yaw, 0,
+           0.5, rr(14,26), scale(col(HEX.teal),0.5), rr(0.5,0.9), 3, 0.30, RF());
+    }
+  }
+  // viaduct edge runoff (streams back down the hill)
+  for(let d=D_CLIMB+40;d<D_PEAK+80;d+=rr(40,70)){
+    const f=getFrame(d); if(f.y<3) continue;
+    const s=chance(0.5)?-1:1;
+    flow(f.x+f.lx*s*4.3, f.y+0.09, f.z+f.lz*s*4.3, -Math.PI/2, Math.atan2(f.tx,f.tz), 0,
+         0.4, rr(10,18), scale(col(HEX.teal),0.45), rr(0.8,1.3), 2, 0.17, RF());
+  }
+}
+
+// ============================================================
+// BUILDINGS — seven-plus articulated archetypes
+// ============================================================
+const K_SOLID=0,K_WIN=1,K_STORE=2,K_PANEL=3,K_DOOR=4,K_ROOF=5;
+const buildingStats={count:0, arch:{}};
+function frontYaw(front){ return [Math.PI, Math.PI/2, 0, -Math.PI/2][front]; }
+function frontN(front){ return [[0,-1],[1,0],[0,1],[-1,0]][front]; }
+function frontPoint(r,front,t,off){
+  if(front===0) return [r.x0+(r.x1-r.x0)*t, r.z0-off];
+  if(front===2) return [r.x0+(r.x1-r.x0)*t, r.z1+off];
+  if(front===1) return [r.x1+off, r.z0+(r.z1-r.z0)*t];
+  return [r.x0-off, r.z0+(r.z1-r.z0)*t];
+}
+function frontWidth(r,front){ return (front===0||front===2)?(r.x1-r.x0):(r.z1-r.z0); }
+function newStyle(district){
+  const litR = {south:0.22, mid:0.17, core:0.30, ware:0.12}[district]||0.18;
+  return { c:vary(pick(FACADES),0.22), tint:winTint(),
+    inf:[rr(2.4,3.3), rr(2.9,3.5), clamp(litR*rr(0.65,1.4),0.04,0.5), rr(0,100)] };
+}
+function parapet(B,x0,z0,x1,z1,y,h,c){
+  box(B,x0-0.12,y,z0-0.12,x1+0.12,y+h,z0+0.3,{c}); box(B,x0-0.12,y,z1-0.3,x1+0.12,y+h,z1+0.12,{c});
+  box(B,x0-0.12,y,z0,x0+0.3,y+h,z1,{c}); box(B,x1-0.3,y,z0,x1+0.12,y+h,z1,{c});
+}
+function ledge(B,x0,z0,x1,z1,y,c){ box(B,x0-0.28,y,z0-0.28,x1+0.28,y+0.4,z1+0.28,{c}); }
+function roofKit(B,x0,z0,x1,z1,y,det,c,nearRoute){
+  const cx=(x0+x1)/2, cz=(z0+z1)/2, w=x1-x0, dp=z1-z0;
+  if(det<1){ if(chance(0.5)) box(B,cx-1.2,y,cz-1.2,cx+1.2,y+rr(1,2.4),cz+1.2,{c}); return; }
+  const dark=scale(c,0.8);
+  if(chance(0.55)) addInst('tank', cx+rr(-w*0.25,w*0.25), y, cz+rr(-dp*0.25,dp*0.25), 0, rr(1,1.8), rr(1.8,3.4), rr(1,1.8), dark);
+  const nAc=ri(0,det>1?3:1);
+  for(let i=0;i<nAc;i++) addInst('ac', x0+rr(1,w-1), y, z0+rr(1,dp-1), rr(0,6.28), rr(0.9,1.4),rr(0.9,1.4),rr(0.9,1.4), dark);
+  if(chance(0.6)) addInst('ventBox', cx+rr(-2,2), y, cz+rr(-2,2), rr(0,6.28), rr(1,1.6),rr(0.8,1.4),rr(1,1.6), dark);
+  if(chance(0.5)) addInst('antenna', x0+rr(0.6,w-0.6), y, z0+rr(0.6,dp-0.6), rr(0,6.28), 1, rr(2.5,7), 1, dark);
+  if(chance(0.4)) addInst('duct', x0+rr(0.5,1.5), y+0.4, cz, 0, Math.min(6,w-1), 0.5, 0.5, dark);
+  if(nearRoute && chance(0.5)) steamList.push({x:cx+rr(-2,2), y:y+0.4, z:cz+rr(-2,2), sx:rr(2.2,3.6), sy:rr(4,7), phase:R()*10, a:rr(0.3,0.55)});
+  if(nearRoute && chance(0.25)) roofPads.push({x:cx,y:y+0.2,z:cz});
+}
+function entrance(B,r,front,st,det){
+  const w=frontWidth(r,front);
+  const t=rr(0.2,0.8), dw=rr(1.6,2.4);
+  const [ex,ez]=frontPoint(r,front,t,0);
+  const n=frontN(front);
+  const x0=ex-(n[1]!==0?dw/2:0.35)+(n[0]<0?-0.85:0), x1=ex+(n[1]!==0?dw/2:0.35)+(n[0]>0?0.85:0);
+  const z0=ez-(n[0]!==0?dw/2:0.35)+(n[1]<0?-0.85:0), z1=ez+(n[0]!==0?dw/2:0.35)+(n[1]>0?0.85:0);
+  const kf={0:'kNZ',1:'kPX',2:'kPZ',3:'kNX'}[front];
+  const o={c:scale(st.c,0.8), tint:scale(col(HEX.amb),rr(0.34,0.5)), inf:st.inf, kindTop:K_SOLID};
+  o[kf]=K_STORE;
+  box(B,x0,0,z0,x1,3.0,z1,o);
+  if(det>1 && chance(0.6)){ const [gx,gz]=frontPoint(r,front,t,1.3); glow(gx,3.1,gz,0.3,scale(col(HEX.amb),0.42),0,RF(),0); }
+}
+// --- archetype: workshop row ---
+function archWorkshop(B,r,front,st,det){
+  const h=rr(6,11)*st.hMul;
+  const o={c:st.c,tint:st.tint,inf:st.inf,kind:K_WIN};
+  const kf={0:'kNZ',1:'kPX',2:'kPZ',3:'kNX'}[front];
+  box(B,r.x0,0,r.z0,r.x1,h,r.z1,o);
+  // big roll door + door band on the front
+  const w=frontWidth(r,front);
+  const dw=Math.min(6,w*0.4);
+  const t=rr(0.25,0.55);
+  const fs={0:{x0:r.x0+w*t-dw/2,z0:r.z0-0.35,x1:r.x0+w*t+dw/2,z1:r.z0+0.5},
+            2:{x0:r.x0+w*t-dw/2,z0:r.z1-0.5,x1:r.x0+w*t+dw/2,z1:r.z1+0.35},
+            1:{x0:r.x1-0.5,z0:r.z0+w*t-dw/2,x1:r.x1+0.35,z1:r.z0+w*t+dw/2},
+            3:{x0:r.x0-0.35,z0:r.z0+w*t-dw/2,x1:r.x0+0.5,z1:r.z0+w*t+dw/2}}[front];
+  const od={c:scale(st.c,0.85),tint:st.tint,inf:st.inf,kindTop:K_SOLID}; od[kf]=K_DOOR;
+  box(B,fs.x0,0,fs.z0,fs.x1,4.2,fs.z1,od);
+  if(det>0) entrance(B,r,front,st,det);
+  parapet(B,r.x0,r.z0,r.x1,r.z1,h,rr(0.5,0.9),scale(st.c,0.85));
+  roofKit(B,r.x0,r.z0,r.x1,r.z1,h,det,st.c,det>1);
+  if(det>1){
+    const [ax,az]=frontPoint(r,front,rr(0.15,0.85),1.0);
+    addInst('awning',ax,3.4,az,frontYaw(front),rr(2.4,4),1,rr(1.1,1.5),vary(pick([col(HEX.ora),col(HEX.rose),col(HEX.teal)]),0.2));
+    const [sx2,sz2]=frontPoint(r,front,rr(0.3,0.7),0.4);
+    signAnchors.push({x:sx2,y:rr(4.5,5.6),z:sz2,yaw:frontYaw(front),kind:'flush'});
+    const [px2,pz2]=frontPoint(r,front,chance(0.5)?0.06:0.94,0.35);
+    addInst('pipe',px2,0,pz2,0,0.16,h,0.16,scale(st.c,0.7));
+  }
+  return h;
+}
+// --- archetype: night café / corner shop ---
+function archCafe(B,r,front,st,det){
+  const h=rr(5,8.5)*st.hMul;
+  const kf={0:'kNZ',1:'kPX',2:'kPZ',3:'kNX'}[front];
+  const o={c:st.c,tint:st.tint,inf:st.inf,kind:K_WIN};
+  box(B,r.x0,0,r.z0,r.x1,h,r.z1,o);
+  // glowing storefront band, slightly proud of the facade
+  const w=frontWidth(r,front);
+  const fs={0:{x0:r.x0+0.4,z0:r.z0-0.3,x1:r.x1-0.4,z1:r.z0+0.6},
+            2:{x0:r.x0+0.4,z0:r.z1-0.6,x1:r.x1-0.4,z1:r.z1+0.3},
+            1:{x0:r.x1-0.6,z0:r.z0+0.4,x1:r.x1+0.3,z1:r.z1-0.4},
+            3:{x0:r.x0-0.3,z0:r.z0+0.4,x1:r.x0+0.6,z1:r.z1-0.4}}[front];
+  const tint = pick([scale(col(HEX.amb),0.75), scale(col(HEX.pap),0.42), scale(col(HEX.rose),0.62)]);
+  const ob={c:scale(st.c,0.7),tint,inf:st.inf,kindTop:K_SOLID}; ob[kf]=K_STORE;
+  box(B,fs.x0,0.2,fs.z0,fs.x1,3.2,fs.z1,ob);
+  if(det>0){
+    const nA=Math.max(1,Math.floor(w/4.5));
+    for(let i=0;i<nA;i++){
+      const [ax,az]=frontPoint(r,front,(i+0.5)/nA,1.0);
+      addInst('awning',ax,3.5,az,frontYaw(front),rr(2.6,3.6),1,rr(1.2,1.6),vary(pick([col(HEX.ora),col(HEX.rose),col(HEX.teal)]),0.25));
+    }
+  }
+  parapet(B,r.x0,r.z0,r.x1,r.z1,h,0.7,scale(st.c,0.85));
+  if(det>1){
+    // roof terrace with chairs and lanterns
+    addInst('rail',(r.x0+r.x1)/2,h,r.z0+0.4,0,(r.x1-r.x0-1)/3,1,1,scale(st.c,0.7));
+    for(let i=0;i<ri(2,4);i++) addInst('chair',rr(r.x0+1,r.x1-1),h,rr(r.z0+1,r.z1-1),rr(0,6.28),1,1,1,scale(st.c,0.75));
+    for(let i=0;i<3;i++) glow(rr(r.x0+1,r.x1-1),h+rr(1.2,2),rr(r.z0+1,r.z1-1),0.35,scale(col(HEX.amb),0.65),1,RF(),0);
+    const [sx2,sz2]=frontPoint(r,front,rr(0.15,0.85),0.9);
+    signAnchors.push({x:sx2,y:rr(4.2,5.4),z:sz2,yaw:frontYaw(front)+Math.PI/2,kind:'blade'});
+  }
+  roofKit(B,r.x0,r.z0,r.x1,r.z1,h,Math.min(det,1),st.c,false);
+  return h;
+}
+// --- archetype: apartment slab with balconies ---
+function archSlab(B,r,front,st,det){
+  const h=rr(15,30)*st.hMul;
+  const o={c:st.c,tint:st.tint,inf:st.inf,kind:K_WIN};
+  box(B,r.x0,0,r.z0,r.x1,h,r.z1,o);
+  // stair core
+  const coreW=rr(2.5,3.5);
+  const sideR={0:{x0:r.x1-coreW,z0:r.z0+2,x1:r.x1+1.2,z1:r.z0+2+coreW},
+               2:{x0:r.x0-1.2,z0:r.z1-2-coreW,x1:r.x0+coreW,z1:r.z1-2},
+               1:{x0:r.x0+2,z0:r.z1-coreW,x1:r.x0+2+coreW,z1:r.z1+1.2},
+               3:{x0:r.x1-2-coreW,z0:r.z0-1.2,x1:r.x1-2,z1:r.z0+coreW}}[front];
+  box(B,sideR.x0,0,sideR.z0,sideR.x1,h+2.2,sideR.z1,{c:scale(st.c,0.82),tint:scale(st.tint,0.5),inf:st.inf,kind:K_WIN});
+  // balconies on the front
+  if(det>0){
+    const w=frontWidth(r,front), bays=Math.max(1,Math.floor(w/3.6));
+    for(let fl=1; fl*3.2+2.4<h; fl++){
+      for(let b2=0;b2<bays;b2++){
+        if(!chance(0.75)) continue;
+        const [bx2,bz2]=frontPoint(r,front,(b2+0.5)/bays,0.55);
+        const n=frontN(front);
+        box(B,bx2-(n[1]!==0?1.35:0.55),fl*3.2,bz2-(n[0]!==0?1.35:0.55),
+             bx2+(n[1]!==0?1.35:0.55),fl*3.2+0.14,bz2+(n[0]!==0?1.35:0.55),{c:scale(st.c,0.8),kindTop:K_SOLID});
+        if(det>1) addInst('rail',bx2+n[0]*0.5,fl*3.2+0.1,bz2+n[1]*0.5,(front===1||front===3)?Math.PI/2:0,0.9,0.85,1,scale(st.c,0.72));
+      }
+    }
+  }
+  if(chance(0.6)){ // setback crown
+    const in2=rr(1.5,3);
+    box(B,r.x0+in2,h,r.z0+in2,r.x1-in2,h+rr(3,5.5),r.z1-in2,{c:scale(st.c,0.92),tint:st.tint,inf:st.inf,kind:K_WIN});
+  }
+  ledge(B,r.x0,r.z0,r.x1,r.z1,h-0.4,scale(st.c,0.8));
+  entrance(B,r,front,st,det);
+  roofKit(B,r.x0,r.z0,r.x1,r.z1,h+(chance(0.5)?0:0.1),det,st.c,det>1);
+  return h;
+}
+// --- archetype: stepped tower ---
+function archTower(B,r,front,st,det){
+  const h=rr(38,86)*st.hMul;
+  const cx=(r.x0+r.x1)/2, cz=(r.z0+r.z1)/2;
+  let w=(r.x1-r.x0)/2, dp=(r.z1-r.z0)/2, y=0;
+  const lvls=h>60?3:2;
+  const hs=[]; let rem=h;
+  for(let i=0;i<lvls;i++){ const hh=i===lvls-1?rem:rem*rr(0.42,0.6); hs.push(hh); rem-=hh; }
+  for(let i=0;i<lvls;i++){
+    const o={c:st.c,tint:st.tint,inf:st.inf,kind:K_WIN};
+    box(B,cx-w,y,cz-dp,cx+w,y+hs[i],cz+dp,o);
+    // corner piers
+    const pc=scale(st.c,0.72);
+    for(const sx of [-1,1]) for(const sz of [-1,1])
+      box(B,cx+sx*w-(sx>0?0.55:-0.15)-0.2,y,cz+sz*dp-(sz>0?0.55:-0.15)-0.2,
+           cx+sx*w+(sx>0?0.15:0.55)+0.0,y+hs[i]+0.3,cz+sz*dp+(sz>0?0.15:0.55),{c:pc});
+    y+=hs[i]; ledge(B,cx-w,cz-dp,cx+w,cz+dp,y-0.2,scale(st.c,0.8));
+    w*=rr(0.68,0.85); dp*=rr(0.68,0.85);
+  }
+  // one signature emissive stripe
+  if(chance(0.5)){
+    const t2=pick([col(HEX.teal),col(HEX.rose),col(HEX.ora)]);
+    const f2=ri(0,3), sw=0.5;
+    const [ex,ez]=frontPoint(r,f2,rr(0.25,0.75),-0.05);
+    const kf={0:'kNZ',1:'kPX',2:'kPZ',3:'kNX'}[f2];
+    const n=frontN(f2);
+    const os={c:scale(st.c,0.6),tint:scale(t2,0.9),inf:[1.0,2.0,st.inf[2],st.inf[3]],kindTop:K_SOLID};
+    os[kf]=K_STORE;
+    box(B,ex-(n[1]!==0?sw:0.3),2,ez-(n[0]!==0?sw:0.3),ex+(n[1]!==0?sw:0.3),h*rr(0.55,0.8),ez+(n[0]!==0?sw:0.3),os);
+  }
+  entrance(B,r,front,st,det);
+  roofKit(B,cx-w,cz-dp,cx+w,cz+dp,y,Math.max(det,1),st.c,det>1);
+  if(chance(0.4)) addInst('antenna',cx,y,cz,0,1.6,rr(6,12),1.6,scale(st.c,0.7));
+  if(chance(0.35)) glow(cx,y+rr(6,11),cz,0.5,scale(col(HEX.rose),0.9),1,RF(),1);
+  buildingStats.tallest=Math.max(buildingStats.tallest||0,h);
+  return h;
+}
+// --- archetype: old walk-up with fire escapes ---
+function archWalkup(B,r,front,st,det){
+  const h=rr(12,19)*st.hMul;
+  const inf2=[rr(2.0,2.6),rr(2.6,3.0),st.inf[2]*1.1,st.inf[3]];
+  box(B,r.x0,0,r.z0,r.x1,h,r.z1,{c:st.c,tint:st.tint,inf:inf2,kind:K_WIN});
+  if(chance(0.6)){ // shop base
+    const kf={0:'kNZ',1:'kPX',2:'kPZ',3:'kNX'}[front];
+    const fs={0:{x0:r.x0+0.5,z0:r.z0-0.25,x1:r.x1-0.5,z1:r.z0+0.5},
+              2:{x0:r.x0+0.5,z0:r.z1-0.5,x1:r.x1-0.5,z1:r.z1+0.25},
+              1:{x0:r.x1-0.5,z0:r.z0+0.5,x1:r.x1+0.25,z1:r.z1-0.5},
+              3:{x0:r.x0-0.25,z0:r.z0+0.5,x1:r.x0+0.5,z1:r.z1-0.5}}[front];
+    const ob={c:scale(st.c,0.7),tint:pick([scale(col(HEX.amb),0.5),scale(col(HEX.teal),0.42)]),inf:st.inf,kindTop:K_SOLID};
+    ob[kf]=K_STORE;
+    box(B,fs.x0,0.2,fs.z0,fs.x1,3.0,fs.z1,ob);
+    const [sx2,sz2]=frontPoint(r,front,rr(0.2,0.8),0.8);
+    if(det>1) signAnchors.push({x:sx2,y:rr(3.9,5.2),z:sz2,yaw:frontYaw(front)+Math.PI/2,kind:'blade'});
+  }
+  if(det>0 && chance(0.7)){ // fire escape stack
+    const t=rr(0.25,0.75);
+    for(let fl=1; fl*3.1+2.2<h; fl++){
+      const [fx,fz]=frontPoint(r,front,t,0.75);
+      addInst('fireEsc',fx,fl*3.1,fz,frontYaw(front),1,1,1,scale(st.c,0.6));
+    }
+    const [lx2,lz2]=frontPoint(r,front,t+0.12,0.4);
+    addInst('ladder',lx2,0.4,lz2,frontYaw(front),1,1,1,scale(st.c,0.6));
+  }
+  // corner gutters
+  addInst('pipe',r.x0+0.2,0,r.z0+0.2,0,0.14,h,0.14,scale(st.c,0.65));
+  addInst('pipe',r.x1-0.2,0,r.z1-0.2,0,0.14,h,0.14,scale(st.c,0.65));
+  parapet(B,r.x0,r.z0,r.x1,r.z1,h,0.6,scale(st.c,0.85));
+  for(let i=0;i<2;i++){ const chx=rr(r.x0+1,r.x1-1), chz=rr(r.z0+1,r.z1-1);
+    box(B,chx-0.35,h,chz-0.35,chx+0.35,h+rr(1,2),chz+0.35,{c:scale(st.c,0.8)}); }
+  roofKit(B,r.x0,r.z0,r.x1,r.z1,h,Math.min(det,1),st.c,det>1);
+  return h;
+}
+// --- archetype: warehouse / depot ---
+function archWarehouse(B,r,front,st,det){
+  const h=rr(9,16)*st.hMul;
+  box(B,r.x0,0,r.z0,r.x1,h,r.z1,{c:st.c,tint:st.tint,inf:st.inf,kind:K_PANEL});
+  // pilaster fins on front
+  const w=frontWidth(r,front), fins=Math.floor(w/3.2);
+  for(let i=0;i<=fins;i++){
+    const [fx,fz]=frontPoint(r,front,i/fins,0.18);
+    const n=frontN(front);
+    box(B,fx-(n[1]!==0?0.16:0.22),0,fz-(n[0]!==0?0.16:0.22),fx+(n[1]!==0?0.16:0.22),h*0.92,fz+(n[0]!==0?0.16:0.22),{c:scale(st.c,0.78)});
+  }
+  // high window strip
+  const kf={0:'kNZ',1:'kPX',2:'kPZ',3:'kNX'}[front];
+  const hs={0:{x0:r.x0+1,z0:r.z0-0.1,x1:r.x1-1,z1:r.z0+0.4},
+            2:{x0:r.x0+1,z0:r.z1-0.4,x1:r.x1-1,z1:r.z1+0.1},
+            1:{x0:r.x1-0.4,z0:r.z0+1,x1:r.x1+0.1,z1:r.z1-1},
+            3:{x0:r.x0-0.1,z0:r.z0+1,x1:r.x0+0.4,z1:r.z1-1}}[front];
+  const ow={c:st.c,tint:scale(st.tint,0.6),inf:[2.2,1.4,st.inf[2]*0.7,st.inf[3]],kindTop:K_SOLID}; ow[kf]=K_WIN;
+  box(B,hs.x0,h-2.4,hs.z0,hs.x1,h-1,hs.z1,ow);
+  // loading dock
+  if(det>0){
+    const t=rr(0.25,0.7), dw=Math.min(7,w*0.4);
+    const [dx2,dz2]=frontPoint(r,front,t,1.1);
+    const n=frontN(front);
+    box(B,dx2-(n[1]!==0?dw/2:1.1),0,dz2-(n[0]!==0?dw/2:1.1),dx2+(n[1]!==0?dw/2:1.1),1.1,dz2+(n[0]!==0?dw/2:1.1),{c:scale(st.c,0.75)});
+    const od={c:scale(st.c,0.8),tint:st.tint,inf:st.inf,kindTop:K_SOLID}; od[kf]=K_DOOR;
+    const fs2={0:{x0:dx2-dw/2,z0:r.z0-0.3,x1:dx2+dw/2,z1:r.z0+0.4},
+               2:{x0:dx2-dw/2,z0:r.z1-0.4,x1:dx2+dw/2,z1:r.z1+0.3},
+               1:{x0:r.x1-0.4,z0:dz2-dw/2,x1:r.x1+0.3,z1:dz2+dw/2},
+               3:{x0:r.x0-0.3,z0:dz2-dw/2,x1:r.x0+0.4,z1:dz2+dw/2}}[front];
+    box(B,fs2.x0,1.1,fs2.z0,fs2.x1,4.6,fs2.z1,od);
+    // canopy
+    const [cx2,cz2]=frontPoint(r,front,t,1.8);
+    box(B,cx2-(n[1]!==0?dw/2+0.5:1.8),4.8,cz2-(n[0]!==0?dw/2+0.5:1.8),cx2+(n[1]!==0?dw/2+0.5:1.8),5.1,cz2+(n[0]!==0?dw/2+0.5:1.8),{c:scale(st.c,0.7),kindTop:K_SOLID});
+    glow(dx2,4.4,dz2,0.6,scale(col(HEX.ora),0.8),2,RF(),0);
+    if(det>1&&chance(0.6)) signAnchors.push({x:cx2,y:rr(5.6,6.6),z:cz2,yaw:frontYaw(front),kind:'flush'});
+  }
+  roofKit(B,r.x0,r.z0,r.x1,r.z1,h,det,st.c,det>1);
+  return h;
+}
+// --- archetype: mixed-use podium + twin towers ---
+function archMixed(B,r,front,st,det){
+  const ph=rr(5,7)*st.hMul;
+  const kf={0:'kNZ',1:'kPX',2:'kPZ',3:'kNX'}[front];
+  const op={c:st.c,tint:pick([scale(col(HEX.amb),0.85),scale(col(HEX.teal),0.8)]),inf:st.inf,kind:K_WIN};
+  op[kf]=K_STORE;
+  box(B,r.x0,0,r.z0,r.x1,ph,r.z1,op);
+  const w=r.x1-r.x0, dp=r.z1-r.z0;
+  const h1=rr(16,30)*st.hMul, h2=h1*rr(0.55,0.85);
+  const t1={x0:r.x0+0.8,z0:r.z0+0.8,x1:r.x0+w*0.48,z1:r.z0+dp*0.55};
+  const t2={x0:r.x1-w*0.42,z0:r.z1-dp*0.5,x1:r.x1-0.8,z1:r.z1-0.8};
+  box(B,t1.x0,ph,t1.z0,t1.x1,ph+h1,t1.z1,{c:scale(st.c,1.05),tint:st.tint,inf:st.inf,kind:K_WIN});
+  box(B,t2.x0,ph,t2.z0,t2.x1,ph+h2,t2.z1,{c:scale(st.c,0.9),tint:st.tint,inf:st.inf,kind:K_WIN});
+  // sky bridge
+  const by=ph+Math.min(h1,h2)*rr(0.4,0.7);
+  box(B,(t1.x0+t1.x1)/2,by,(t1.z0+t1.z1)/2,(t2.x0+t2.x1)/2+1.6,by+2.6,(t2.z0+t2.z1)/2+1.6,{c:scale(st.c,0.8),tint:scale(st.tint,0.8),inf:st.inf,kind:K_WIN});
+  // podium terrace rails + podium sign
+  if(det>0){
+    addInst('rail',(r.x0+r.x1)/2,ph,r.z0+0.3,0,(w-1)/3,1,1,scale(st.c,0.7));
+    addInst('rail',(r.x0+r.x1)/2,ph,r.z1-0.3,0,(w-1)/3,1,1,scale(st.c,0.7));
+    if(det>1&&chance(0.6)){ const [sx2,sz2]=frontPoint(r,front,rr(0.3,0.7),0.6);
+      signAnchors.push({x:sx2,y:ph-1.2,z:sz2,yaw:frontYaw(front),kind:'flush'}); }
+  }
+  ledge(B,r.x0,r.z0,r.x1,r.z1,ph-0.3,scale(st.c,0.8));
+  roofKit(B,t1.x0,t1.z0,t1.x1,t1.z1,ph+h1,det,st.c,det>1);
+  roofKit(B,t2.x0,t2.z0,t2.x1,t2.z1,ph+h2,Math.min(det,1),st.c,false);
+  return ph+h1;
+}
+// --- archetype: stormwater infrastructure block ---
+function archInfra(B,r,front,st,det){
+  const h=rr(4.5,8)*st.hMul;
+  const cc=vary(col(0x1E1830),0.15);
+  box(B,r.x0,0,r.z0,r.x1,h,r.z1,{c:cc,tint:st.tint,inf:st.inf,kind:K_PANEL});
+  const cx=(r.x0+r.x1)/2, cz=(r.z0+r.z1)/2, w=r.x1-r.x0, dp=r.z1-r.z0;
+  const nT=ri(1,2);
+  for(let i=0;i<nT;i++){
+    const tx=r.x0+w*rr(0.25,0.75), tz=r.z0+dp*rr(0.25,0.75);
+    addInst('tank',tx,h,tz,0,rr(2,3.4),rr(3,6),rr(2,3.4),scale(cc,0.85));
+    addInst('ladder',tx+2.2,h,tz,0,1,rr(1.2,2),1,scale(cc,0.7));
+  }
+  for(let i=0;i<ri(3,5);i++) addInst('pipe',rr(r.x0+1,r.x1-1),0,rr(r.z0+1,r.z1-1),0,rr(0.2,0.45),h+rr(0.5,3),rr(0.2,0.45),scale(cc,0.75));
+  addInst('duct',r.x0+1,h*0.6,cz,0,w-2,0.7,0.7,scale(cc,0.8));
+  if(det>1){ glow(cx,h+rr(1,2),cz,0.5,scale(col(HEX.amb),0.8),2,RF(),0);
+    const [sx2,sz2]=frontPoint(r,front,0.5,0.5);
+    signAnchors.push({x:sx2,y:h*0.7,z:sz2,yaw:frontYaw(front),kind:'flush',cell:19});
+  }
+  return h;
+}
+const ARCHS={ workshop:archWorkshop, cafe:archCafe, slab:archSlab, tower:archTower,
+              walkup:archWalkup, warehouse:archWarehouse, mixed:archMixed, infra:archInfra };
+function pickArch(district, isCorner){
+  const t=R();
+  if(district==='south') return isCorner&&t<0.35?'cafe': t<0.35?'workshop': t<0.55?'walkup': t<0.7?'cafe': t<0.85?'warehouse':'mixed';
+  if(district==='core')  return t<0.45?'tower': t<0.62?'slab': t<0.8?'mixed': t<0.9?'warehouse':'infra';
+  if(district==='ware')  return t<0.45?'warehouse': t<0.6?'infra': t<0.8?'workshop':'walkup';
+  return t<0.28?'slab': t<0.45?'walkup': t<0.6?'mixed': t<0.72?'workshop': t<0.82?'tower': t<0.92?'cafe':'infra';
+}
+// shrink a parcel rect until it clears the protected corridor
+function fitRect(r){
+  let need=0;
+  for(const [px,pz] of [[r.x0,r.z0],[r.x1,r.z0],[r.x0,r.z1],[r.x1,r.z1],
+      [(r.x0+r.x1)/2,r.z0],[(r.x0+r.x1)/2,r.z1],[r.x0,(r.z0+r.z1)/2],[r.x1,(r.z0+r.z1)/2]]){
+    const q=distToRoute(px,pz);
+    if(q.h<3.5) need=Math.max(need, 9.0-q.d);
+  }
+  if(need>0){ r={x0:r.x0+need,z0:r.z0+need,x1:r.x1-need,z1:r.z1-need}; }
+  if(r.x1-r.x0<5||r.z1-r.z0<5) return null;
+  return r;
+}
+function buildParcel(r,district,det,hMul){
+  r=fitRect(r); if(!r) return;
+  const cx=(r.x0+r.x1)/2, cz=(r.z0+r.z1)/2;
+  // designed vista: keep roofs low along the opening sightline to the Raincatcher
+  {
+    const vsx=cx-280, vsz=cz-834, vd=Math.hypot(vsx,vsz);
+    if(vd<790 && vsz<0){
+      const dA=Math.abs(Math.atan2(vsx,-vsz)-0.213);
+      if(dA<0.11){ hMul*=0.5; if(vd<470){ district='south'; hMul*=0.8; } }
+      else if(dA<0.19){ hMul*=0.72; if(vd<470) district='south'; }
+    }
+  }
+  const B=chunkFor(cx,cz);
+  // face the street nearest the route
+  let front=0,best=1e9;
+  const mids=[[cx,r.z0-1],[r.x1+1,cz],[cx,r.z1+1],[r.x0-1,cz]];
+  for(let f2=0;f2<4;f2++){ const q=distToRoute(mids[f2][0],mids[f2][1]); if(q.d<best){best=q.d;front=f2;} }
+  const isCorner=chance(0.3);
+  const arch=pickArch(district,isCorner);
+  const st=newStyle(district); st.hMul=hMul*rr(0.85,1.15);
+  ARCHS[arch](B,r,front,st,det);
+  buildingStats.count++; buildingStats.arch[arch]=(buildingStats.arch[arch]||0)+1;
+  if(det>1){ cableAnchors.push({x:r.x0,y:0,z:r.z0}); }
+}
+// flood-district stubs and pile sheds
+function floodStubs(b){
+  const n=ri(1,2);
+  for(let i=0;i<n;i++){
+    const w=rr(6,14), dp=rr(6,14);
+    const x0=rr(b.x0,b.x1-w), z0=rr(b.z0,b.z1-dp);
+    const B=chunkFor(x0,z0);
+    const c=vary(col(0x131022),0.2);
+    box(B,x0,-1,z0,x0+w,rr(1.5,5),z0+dp,{c,tint:scale(col(HEX.teal),0.4),inf:[2.6,2.8,0.05,rr(0,100)],kind:K_PANEL});
+  }
+  if(chance(0.4)){
+    const px=rr(b.x0+4,b.x1-4), pz=rr(b.z0+4,b.z1-4);
+    for(const [ox,oz] of [[-2,-2],[2,-2],[-2,2],[2,2]]) strut('strutB',px+ox,-1.2,pz+oz,px+ox,2.1,pz+oz,0.3,col(0x1A1428));
+    const B=chunkFor(px,pz);
+    box(B,px-2.8,2.1,pz-2.8,px+2.8,2.4,pz+2.8,{c:col(0x1C1630)});
+    box(B,px-1.8,2.4,pz-1.8,px+1.8,4.6,pz+1.8,{c:vary(col(0x241A34),0.15),tint:scale(col(HEX.rose),0.8),inf:[2.2,2.2,0.5,rr(0,100)],kind:K_WIN});
+    glow(px,5.0,pz,0.5,scale(col(HEX.rose),0.85),4,RF(),0);
+    if(chance(0.6)) signAnchors.push({x:px,y:3.6,z:pz-1.9,yaw:Math.PI,kind:'flush'});
+    steamList.push({x:px+rr(-1,1),y:2.6,z:pz+rr(-1,1),sx:rr(1.5,2.4),sy:rr(3,5),phase:R()*10,a:0.35});
+  }
+}
+// ---------- city block loop ----------
+for(let i=0;i<14;i++) for(let j=0;j<14;j++){
+  const b=blockInfo(i,j);
+  if(b.plaza) continue;
+  if(b.flood){ floodStubs(b); continue; }
+  const det = b.dRoute<70?2 : b.dRoute<160?1:0;
+  const hMul = b.district==='core'?rr(1.3,1.7) : b.district==='south'?rr(0.8,1.0) : rr(1.0,1.25);
+  const w=b.x1-b.x0;
+  const t=R();
+  if(det===0 && t<0.4){
+    buildParcel({x0:b.x0+2,z0:b.z0+2,x1:b.x1-2,z1:b.z1-2},b.district,det,hMul);
+  } else if(t<0.38){
+    const vert=chance(0.5), m=rr(0.42,0.58);
+    if(vert){
+      buildParcel({x0:b.x0+1.4,z0:b.z0+1.4,x1:b.x0+w*m-1.2,z1:b.z1-1.4},b.district,det,hMul);
+      buildParcel({x0:b.x0+w*m+1.2,z0:b.z0+1.4,x1:b.x1-1.4,z1:b.z1-1.4},b.district,det,hMul);
+    } else {
+      buildParcel({x0:b.x0+1.4,z0:b.z0+1.4,x1:b.x1-1.4,z1:b.z0+w*m-1.2},b.district,det,hMul);
+      buildParcel({x0:b.x0+1.4,z0:b.z0+w*m+1.2,x1:b.x1-1.4,z1:b.z1-1.4},b.district,det,hMul);
+    }
+  } else if(t<0.75){
+    const mx=rr(0.42,0.58), mz=rr(0.42,0.58);
+    buildParcel({x0:b.x0+1.4,z0:b.z0+1.4,x1:b.x0+w*mx-1.2,z1:b.z0+w*mz-1.2},b.district,det,hMul);
+    buildParcel({x0:b.x0+w*mx+1.2,z0:b.z0+1.4,x1:b.x1-1.4,z1:b.z0+w*mz-1.2},b.district,det,hMul);
+    buildParcel({x0:b.x0+1.4,z0:b.z0+w*mz+1.2,x1:b.x0+w*mx-1.2,z1:b.z1-1.4},b.district,det,hMul);
+    buildParcel({x0:b.x0+w*mx+1.2,z0:b.z0+w*mz+1.2,x1:b.x1-1.4,z1:b.z1-1.4},b.district,det,hMul);
+  } else {
+    buildParcel({x0:b.x0+1.6,z0:b.z0+1.6,x1:b.x1-1.6,z1:b.z1-1.6},b.district,det,hMul);
+  }
+}
+// start-approach framing blocks (the poster's left and right wings)
+buildParcel({x0:236,z0:794,x1:268,z1:846},'south',2,1.15);
+buildParcel({x0:292,z0:792,x1:330,z1:830},'south',2,0.9);
+buildParcel({x0:292,z0:834,x1:326,z1:862},'south',2,0.85);
+// far skyline ring — the city is larger than the route
+{
+  const B=CHUNKS[9];
+  for(let i=0;i<72;i++){
+    const a=R()*Math.PI*2, rad=rr(520,830);
+    const x=392+Math.cos(a)*rad, z=392+Math.sin(a)*rad;
+    const w=rr(14,42), dp=rr(14,42), h=rr(55,190);
+    box(B,x-w/2,0,z-dp/2,x+w/2,h,z+dp/2,
+      {c:vary(col(0x150E28),0.25),tint:chance(0.7)?scale(col(HEX.teal),0.7):scale(col(HEX.amb),0.7),
+       inf:[rr(3,4.5),rr(3,4),0.09,rr(0,100)],kind:K_WIN});
+    if(chance(0.2)) glow(x,h+rr(2,6),z,0.6,scale(col(HEX.rose),0.8),1,RF(),1);
+  }
+}
+
+// ============================================================
+// NEON SIGN ATLAS — runtime canvas, stroke-drawn glyphs (no fonts)
+// ============================================================
+const atlasC=document.createElement('canvas'); atlasC.width=atlasC.height=1024;
+const actx=atlasC.getContext('2d');
+function sg(x1,y1,x2,y2){ actx.beginPath(); actx.moveTo(x1,y1); actx.lineTo(x2,y2); actx.stroke(); }
+function cg(x,y,r,a0,a1){ actx.beginPath(); actx.arc(x,y,r,a0===undefined?0:a0,a1===undefined?Math.PI*2:a1); actx.stroke(); }
+function poly(pts,close){ actx.beginPath(); actx.moveTo(pts[0][0],pts[0][1]);
+  for(let i=1;i<pts.length;i++) actx.lineTo(pts[i][0],pts[i][1]); if(close) actx.closePath(); actx.stroke(); }
+const SEGD={A:[-1,-1,1,-1],B:[1,-1,1,0],C:[1,0,1,1],D:[-1,1,1,1],E:[-1,0,-1,1],F:[-1,-1,-1,0],G:[-1,0,1,0]};
+const DIGSEG={'0':'ABCDEF','1':'BC','2':'ABGED','3':'ABGCD','4':'FGBC','5':'AFGCD','7':'ABC','9':'ABCFG'};
+function digit(ch,cx,cy,s){ const w=0.62*s;
+  for(const sname of DIGSEG[ch]){ const d=SEGD[sname]; sg(cx+d[0]*w,cy+d[1]*s,cx+d[2]*w,cy+d[3]*s); } }
+function steamGlyph(x,y){ for(const ox of [-8,4]){ actx.beginPath(); actx.moveTo(x+ox,y);
+  actx.bezierCurveTo(x+ox-6,y-8,x+ox+6,y-16,x+ox,y-24); actx.stroke(); } }
+const PAINTERS=[
+  ()=>{ cg(0,0,34); for(let i=0;i<8;i++){ const a=i*Math.PI/4; sg(Math.cos(a)*7,Math.sin(a)*7,Math.cos(a)*32,Math.sin(a)*32);} cg(0,0,7); },
+  ()=>{ cg(0,0,24); for(let i=0;i<8;i++){ const a=i*Math.PI/4; sg(Math.cos(a)*24,Math.sin(a)*24,Math.cos(a)*34,Math.sin(a)*34);} cg(0,0,9); },
+  ()=>{ cg(-17,-17,13,0.6*Math.PI,2.35*Math.PI); sg(-8,-8,20,20); cg(23,23,10,-0.4*Math.PI,1.35*Math.PI); },
+  ()=>{ poly([[-20,-4],[-20,22],[16,22],[16,-4]],true); cg(21,9,9,-Math.PI/2,Math.PI/2); steamGlyph(0,-10); },
+  ()=>{ cg(0,0,28,0,Math.PI); sg(-28,0,28,0); sg(-10,-28,8,-2); sg(-2,-30,14,-4); steamGlyph(-2,-6); },
+  ()=>{ cg(0,-2,30,Math.PI,2*Math.PI); sg(-30,-2,30,-2); sg(0,-2,0,22); cg(6,22,6,0,Math.PI); },
+  ()=>{ actx.beginPath(); actx.moveTo(0,-28); actx.bezierCurveTo(19,-2,21,12,0,26);
+        actx.bezierCurveTo(-21,12,-19,-2,0,-28); actx.stroke(); },
+  ()=>{ poly([[8,-30],[-7,-2],[3,-2],[-8,30]]); },
+  ()=>{ for(const x of [-19,-1,17]){ sg(x-7,-14,x+6,0); sg(x+6,0,x-7,14); } },
+  ()=>{ poly([[-30,-18],[30,-18],[30,10],[-30,10]],true); sg(-30,-4,30,-4);
+        cg(-16,16,5); cg(16,16,5); sg(0,-18,9,-29); sg(9,-29,17,-25); sg(-34,27,34,27);
+        for(const x of [-20,0,20]) cg(x,27,2.4); },
+  ()=>{ digit('7',0,0,26); },
+  ()=>{ digit('1',-16,0,24); digit('2',14,0,24); },
+  ()=>{ digit('2',-14,6,20); digit('4',14,6,20); cg(0,-26,10,0.5,Math.PI*1.6); },
+  ()=>{ for(const y of [-15,0,15]){ actx.beginPath(); actx.moveTo(-30,y);
+        actx.quadraticCurveTo(-15,y-11,0,y); actx.quadraticCurveTo(15,y+11,30,y); actx.stroke(); } },
+  ()=>{ cg(0,0,20); sg(-14,-14,14,14); sg(-14,14,14,-14); sg(20,0,33,0); sg(33,-8,33,8); },
+  ()=>{ poly([[-24,-12],[16,-12],[16,12],[-24,12]],true); sg(22,-5,22,5);
+        poly([[0,-8],[-6,1],[-1,1],[-5,9]]); },
+  ()=>{ cg(-15,0,11); sg(-4,0,30,0); sg(21,0,21,9); sg(29,0,29,7); },
+  ()=>{ poly([[-6,-30],[23,-21],[-6,-12]],true); sg(-6,-30,-6,30); },
+  ()=>{ poly([[-30,20],[0,-14],[13,3],[30,-11]]); sg(21,-24,28,-31); sg(28,-31,34,-24); },
+  ()=>{ poly([[0,-27],[26,20],[-26,20]],true); actx.beginPath(); actx.moveTo(0,-9);
+        actx.bezierCurveTo(9,3,10,8,0,14); actx.bezierCurveTo(-10,8,-9,3,0,-9); actx.stroke(); },
+  ()=>{ cg(-12,-12,12,0.5,Math.PI*1.7); poly([[-26,10],[26,10],[26,24],[-26,24]],true); },
+  ()=>{ sg(-9,-26,-9,26); sg(-14,-26,-14,-13); sg(-4,-26,-4,-13); sg(-14,-13,-4,-13);
+        sg(10,-26,10,26); actx.beginPath(); actx.moveTo(10,-26); actx.quadraticCurveTo(20,-16,10,-2); actx.stroke(); },
+  ()=>{ poly([[-11,-12],[11,-12],[11,26],[-11,26]],true); poly([[-6,-22],[6,-22],[6,-12],[-6,-12]],true);
+        sg(-11,2,11,2); },
+  ()=>{ sg(-23,23,19,-19); sg(19,-19,4,-19); sg(19,-19,19,-4); },
+  ()=>{ for(let i=0;i<6;i++){ const a=i*Math.PI/3; sg(Math.cos(a)*8,Math.sin(a)*8-6,Math.cos(a)*24,Math.sin(a)*24-6); }
+        cg(-8,22,2.4); cg(4,26,2.4); cg(14,20,2.4); },
+  ()=>{ cg(0,0,24); actx.beginPath(); actx.arc(0,0,6.5,0,Math.PI*2); actx.fillStyle=actx.strokeStyle; actx.fill();
+        for(let i=0;i<4;i++){ const a=i*Math.PI/2+Math.PI/4; sg(Math.cos(a)*24,Math.sin(a)*24,Math.cos(a)*31,Math.sin(a)*31); } },
+  ()=>{ actx.save(); actx.translate(0,-15); actx.scale(0.55,0.55); cg(0,0,34);
+        for(let i=0;i<8;i++){ const a=i*Math.PI/4; sg(Math.cos(a)*7,Math.sin(a)*7,Math.cos(a)*32,Math.sin(a)*32);} actx.restore();
+        actx.save(); actx.translate(0,18); actx.scale(0.5,0.5);
+        cg(-17,-17,13,0.6*Math.PI,2.35*Math.PI); sg(-8,-8,20,20); actx.restore(); },
+  ()=>{ actx.save(); actx.translate(-2,-14); actx.scale(0.55,0.55);
+        poly([[-20,-4],[-20,22],[16,22],[16,-4]],true); cg(21,9,9,-Math.PI/2,Math.PI/2); actx.restore();
+        cg(4,18,10,0.5,Math.PI*1.6); },
+  ()=>{ actx.save(); actx.translate(0,-12); actx.scale(0.6,0.6); actx.beginPath(); actx.moveTo(0,-28);
+        actx.bezierCurveTo(19,-2,21,12,0,26); actx.bezierCurveTo(-21,12,-19,-2,0,-28); actx.stroke(); actx.restore();
+        for(const x of [-14,0,14]){ sg(x-5,14,x+5,22); sg(x+5,22,x-5,30); } },
+];
+PAINTERS.forEach((fn,idx)=>{
+  const cx=(idx%8)*128+64, cy=Math.floor(idx/8)*128+64;
+  for(const pass of [[16,0.35,7.5],[6,0.7,4.6],[0,1,2.6]]){
+    actx.save(); actx.translate(cx,cy);
+    actx.lineCap='round'; actx.lineJoin='round';
+    actx.strokeStyle=`rgba(255,238,216,${pass[1]})`;
+    actx.shadowColor='rgba(255,225,180,0.95)'; actx.shadowBlur=pass[0];
+    actx.lineWidth=pass[2];
+    fn(); actx.restore();
+  }
+});
+const signTex=new THREE.CanvasTexture(atlasC);
+signTex.colorSpace=THREE.SRGBColorSpace; signTex.anisotropy=4;
+signTex.generateMipmaps=true; signTex.minFilter=THREE.LinearMipmapLinearFilter;
+
+// ---------- sign placement ----------
+const cellOrder=[];
+{ const arr=Array.from({length:PAINTERS.length},(_,i)=>i);
+  for(let i=arr.length-1;i>0;i--){ const j=Math.floor(R()*(i+1)); const t=arr[i]; arr[i]=arr[j]; arr[j]=t; }
+  cellOrder.push(...arr); }
+let cellPtr=0;
+function nextCell(){ return cellPtr<cellOrder.length? cellOrder[cellPtr++] : cellOrder[ri(0,cellOrder.length-1)]; }
+function signTint(){ const t=R();
+  if(t<0.30) return scale(col(HEX.amb),rr(0.9,1.2)); if(t<0.55) return scale(col(HEX.teal),rr(0.9,1.2));
+  if(t<0.78) return scale(col(HEX.rose),rr(0.9,1.2)); if(t<0.92) return scale(col(HEX.ora),rr(0.95,1.25));
+  return scale(col(HEX.pap),rr(0.8,1.0)); }
+function signMode(){ const t=R(); return t<0.42?0 : t<0.62?1 : t<0.78?2 : t<0.9?3 : 4; }
+function placeSign(a){
+  const cell=a.cell!==undefined?a.cell:nextCell();
+  const mode=a.mode!==undefined?a.mode:signMode();
+  const tint=a.tint||signTint();
+  const phase=R();
+  const s=a.big? rr(4.5,6.5) : a.kind==='blade'? rr(1.7,2.6) : rr(2.0,3.0);
+  signList.push({x:a.x,y:a.y,z:a.z,yaw:a.yaw,sx:s,sy:s,cell,c:tint,mode,phase});
+  addInst('signback',a.x-Math.sin(a.yaw)*0.09,a.y,a.z-Math.cos(a.yaw)*0.09,a.yaw,s*1.12,s*1.12,1,col(0x0D0916));
+  glow(a.x+Math.sin(a.yaw)*0.4,a.y,a.z+Math.cos(a.yaw)*0.4,s*0.32,scale(tint,0.32),mode,phase,0);
+  const q=distToRoute(a.x,a.z);
+  if(q.d<13 && a.y<q.h+9.5){
+    const f=getFrame(q.i*STEP);
+    const latDot=(a.x-f.x)*f.lx+(a.z-f.z)*f.lz;
+    const lat=clamp(latDot*0.4,-3.4,3.4);
+    streak(f.x+f.lx*lat, f.y+0.09, f.z+f.lz*lat, Math.atan2(-f.tx,-f.tz),
+           rr(10,20)*(s/2.8), rr(1.4,2.2), scale(tint,0.8), mode, phase, 0.85);
+  }
+}
+for(const a of signAnchors){ if(chance(0.92)) placeSign(a); }
+// overhead route gantry where the climb begins
+{
+  const f=getFrame(D_CLIMB-20);
+  const yaw=Math.atan2(-f.tx,-f.tz);
+  for(const s of [-1,1]) strut('strutB',f.x+f.lx*s*5.4,f.y,f.z+f.lz*s*5.4, f.x+f.lx*s*5.4,f.y+6.1,f.z+f.lz*s*5.4,0.22,col(0x2A2038));
+  strut('strutB',f.x-f.lx*5.4,f.y+5.7,f.z-f.lz*5.4, f.x+f.lx*5.4,f.y+5.7,f.z+f.lz*5.4,0.2,col(0x2A2038));
+  placeSign({x:f.x-f.lx*1.4,y:f.y+4.6,z:f.z-f.lz*1.4,yaw,kind:'flush',cell:10,tint:scale(col(HEX.amb),1.1),mode:0});
+  placeSign({x:f.x+f.lx*1.9,y:f.y+4.6,z:f.z+f.lz*1.9,yaw,kind:'flush',cell:18,tint:scale(col(HEX.teal),1.0),mode:0});
+}
+
+// ---------- catenary cables ----------
+const cableSpans=[];
+for(let d=36;d<D_CLIMB-30;d+=rr(26,46)){
+  const f=getFrame(d);
+  if(f.y>2.5) continue;
+  if(!chance(0.7)) continue;
+  const jt=rr(-6,6);
+  const ax=f.x+f.tx*jt+f.lx*rr(9.6,11.5), az=f.z+f.tz*jt+f.lz*rr(9.6,11.5);
+  const bx=f.x+f.tx*jt-f.lx*rr(9.6,11.5), bz=f.z+f.tz*jt-f.lz*rr(9.6,11.5);
+  cableSpans.push({ax,ay:f.y+rr(7.5,12),az,bx,by:f.y+rr(7.5,12),bz,sag:rr(1.0,2.4),amp:rr(0.06,0.22),ph:R()*6.28});
+}
+for(let i=0;i<9;i++){
+  const x=rr(FLOOD.x0+20,FLOOD.x1-40), z=rr(FLOOD.z0+20,FLOOD.z1-30);
+  if(!corridorClear(x,z,9)) continue;
+  cableSpans.push({ax:x,ay:rr(3,6),az:z,bx:x+rr(-18,18),by:rr(2,5),bz:z+rr(-18,18),sag:rr(1.5,3),amp:rr(0.1,0.3),ph:R()*6.28});
+}
+{
+  const segs=14, P=[],T=[],PH=[],AM=[],PP=[];
+  for(const cs of cableSpans){
+    const px=cs.bz-cs.az, pz=-(cs.bx-cs.ax);
+    const pl=Math.hypot(px,pz)||1;
+    for(let i=0;i<segs;i++){
+      for(const t of [i/segs,(i+1)/segs]){
+        const x=cs.ax+(cs.bx-cs.ax)*t, z=cs.az+(cs.bz-cs.az)*t;
+        const y=cs.ay+(cs.by-cs.ay)*t - Math.sin(t*Math.PI)*cs.sag;
+        P.push(x,y,z); T.push(t); PH.push(cs.ph); AM.push(cs.amp); PP.push(px/pl,0,pz/pl);
+      }
+    }
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('aT',new THREE.Float32BufferAttribute(T,1));
+  g.setAttribute('aPh',new THREE.Float32BufferAttribute(PH,1));
+  g.setAttribute('aAm',new THREE.Float32BufferAttribute(AM,1));
+  g.setAttribute('aPerp',new THREE.Float32BufferAttribute(PP,3));
+  const m=shaderMat({
+    vs:`attribute float aT; attribute float aPh; attribute float aAm; attribute vec3 aPerp;
+    uniform float uTime; varying float vZ;
+    void main(){
+      vec3 p=position + aPerp*sin(uTime*0.9+aPh+aT*3.14159)*aAm*sin(aT*3.14159);
+      vec4 mv=viewMatrix*modelMatrix*vec4(p,1.0); vZ=-mv.z;
+      gl_Position=projectionMatrix*mv; }`,
+    fs:`${GLSL_FOG}
+    varying float vZ;
+    void main(){ vec3 c=mix(vec3(0.010,0.009,0.018),uFogColor*0.85,fogF(vZ));
+      gl_FragColor=vec4(c,1.0); }`,
+  });
+  scene.add(new THREE.LineSegments(g,m));
+}
+// street grates venting steam along the early route
+for(let d=50;d<D_TRAM+120;d+=rr(50,90)){
+  const f=getFrame(d); if(f.y>2.5) continue;
+  const s=chance(0.5)?-1:1;
+  steamList.push({x:f.x+f.lx*s*5.7,y:f.y+0.1,z:f.z+f.lz*s*5.7,sx:rr(1.8,3),sy:rr(2.5,4.5),phase:R()*10,a:rr(0.3,0.45)});
+}
+// mist over the flooded basin
+for(let i=0;i<7;i++){
+  steamList.push({x:rr(FLOOD.x0+20,FLOOD.x1-20),y:FLOOD.wy,z:rr(FLOOD.z0+10,FLOOD.z1-10),
+    sx:rr(8,16),sy:rr(2.5,4),phase:R()*10,a:rr(0.12,0.2)});
+}
+
+// ============================================================
+// THE RAINCATCHER — three stormwater ribs over a hung reservoir
+// ============================================================
+const waterMeshes=[];   // {x0,z0,x1,z1,y}
+const lmMetal=new THREE.MeshLambertMaterial({color:col(0x2C1F42)});
+const lmMetalD=new THREE.MeshLambertMaterial({color:col(0x1B1230)});
+let turbineRotor=null;
+{
+  const lmg=new THREE.Group(); scene.add(lmg);
+  const strC=col(0x241A38);
+  const ribCurves=[];
+  for(let k=0;k<3;k++){
+    const az=14+k*42+rr(-2,2);   // anchors stay inside the plaza blocks, clear of both vehicle streets
+    const ax=340+k*9+rr(-5,5);
+    const apY=118+k*10+rr(-3,8);
+    const pts=[ new THREE.Vector3(ax,2,az),
+                new THREE.Vector3(ax+34, apY*0.55, az+(56-az)*0.22),
+                new THREE.Vector3(430+rr(-6,6), apY, az+(56-az)*0.45),
+                new THREE.Vector3(512+k*9+rr(-3,6), 72-k*3+rr(-4,4), 56+(az-56)*0.30) ];
+    const crv=new THREE.CatmullRomCurve3(pts,false,'centripetal');
+    ribCurves.push(crv);
+    lmg.add(new THREE.Mesh(new THREE.TubeGeometry(crv,56,2.0,8,false),lmMetal));
+    const cPts=pts.map(p=>new THREE.Vector3(p.x, Math.max(0.6,p.y-4.4), p.z+(k===1?2.4:-2.4)));
+    const crv2=new THREE.CatmullRomCurve3(cPts,false,'centripetal');
+    lmg.add(new THREE.Mesh(new THREE.TubeGeometry(crv2,44,0.85,7,false),lmMetalD));
+    for(let i=0;i<=26;i++){
+      const t=i/26, a=crv.getPointAt(t), b=crv2.getPointAt(t);
+      strut('strutB',a.x,a.y,a.z,b.x,b.y,b.z,0.26,strC);
+      if(i<26){ const b2=crv2.getPointAt((i+1)/26); strut('strutB',a.x,a.y,a.z,b2.x,b2.y,b2.z,0.15,strC); }
+    }
+    // glowing drainage channel down the spine
+    for(let i=0;i<10;i++){
+      const a=crv.getPointAt(i/10), b=crv.getPointAt((i+1)/10);
+      const mid=a.clone().lerp(b,0.5), dv=b.clone().sub(a); const len=dv.length(); dv.normalize();
+      const q=new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0),dv);
+      for(const rot of [0,Math.PI/2]){
+        const q2=q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),rot));
+        flowList.push({x:mid.x,y:mid.y+2.15,z:mid.z,q:q2,sx:1.05,sy:len+0.5,c:scale(col(HEX.teal),0.8),
+                       speed:rr(1.2,1.9),lanes:3,alpha:0.5,phase:R(),rep:(len+0.5)/1.2});
+      }
+    }
+    // anchor block
+    const BB=chunkFor(ax,az);
+    box(BB,ax-4.6,0,az-4.6,ax+4.6,7,az+4.6,{c:col(0x241B36),kind:K_PANEL,inf:[2.6,2.2,0,rr(0,100)]});
+    box(BB,ax-3.1,7,az-3.1,ax+3.1,10.6,az+3.1,{c:col(0x1E1630)});
+    addInst('ladder',ax+4.7,0.2,az,Math.PI/2,1,2.2,1,strC);
+    glow(ax,11.4,az,1.2,scale(col(HEX.amb),1.0),0,RF(),0.6);
+    streak(ax+7,0.18,az,0,12,2.6,scale(col(HEX.amb),0.5),0,RF(),0.55);
+    const tip=crv.getPointAt(1);
+    glow(tip.x,tip.y+1.4,tip.z,1.6,scale(col(HEX.teal),1.35),2,RF()*0.5+k*0.33,1);
+    // marker lights along the rib silhouette so the landmark reads through fog
+    for(let mt=1;mt<=8;mt++){
+      const mp=crv.getPointAt(mt/9);
+      glow(mp.x,mp.y+2.3,mp.z,1.35,scale(col(HEX.teal),0.5),0,RF(),0.88);
+    }
+    if(k===0){ // scaffolding on the first anchor — the asymmetric working rib
+      for(let sc=0;sc<3;sc++){
+        const sy=2+sc*3;
+        strut('strutB',ax-6,sy,az-6,ax+6,sy,az-6,0.14,strC);
+        strut('strutB',ax-6,sy,az+6,ax+6,sy,az+6,0.14,strC);
+        strut('strutB',ax-6,0,az-6,ax-6,sy+3,az-6,0.14,strC);
+        strut('strutB',ax+6,0,az-6,ax+6,sy+3,az-6,0.14,strC);
+      }
+    }
+    if(k===1){ // maintenance platforms
+      for(const t of [0.38,0.62]){
+        const p=crv.getPointAt(t);
+        box(BB,p.x-2.6,p.y-3.6,p.z-2.2,p.x+2.6,p.y-3.2,p.z+2.2,{c:col(0x1E1630)});
+        addInst('rail',p.x,p.y-3.2,p.z-2.1,0,1.7,1,1,strC);
+        addInst('rail',p.x,p.y-3.2,p.z+2.1,0,1.7,1,1,strC);
+        addInst('ladder',p.x+2.4,p.y-3.4,p.z,0,1,1.1,1,strC);
+        glow(p.x,p.y-2.2,p.z,0.6,scale(col(HEX.amb),0.8),0,RF(),0.7);
+      }
+    }
+  }
+  // suspended reservoir
+  const bcx=458,bcz=66,by=50,bw=23,bd2=15;
+  box(FURN,bcx-bw,by,bcz-bd2,bcx+bw,by+1.3,bcz+bd2,{c:col(0x1B1230),bottom:true});
+  box(FURN,bcx-bw,by,bcz-bd2,bcx+bw,by+4.6,bcz-bd2+1,{c:col(0x241B36)});
+  box(FURN,bcx-bw,by,bcz+bd2-1,bcx+bw,by+4.6,bcz+bd2,{c:col(0x241B36)});
+  box(FURN,bcx-bw,by,bcz-bd2,bcx-bw+1,by+4.6,bcz+bd2,{c:col(0x241B36)});
+  box(FURN,bcx+bw-1,by,bcz-bd2,bcx+bw,by+4.6,bcz+bd2,{c:col(0x241B36)});
+  waterMeshes.push({x0:bcx-bw+1,z0:bcz-bd2+1,x1:bcx+bw-1,z1:bcz+bd2-1,y:by+3.6});
+  // rim walkway + rails
+  box(FURN,bcx-bw-1.1,by+4.0,bcz-bd2-1.1,bcx+bw+1.1,by+4.35,bcz-bd2,{c:col(0x18102A)});
+  box(FURN,bcx-bw-1.1,by+4.0,bcz+bd2,bcx+bw+1.1,by+4.35,bcz+bd2+1.1,{c:col(0x18102A)});
+  for(let x=bcx-bw+1;x<bcx+bw;x+=3) addInst('rail',x+1.5,by+4.35,bcz-bd2-0.9,0,1,1,1,strC);
+  for(let x=bcx-bw+1;x<bcx+bw;x+=3) addInst('rail',x+1.5,by+4.35,bcz+bd2+0.9,0,1,1,1,strC);
+  // suspension cables from the ribs
+  for(const crv of ribCurves){
+    for(const t of [0.55,0.7,0.85]){
+      const p=crv.getPointAt(t);
+      const hx=clamp(p.x,bcx-bw+2,bcx+bw-2), hz=clamp(p.z,bcz-bd2+1,bcz+bd2-1);
+      if(p.y>by+8) strut('strutB',p.x,p.y-1.6,p.z,hx,by+4.4,hz,0.13,col(0x120C20));
+    }
+  }
+  // penstocks with flange rings
+  for(const px of [449,467]){
+    addInst('pipe',px,-0.5,77,0,1.5,by+1,1.5,lmMetalD.color);
+    for(let fy=6;fy<by;fy+=9) addInst('pipe',px,fy,77,0,1.9,0.7,1.9,col(0x18102A));
+  }
+  // turbine house + rotor
+  {
+    const hg=new THREE.Group(); hg.position.set(462,43,70); scene.add(hg);
+    hg.add(new THREE.Mesh(new THREE.CylinderGeometry(3,3.4,6,10),lmMetal));
+    const rot=new THREE.Group(); rot.position.y=-4.4; hg.add(rot);
+    const bladeG=new THREE.BoxGeometry(0.5,5.2,1.3);
+    for(let i=0;i<6;i++){
+      const bm=new THREE.Mesh(bladeG,lmMetalD);
+      bm.position.set(Math.cos(i*Math.PI/3)*2.2,0,Math.sin(i*Math.PI/3)*2.2);
+      bm.rotation.y=-i*Math.PI/3+0.5; rot.add(bm);
+    }
+    turbineRotor=rot;
+    glow(462,38.5,70,1.4,scale(col(HEX.ora),1.1),1,RF(),0.7);
+    glow(462,47,70,0.8,scale(col(HEX.amb),0.8),0,RF(),0.7);
+  }
+  // basin corner beacons + destination aura
+  for(const [sx,sz] of [[-1,-1],[1,-1],[-1,1],[1,1]])
+    glow(bcx+sx*bw,by+5.4,bcz+sz*bd2,0.9,scale(col(HEX.amb),1.1),0,RF(),1);
+  // work lights under the tank — the pass-beneath moment must read
+  glow(bcx-14,by-1.6,bcz-6,1.1,scale(col(HEX.amb),0.9),0,RF(),0.5);
+  glow(bcx+9,by-1.6,bcz+4,1.1,scale(col(HEX.ora),0.8),2,RF(),0.5);
+  glow(bcx-2,by-1.6,bcz-12,0.9,scale(col(HEX.teal),0.75),0,RF(),0.5);
+  streak(448,34.15,62,0,16,2.8,scale(col(HEX.teal),0.7),0,RF(),0.8);
+  streak(462,34.1,56,Math.PI/2,18,2.6,scale(col(HEX.amb),0.65),2,RF(),0.75);
+  glow(436,122,56,7.5,scale(col(HEX.teal),0.42),1,RF(),1);
+  glow(462,104,62,5.4,scale(col(HEX.amb),0.34),1,RF(),1);
+  glow(500,80,60,4.0,scale(col(HEX.teal),0.3),1,RF(),1);
+  // authority glyph on the south tank face — read on approach
+  signList.push({x:bcx,y:by+2.4,z:bcz-bd2-0.25,yaw:Math.PI,sx:6.5,sy:6.5,cell:19,c:scale(col(HEX.teal),1.15),mode:0,phase:R()});
+  // main waterfall (north lip) + thin west spill
+  flow(470,(by+3)/2+1,bcz+bd2+0.4, 0,0,0, 9,by+3, scale(col(HEX.teal),0.85), 2.6, 22, 0.7, R());
+  flow(bcx-bw-0.4,(by+3)/2+8,74, 0,Math.PI/2,0, 2,by-14, scale(col(HEX.teal),0.7), 2.2, 6, 0.6, R());
+  steamList.push({x:470,y:1.2,z:88,sx:6,sy:5,phase:R()*10,a:0.5});
+  steamList.push({x:466,y:0.8,z:92,sx:4,sy:3.5,phase:R()*10,a:0.4});
+  // catch pool + overflow into the plaza canal
+  box(FURN,460,0,84,482,1.0,97,{c:col(0x1E1630)});
+  waterMeshes.push({x0:461,z0:85,x1:481,z1:96,y:0.55});
+  glow(470,2.2,90,1.2,scale(col(HEX.teal),0.9),1,RF(),0.4);
+}
+// plaza paving + canal
+{
+  const pav=col(0x141026);
+  for(let i=6;i<=9;i++) for(let j=0;j<=1;j++){
+    const b=blockInfo(i,j);
+    box(FURN,b.x0,0,b.z0,b.x1,0.14,b.z1,{c:vary(pav,0.12)});
+    if(chance(0.5)) box(FURN,b.x0+rr(2,20),0.14,b.z0+rr(2,20),b.x0+rr(22,36),1.0,b.z0+rr(22,36),{c:scale(pav,1.25)});
+  }
+  for(let i=6;i<=9;i++){
+    const b=blockInfo(i,1);
+    box(FURN,b.x0,0,82,b.x1,1.0,82.9,{c:col(0x1C1532)});
+    box(FURN,b.x0,0,87.1,b.x1,1.0,88,{c:col(0x1C1532)});
+    waterMeshes.push({x0:b.x0,z0:82.9,x1:b.x1,z1:87.1,y:0.45});
+    flow((b.x0+b.x1)/2,0.5,85, -Math.PI/2,-Math.PI/2,0, 4,b.x1-b.x0, scale(col(HEX.teal),0.55), 0.8, 5, 0.3, R());
+    addInst('rail',(b.x0+b.x1)/2,1.0,81.7,0,(b.x1-b.x0-2)/3,1,1,col(0x241A38));
+  }
+}
+
+// ============================================================
+// TRAM — one vehicle, an elevated loop threading two chapters
+// ============================================================
+let tramGrp=null, tramCurve=null, tramLen=0, tramCyc=null, tramPeriod=0, tramT0=0;
+{
+  const deckC=col(0x1D142E), railC2=col(0x120D20), strC=col(0x241A38);
+  const tpts=[[28,672],[504,672],[504,448],[84,448]];
+  // rounded path
+  const pl=[]; const RC=18;
+  for(let i=0;i<tpts.length;i++){
+    const P=new THREE.Vector3(tpts[i][0],0,tpts[i][1]);
+    if(i===0){ pl.push(P); continue; }
+    const Q=new THREE.Vector3(tpts[i-1][0],0,tpts[i-1][1]);
+    const dirIn=P.clone().sub(Q).normalize();
+    const segL=P.distanceTo(Q);
+    const prevExit=pl[pl.length-1];
+    const entry=P.clone().sub(dirIn.clone().multiplyScalar(Math.min(RC,segL*0.4)));
+    const spanL=entry.distanceTo(prevExit), steps=Math.max(1,Math.round(spanL/40));
+    for(let s2=1;s2<steps;s2++) pl.push(prevExit.clone().lerp(entry,s2/steps));
+    pl.push(entry);
+    if(i===tpts.length-1){ pl.push(P); break; }
+    const N2=new THREE.Vector3(tpts[i+1][0],0,tpts[i+1][1]);
+    const dirOut=N2.clone().sub(P).normalize();
+    const exit=P.clone().add(dirOut.clone().multiplyScalar(Math.min(RC,N2.distanceTo(P)*0.4)));
+    pl.push(entry.clone().add(exit).multiplyScalar(0.5).lerp(P,0.55));
+    pl.push(exit);
+  }
+  tramCurve=new THREE.CatmullRomCurve3(pl,false,'centripetal');
+  tramLen=tramCurve.getLength();
+  const M=Math.ceil(tramLen/1.6);
+  const dPts=tramCurve.getSpacedPoints(M);
+  const DY=8.55;
+  for(let i=0;i<M;i++){
+    const a=dPts[i], b=dPts[i+1];
+    let tx=b.x-a.x, tz=b.z-a.z; const l=Math.hypot(tx,tz)||1; tx/=l; tz/=l;
+    const lx=tz, lz=-tx;
+    // deck slab (top and underside — the underside is the squeeze ceiling)
+    face(FURN,[[a.x-lx*1.9,DY+0.4,a.z-lz*1.9],[b.x-lx*1.9,DY+0.4,b.z-lz*1.9],
+               [b.x+lx*1.9,DY+0.4,b.z+lz*1.9],[a.x+lx*1.9,DY+0.4,a.z+lz*1.9]],[0,1,0],deckC,null,0,null,null);
+    face(FURN,[[a.x-lx*1.9,DY-0.55,a.z-lz*1.9],[b.x-lx*1.9,DY-0.55,b.z-lz*1.9],
+               [b.x+lx*1.9,DY-0.55,b.z+lz*1.9],[a.x+lx*1.9,DY-0.55,a.z+lz*1.9]],[0,-1,0],scale(deckC,0.7),null,0,null,null);
+    for(const s of [-1,1]){
+      face(FURN,[[a.x+lx*s*1.9,DY-0.55,a.z+lz*s*1.9],[b.x+lx*s*1.9,DY-0.55,b.z+lz*s*1.9],
+                 [b.x+lx*s*1.9,DY+0.4,b.z+lz*s*1.9],[a.x+lx*s*1.9,DY+0.4,a.z+lz*s*1.9]],
+                 [lx*s,0,lz*s],scale(deckC,0.8),null,0,null,null);
+      // rails
+      face(FURN,[[a.x+lx*s*0.72,DY+0.4,a.z+lz*s*0.72],[b.x+lx*s*0.72,DY+0.4,b.z+lz*s*0.72],
+                 [b.x+lx*s*0.72,DY+0.52,b.z+lz*s*0.72],[a.x+lx*s*0.72,DY+0.52,a.z+lz*s*0.72]],
+                 [lx*s,0,lz*s],railC2,null,0,null,null);
+      face(FURN,[[a.x+lx*s*0.62,DY+0.52,a.z+lz*s*0.62],[b.x+lx*s*0.62,DY+0.52,b.z+lz*s*0.62],
+                 [b.x+lx*s*0.82,DY+0.52,b.z+lz*s*0.82],[a.x+lx*s*0.82,DY+0.52,a.z+lz*s*0.82]],
+                 [0,1,0],railC2,null,0,null,null);
+    }
+  }
+  // portal supports (skip near intersections so streets stay open)
+  for(let d=8;d<tramLen-8;d+=13.5){
+    const p=tramCurve.getPointAt(d/tramLen);
+    const tg=tramCurve.getTangentAt(d/tramLen);
+    const lx=tg.z, lz=-tg.x;
+    const ddx=Math.min(p.x%G,G-(p.x%G)), ddz=Math.min(p.z%G,G-(p.z%G));
+    const varying = Math.abs(tg.x)>Math.abs(tg.z)? ddx : ddz;
+    if(varying<9) continue;
+    for(const s of [-1,1]) strut('strutB',p.x+lx*s*6.3,0,p.z+lz*s*6.3, p.x+lx*s*6.3,8.15,p.z+lz*s*6.3, 0.5, strC);
+    if(Math.abs(tg.x)>Math.abs(tg.z))
+      box(FURN,p.x-0.5,7.75,p.z-6.3,p.x+0.5,8.45,p.z+6.3,{c:strC});
+    else
+      box(FURN,p.x-6.3,7.75,p.z-0.5,p.x+6.3,8.45,p.z+0.5,{c:strC});
+    if(chance(0.4)) glow(p.x,7.65,p.z,0.5,scale(col(HEX.teal),0.55),0,RF(),0);
+  }
+  // corner towers
+  for(const [cx2,cz2] of [[504,672],[504,448]]){
+    for(const [ox,oz] of [[-4.5,-4.5],[4.5,-4.5],[-4.5,4.5],[4.5,4.5]])
+      strut('strutB',cx2+ox,0,cz2+oz,cx2+ox*0.6,8.1,cz2+oz*0.6,0.55,strC);
+    box(FURN,cx2-5,7.9,cz2-5,cx2+5,8.5,cz2+5,{c:strC});
+  }
+  // stations
+  const stations=[[168,672,1],[448,448,-1]];
+  const stD=[];
+  for(const [sx2,sz2,sside] of stations){
+    // find distance along curve
+    let best=1e9,bd=0;
+    for(let d=0;d<tramLen;d+=2){ const p=tramCurve.getPointAt(d/tramLen);
+      const dd=(p.x-sx2)**2+(p.z-sz2)**2; if(dd<best){best=dd;bd=d;} }
+    stD.push(bd);
+    const pz2=sz2+sside*4.0;
+    box(FURN,sx2-9,8.45,pz2-1.7,sx2+9,8.85,pz2+1.7,{c:col(0x201738)});
+    for(const ex of [-8,8]) strut('strutB',sx2+ex,0,pz2,sx2+ex,8.45,pz2,0.4,strC);
+    // canopy
+    box(FURN,sx2-8.5,11.1,pz2-2.0,sx2+8.5,11.45,pz2+2.0,{c:col(0x18102A)});
+    for(const ex of [-7,0,7]) strut('strutB',sx2+ex,8.85,pz2+1.4,sx2+ex,11.1,pz2+1.4,0.14,strC);
+    for(const ex of [-5,0,5]) glow(sx2+ex,10.7,pz2,0.7,scale(col(HEX.pap),0.75),0,RF(),0);
+    // enclosed stair tower to the street
+    const B=chunkFor(sx2,sz2);
+    box(B,sx2+10,0,pz2-2.2,sx2+14,9.4,pz2+2.2,
+      {c:vary(col(0x1F1530),0.1),tint:scale(col(HEX.amb),0.85),inf:[2.0,2.4,0.65,rr(0,100)],kind:K_WIN});
+    signList.push({x:sx2-2,y:10.6,z:pz2+sside*2.05,yaw:sside>0?0:Math.PI,sx:1.9,sy:1.9,cell:9,
+                   c:scale(col(HEX.teal),1.1),mode:0,phase:R()});
+    glow(sx2,9.6,sz2,0.8,scale(col(HEX.teal),0.7),1,RF(),0.4);
+  }
+  // schedule: E0 -> S1 -> S2 -> E1 -> back, with dwells
+  const V=10.5, DW=5.5;
+  const stops=[0, Math.min(stD[0],stD[1]), Math.max(stD[0],stD[1]), tramLen];
+  const legs=[];
+  const seqF=[[0,1],[1,2],[2,3]], seqB=[[3,2],[2,1],[1,0]];
+  let tAcc=0;
+  for(const sq of [seqF,seqB]) for(const [a,b] of sq){
+    const d0=stops[a], d1=stops[b], dur=Math.abs(d1-d0)/V;
+    legs.push({t0:tAcc,t1:tAcc+dur,d0,d1}); tAcc+=dur;
+    legs.push({t0:tAcc,t1:tAcc+DW,d0:d1,d1:d1}); tAcc+=DW;
+  }
+  tramPeriod=tAcc;
+  tramCyc=(t)=>{
+    t=((t%tramPeriod)+tramPeriod)%tramPeriod;
+    for(const L2 of legs){ if(t<=L2.t1){ const f=L2.t1===L2.t0?1:(t-L2.t0)/(L2.t1-L2.t0);
+      const ff=f*f*(3-2*f);
+      return {d:L2.d0+(L2.d1-L2.d0)*ff, moving:L2.d0!==L2.d1, dir:Math.sign(L2.d1-L2.d0)||1}; } }
+    return {d:0,moving:false,dir:1};
+  };
+  // choose phase: tram crosses the opening vista during the held composition
+  const target=292; // curve distance where the tram sits over the opening street
+  for(let tScan=0;tScan<tramPeriod;tScan+=0.15){
+    const st=tramCyc(tScan);
+    if(st.moving&&st.dir<0&&Math.abs(st.d-target)<2){ tramT0=tScan-1.1; break; }
+  }
+  // tram vehicle
+  tramGrp=new THREE.Group(); scene.add(tramGrp);
+  const bodyM=new THREE.MeshLambertMaterial({color:col(0x2A1E44)});
+  const body=new THREE.Mesh(new THREE.BoxGeometry(15,2.5,2.4),bodyM); body.position.y=1.55; tramGrp.add(body);
+  const roof=new THREE.Mesh(new THREE.BoxGeometry(14.4,0.4,2.1),new THREE.MeshLambertMaterial({color:col(0x1B1230)}));
+  roof.position.y=2.95; tramGrp.add(roof);
+  const skirt=new THREE.Mesh(new THREE.BoxGeometry(14.2,0.7,2.0),new THREE.MeshLambertMaterial({color:col(0x120D20)}));
+  skirt.position.y=0.45; tramGrp.add(skirt);
+  // window band
+  const wc=document.createElement('canvas'); wc.width=512; wc.height=64;
+  const wx=wc.getContext('2d');
+  wx.fillStyle='#0d0a16'; wx.fillRect(0,0,512,64);
+  for(let i=0;i<10;i++){
+    const x=14+i*50; if(i===3||i===7) continue;   // door bays
+    wx.fillStyle=`rgba(247,223,174,${0.75+((i*37)%20)/80})`;
+    wx.fillRect(x,14,38,32);
+    if((i*53)%10<4){ wx.fillStyle='rgba(80,60,50,0.85)';
+      wx.beginPath(); wx.arc(x+12+((i*29)%14),40,7.5,Math.PI,2*Math.PI); wx.fill();
+      wx.fillRect(x+4+((i*29)%14),40,17,7); }
+  }
+  wx.fillStyle='#171126'; wx.fillRect(3*50+8,8,44,50); wx.fillRect(7*50+8,8,44,50);
+  const wt=new THREE.CanvasTexture(wc); wt.colorSpace=THREE.SRGBColorSpace;
+  const bandM=new THREE.MeshBasicMaterial({map:wt,color:new THREE.Color(2.4,2.0,1.5),fog:true});
+  for(const s of [-1,1]){
+    const band=new THREE.Mesh(new THREE.PlaneGeometry(14.6,1.5),bandM);
+    band.position.set(0,1.95,s*1.21); if(s<0) band.rotation.y=Math.PI; tramGrp.add(band);
+  }
+  // pantographs
+  for(const px of [-4.5,4.5]){
+    const pm=new THREE.Mesh(new THREE.BoxGeometry(0.1,1.1,0.1),lmMetalD);
+    pm.position.set(px,3.6,0); pm.rotation.z=px>0?0.5:-0.5; tramGrp.add(pm);
+  }
+}
+
+// ============================================================
+// GROUND VEHICLES + DRONES — sparse late-night ambient life
+// ============================================================
+const vehicles=[];
+{
+  function makeVehicle(kind){
+    const g=new THREE.Group(); scene.add(g);
+    const cA=vary(pick([col(0x2A2038),col(0x1E2434),col(0x2C1B28),col(0x232C34)]),0.15);
+    const m=new THREE.MeshLambertMaterial({color:cA});
+    if(kind==='van'){
+      const b=new THREE.Mesh(new THREE.BoxGeometry(2.1,1.9,4.8),m); b.position.y=1.15; g.add(b);
+      const cab=new THREE.Mesh(new THREE.BoxGeometry(2.0,0.9,1.4),new THREE.MeshLambertMaterial({color:scale(cA,0.8)}));
+      cab.position.set(0,0.85,-3.0); g.add(cab);
+    } else if(kind==='sweeper'){
+      const b=new THREE.Mesh(new THREE.BoxGeometry(2.2,2.1,3.4),m); b.position.y=1.25; g.add(b);
+      const brush=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,1.8,8),new THREE.MeshLambertMaterial({color:col(0x3A2A18)}));
+      brush.rotation.z=Math.PI/2; brush.position.set(0,0.4,2.0); g.add(brush);
+    } else {
+      const b=new THREE.Mesh(new THREE.BoxGeometry(1.9,1.0,4.3),m); b.position.y=0.75; g.add(b);
+      const top=new THREE.Mesh(new THREE.BoxGeometry(1.7,0.65,2.2),new THREE.MeshLambertMaterial({color:scale(cA,0.85)}));
+      top.position.set(0,1.55,0.2); g.add(top);
+    }
+    return g;
+  }
+  const defs=[
+    {axis:'z',fixed:109.8,a:-80,b:864,v:11,dir:1,kind:'van'},
+    {axis:'z',fixed:114.2,a:-80,b:864,v:9.5,dir:-1,kind:'car'},
+    {axis:'z',fixed:58.2,a:-80,b:864,v:8,dir:1,kind:'van'},
+    {axis:'x',fixed:2.2,a:-80,b:864,v:10,dir:1,kind:'car'},
+    {axis:'x',fixed:109.8,a:-80,b:864,v:6,dir:-1,kind:'sweeper'},
+    {axis:'x',fixed:226.2,a:-80,b:864,v:10.5,dir:1,kind:'car'},
+  ];
+  for(const d of defs){
+    const grp=makeVehicle(d.kind);
+    vehicles.push({...d, grp, phase:R()*(d.b-d.a), span:d.b-d.a});
+  }
+}
+const drones=[];
+{
+  for(let i=0;i<8;i++){
+    const g=new THREE.Group(); scene.add(g);
+    const b=new THREE.Mesh(new THREE.BoxGeometry(0.75,0.2,0.75),new THREE.MeshLambertMaterial({color:col(0x1A1428)}));
+    g.add(b);
+    for(const a2 of [0,Math.PI/2]){
+      const arm=new THREE.Mesh(new THREE.BoxGeometry(1.4,0.06,0.1),lmMetalD);
+      arm.rotation.y=a2; g.add(arm);
+    }
+    const pad=roofPads.length? roofPads[i%roofPads.length] : {x:392,y:30,z:392};
+    drones.push({ grp:g,
+      cx: i<3? LM.x+rr(-40,40) : pad.x+rr(-50,50),
+      cz: i<3? LM.z+rr(-20,60) : pad.z+rr(-50,50),
+      rx: rr(30,90), rz: rr(30,90), h: i<3? rr(75,100) : rr(46,70),
+      w: rr(0.05,0.12)*(chance(0.5)?1:-1), ph: R()*6.28, bob: rr(2,5) });
+  }
+}
+
+// ============================================================
+// FINALIZE STATIC WORLD GEOMETRY
+// ============================================================
+for(const B of CHUNKS){ if(B.vc===0) continue;
+  const m=new THREE.Mesh(buildGeom(B),facadeMat); scene.add(m); }
+scene.add(new THREE.Mesh(buildGeom(FURN), new THREE.MeshLambertMaterial({vertexColors:true})));
+{
+  const poolMat=new THREE.MeshLambertMaterial({color:0xffffff});
+  for(const name in POOLS){
+    const P=POOLS[name]; const n=P.mats.length; if(!n) continue;
+    const im=new THREE.InstancedMesh(P.geom,poolMat,n);
+    for(let i=0;i<n;i++){ im.setMatrixAt(i,P.mats[i]); im.setColorAt(i,P.cols[i]); }
+    im.instanceMatrix.needsUpdate=true; if(im.instanceColor) im.instanceColor.needsUpdate=true;
+    scene.add(im);
+  }
+}
+
+// ============================================================
+// EFFECT MESHES — glow sprites, streak reflections, signs, flows, steam
+// ============================================================
+const planeGeo=new THREE.PlaneGeometry(1,1);
+function instGeo(){ const g=new THREE.InstancedBufferGeometry();
+  g.index=planeGeo.index;
+  g.setAttribute('position',planeGeo.getAttribute('position'));
+  g.setAttribute('uv',planeGeo.getAttribute('uv'));
+  return g; }
+// --- glow sprites ---
+const glowMat=shaderMat({
+  vs:`
+  attribute vec3 iPos; attribute float iSize; attribute vec3 iCol; attribute float iMode; attribute float iPhase; attribute float iFogR;
+  varying vec2 vUv; varying vec3 vC; varying vec4 vP; varying float vZ;
+  void main(){ vUv=uv; vC=iCol; vP=vec4(iMode,iPhase,iFogR,iSize);
+    vec3 right=vec3(viewMatrix[0][0],viewMatrix[1][0],viewMatrix[2][0]);
+    vec3 up2=vec3(viewMatrix[0][1],viewMatrix[1][1],viewMatrix[2][1]);
+    vec3 p=iPos+(right*position.x+up2*position.y)*iSize*2.6;
+    vec4 mv=viewMatrix*vec4(p,1.0); vZ=-mv.z;
+    gl_Position=projectionMatrix*mv; }`,
+  fs:`${GLSL_H}${GLSL_FOG}
+  uniform float uTime;
+  varying vec2 vUv; varying vec3 vC; varying vec4 vP; varying float vZ;
+  void main(){
+    float r=length(vUv-0.5)*2.0;
+    float core=exp(-r*r*12.0), halo=exp(-r*2.6)*0.55;
+    float B=flick(vP.x,vP.y,uTime);
+    float f=fogF(vZ);
+    float att=mix(pow(1.0-f,1.5),pow(1.0-f,0.30),vP.z);
+    vec3 c=vC*(core*1.7+halo)*B*att;
+    gl_FragColor=vec4(c,1.0);
+  }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.DoubleSide,
+});
+function buildGlowMesh(list,dynamic){
+  const n=list.length; if(!n) return null;
+  const g=instGeo(); g.instanceCount=n;
+  const pos=new Float32Array(n*3), sz=new Float32Array(n), cc=new Float32Array(n*3),
+        md=new Float32Array(n), ph=new Float32Array(n), fr=new Float32Array(n);
+  list.forEach((e,i)=>{ pos.set([e.x,e.y,e.z],i*3); sz[i]=e.size; cc.set([e.c.r,e.c.g,e.c.b],i*3);
+    md[i]=e.mode; ph[i]=e.phase; fr[i]=e.fogR; });
+  const pa=new THREE.InstancedBufferAttribute(pos,3); if(dynamic) pa.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('iPos',pa);
+  g.setAttribute('iSize',new THREE.InstancedBufferAttribute(sz,1));
+  g.setAttribute('iCol',new THREE.InstancedBufferAttribute(cc,3));
+  g.setAttribute('iMode',new THREE.InstancedBufferAttribute(md,1));
+  g.setAttribute('iPhase',new THREE.InstancedBufferAttribute(ph,1));
+  g.setAttribute('iFogR',new THREE.InstancedBufferAttribute(fr,1));
+  const m=new THREE.Mesh(g,glowMat); m.frustumCulled=false; scene.add(m);
+  return {mesh:m, pos:pa};
+}
+buildGlowMesh(glowList,false);
+// dynamic glows: tram head/tail, 6 vehicles x4, 8 drones x2
+const dynGlowList=[];
+dynGlowList.push({x:0,y:-99,z:0,size:1.0,c:scale(col(HEX.pap),1.2),mode:0,phase:0.1,fogR:0.4});
+dynGlowList.push({x:0,y:-99,z:0,size:0.7,c:scale(col(HEX.rose),1.0),mode:0,phase:0.2,fogR:0.4});
+for(let i=0;i<6;i++){
+  dynGlowList.push({x:0,y:-99,z:0,size:0.55,c:scale(col(HEX.pap),1.1),mode:0,phase:0.1*i,fogR:0});
+  dynGlowList.push({x:0,y:-99,z:0,size:0.55,c:scale(col(HEX.pap),1.1),mode:0,phase:0.1*i,fogR:0});
+  dynGlowList.push({x:0,y:-99,z:0,size:0.4,c:scale(col(HEX.rose),0.9),mode:0,phase:0.1*i,fogR:0});
+  dynGlowList.push({x:0,y:-99,z:0,size:0.4,c:scale(col(HEX.rose),0.9),mode:0,phase:0.1*i,fogR:0});
+}
+for(let i=0;i<8;i++){
+  dynGlowList.push({x:0,y:-99,z:0,size:0.38,c:scale(col(HEX.teal),1.3),mode:3,phase:0.13*i,fogR:0.5});
+  dynGlowList.push({x:0,y:-99,z:0,size:0.3,c:scale(col(HEX.amb),1.0),mode:0,phase:0.13*i,fogR:0.5});
+}
+const dynGlow=buildGlowMesh(dynGlowList,true);
+// --- road streaks (fake wet reflections) ---
+const streakMat=shaderMat({
+  vs:`
+  attribute vec3 iPos; attribute float iYaw; attribute vec2 iDim; attribute vec3 iCol; attribute vec3 iFx;
+  varying vec2 vUv; varying vec3 vC; varying vec3 vFx; varying float vZ;
+  void main(){ vUv=uv; vC=iCol; vFx=iFx;
+    vec3 dir=vec3(sin(iYaw),0.0,cos(iYaw));
+    vec3 perp=vec3(dir.z,0.0,-dir.x);
+    vec3 p=iPos + dir*position.y*iDim.x + perp*position.x*iDim.y;
+    vec4 mv=viewMatrix*vec4(p,1.0); vZ=-mv.z;
+    gl_Position=projectionMatrix*mv; }`,
+  fs:`${GLSL_H}${GLSL_FOG}
+  uniform float uTime;
+  varying vec2 vUv; varying vec3 vC; varying vec3 vFx; varying float vZ;
+  void main(){
+    float along=abs(vUv.y*2.0-1.0);
+    float wob=n2(vec2(vUv.x*3.0,vUv.y*26.0-uTime*1.6))*0.55+n2(vec2(vUv.x*7.0,vUv.y*52.0+uTime*1.1))*0.45;
+    float lat=1.0-abs(vUv.x*2.0-1.0);
+    lat=pow(lat,2.0+2.2*wob);
+    float fal=pow(max(1.0-along,0.0),1.7);
+    float B=flick(vFx.x,vFx.y,uTime);
+    float f=fogF(vZ);
+    vec3 c=vC*vFx.z*lat*fal*(0.30+0.70*B)*(0.65+0.7*wob)*pow(1.0-f,1.2);
+    gl_FragColor=vec4(c,1.0);
+  }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.DoubleSide,
+});
+function buildStreakMesh(list,dynamic){
+  const n=list.length; if(!n) return null;
+  const g=instGeo(); g.instanceCount=n;
+  const pos=new Float32Array(n*3), yaw=new Float32Array(n), dim=new Float32Array(n*2),
+        cc=new Float32Array(n*3), fx=new Float32Array(n*3);
+  list.forEach((e,i)=>{ pos.set([e.x,e.y,e.z],i*3); yaw[i]=e.yaw; dim.set([e.len,e.wid],i*2);
+    cc.set([e.c.r,e.c.g,e.c.b],i*3); fx.set([e.mode,e.phase,e.inten],i*3); });
+  const pa=new THREE.InstancedBufferAttribute(pos,3); if(dynamic) pa.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('iPos',pa);
+  g.setAttribute('iYaw',new THREE.InstancedBufferAttribute(yaw,1));
+  g.setAttribute('iDim',new THREE.InstancedBufferAttribute(dim,2));
+  g.setAttribute('iCol',new THREE.InstancedBufferAttribute(cc,3));
+  g.setAttribute('iFx',new THREE.InstancedBufferAttribute(fx,3));
+  const m=new THREE.Mesh(g,streakMat); m.frustumCulled=false; scene.add(m);
+  return {mesh:m,pos:pa};
+}
+buildStreakMesh(streakList,false);
+const dynStreakList=[];
+for(let i=0;i<6;i++){
+  const v=vehicles[i];
+  dynStreakList.push({x:0,y:-99,z:0,yaw:v.axis==='x'?Math.PI/2:0,len:13,wid:2.3,
+    c:scale(col(HEX.pap),0.55),mode:0,phase:0.15*i,inten:0.5});
+}
+const dynStreak=buildStreakMesh(dynStreakList,true);
+// --- neon signs ---
+const signMat=shaderMat({
+  uniforms:{uAtlas:{value:signTex}},
+  vs:`
+  attribute vec3 iPos; attribute float iYaw; attribute vec2 iScale; attribute vec2 iCell; attribute vec3 iCol; attribute vec2 iFx;
+  varying vec2 vUv; varying vec3 vC; varying vec2 vFx; varying float vZ;
+  void main(){
+    vUv=(iCell+vec2(0.04)+uv*0.92)/8.0;
+    vC=iCol; vFx=iFx;
+    vec3 right=vec3(cos(iYaw),0.0,-sin(iYaw));
+    vec3 p=iPos + right*position.x*iScale.x + vec3(0.0,1.0,0.0)*position.y*iScale.y;
+    vec4 mv=viewMatrix*vec4(p,1.0); vZ=-mv.z;
+    gl_Position=projectionMatrix*mv; }`,
+  fs:`${GLSL_H}${GLSL_FOG}
+  uniform float uTime; uniform sampler2D uAtlas;
+  varying vec2 vUv; varying vec3 vC; varying vec2 vFx; varying float vZ;
+  void main(){
+    vec3 tex=texture2D(uAtlas,vUv).rgb;
+    float B=flick(vFx.x,vFx.y,uTime);
+    float f=fogF(vZ);
+    vec3 c=vC*tex*(0.18+1.85*B)*pow(1.0-f,0.85);
+    c*=0.35+0.65*smoothstep(5.0,26.0,vZ);   // close passage: neon mellows instead of blowing out
+    gl_FragColor=vec4(c,1.0);
+  }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.DoubleSide,
+});
+{
+  const n=signList.length;
+  const g=instGeo(); g.instanceCount=n;
+  const pos=new Float32Array(n*3), yaw=new Float32Array(n), sc=new Float32Array(n*2),
+        cell=new Float32Array(n*2), cc=new Float32Array(n*3), fx=new Float32Array(n*2);
+  signList.forEach((e,i)=>{ pos.set([e.x,e.y,e.z],i*3); yaw[i]=e.yaw; sc.set([e.sx,e.sy],i*2);
+    cell.set([e.cell%8,7-Math.floor(e.cell/8)],i*2); cc.set([e.c.r,e.c.g,e.c.b],i*3);
+    fx.set([e.mode,e.phase],i*2); });
+  g.setAttribute('iPos',new THREE.InstancedBufferAttribute(pos,3));
+  g.setAttribute('iYaw',new THREE.InstancedBufferAttribute(yaw,1));
+  g.setAttribute('iScale',new THREE.InstancedBufferAttribute(sc,2));
+  g.setAttribute('iCell',new THREE.InstancedBufferAttribute(cell,2));
+  g.setAttribute('iCol',new THREE.InstancedBufferAttribute(cc,3));
+  g.setAttribute('iFx',new THREE.InstancedBufferAttribute(fx,2));
+  const m=new THREE.Mesh(g,signMat); m.frustumCulled=false; scene.add(m);
+}
+// --- flows (gutters, drips, waterfalls, channels) ---
+const flowMat=shaderMat({
+  vs:`
+  attribute vec3 iPos; attribute vec4 iQ; attribute vec2 iS; attribute vec3 iCol; attribute vec4 iPar; attribute float iPh;
+  varying vec2 vUv; varying vec3 vC; varying vec4 vPar; varying float vPh; varying float vZ;
+  vec3 qrot(vec4 q, vec3 v){ return v + 2.0*cross(q.xyz, cross(q.xyz,v)+q.w*v); }
+  void main(){ vUv=uv; vC=iCol; vPar=iPar; vPh=iPh;
+    vec3 p=iPos + qrot(iQ, vec3(position.x*iS.x, position.y*iS.y, 0.0));
+    vec4 mv=viewMatrix*vec4(p,1.0); vZ=-mv.z;
+    gl_Position=projectionMatrix*mv; }`,
+  fs:`${GLSL_H}${GLSL_FOG}
+  uniform float uTime;
+  varying vec2 vUv; varying vec3 vC; varying vec4 vPar; varying float vPh; varying float vZ;
+  void main(){
+    float lanes=vPar.y;
+    float lane=floor(vUv.x*lanes);
+    float ln=h11(lane*7.7+vPh*31.0);
+    float act=step(0.30,ln);
+    float vv=fract(vUv.y*vPar.w + uTime*vPar.x + ln*7.0);
+    float dash=smoothstep(0.0,0.12,vv)*(1.0-smoothstep(0.42,0.85,vv));
+    float edge=1.0-abs(vUv.x*2.0-1.0);
+    float a=dash*act*edge*vPar.z;
+    float f=fogF(vZ);
+    vec3 c=vC*(0.5+0.9*dash)*a*pow(1.0-f,0.7);
+    gl_FragColor=vec4(c,1.0);
+  }`,
+  transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.DoubleSide,
+});
+{
+  const n=flowList.length;
+  const g=instGeo(); g.instanceCount=n;
+  const pos=new Float32Array(n*3), q=new Float32Array(n*4), sc=new Float32Array(n*2),
+        cc=new Float32Array(n*3), par=new Float32Array(n*4), ph=new Float32Array(n);
+  flowList.forEach((e,i)=>{ pos.set([e.x,e.y,e.z],i*3); q.set([e.q.x,e.q.y,e.q.z,e.q.w],i*4);
+    sc.set([e.sx,e.sy],i*2); cc.set([e.c.r,e.c.g,e.c.b],i*3);
+    par.set([e.speed,e.lanes,e.alpha,e.rep],i*4); ph[i]=e.phase; });
+  g.setAttribute('iPos',new THREE.InstancedBufferAttribute(pos,3));
+  g.setAttribute('iQ',new THREE.InstancedBufferAttribute(q,4));
+  g.setAttribute('iS',new THREE.InstancedBufferAttribute(sc,2));
+  g.setAttribute('iCol',new THREE.InstancedBufferAttribute(cc,3));
+  g.setAttribute('iPar',new THREE.InstancedBufferAttribute(par,4));
+  g.setAttribute('iPh',new THREE.InstancedBufferAttribute(ph,1));
+  const m=new THREE.Mesh(g,flowMat); m.frustumCulled=false; scene.add(m);
+}
+// --- steam / mist ---
+const noiseC=document.createElement('canvas'); noiseC.width=noiseC.height=128;
+{
+  const nx=noiseC.getContext('2d'); const id=nx.createImageData(128,128);
+  for(let i=0;i<128*128;i++){ const v=Math.floor(R()*255);
+    id.data[i*4]=v; id.data[i*4+1]=v; id.data[i*4+2]=v; id.data[i*4+3]=255; }
+  nx.putImageData(id,0,0);
+}
+const noiseTex=new THREE.CanvasTexture(noiseC);
+noiseTex.wrapS=noiseTex.wrapT=THREE.RepeatWrapping;
+const steamMat=shaderMat({
+  uniforms:{uNoise:{value:noiseTex}},
+  vs:`
+  attribute vec3 iPos; attribute vec2 iS; attribute float iPh; attribute float iA;
+  uniform vec3 uCam;
+  varying vec2 vUv; varying vec2 vP; varying float vZ;
+  void main(){ vUv=uv; vP=vec2(iPh,iA);
+    vec3 toCam=uCam-iPos;
+    vec3 right=normalize(vec3(toCam.z,0.0,-toCam.x));
+    vec3 p=iPos + right*position.x*iS.x + vec3(0.0,1.0,0.0)*(position.y+0.5)*iS.y;
+    vec4 mv=viewMatrix*vec4(p,1.0); vZ=-mv.z;
+    gl_Position=projectionMatrix*mv; }`,
+  fs:`${GLSL_FOG}
+  uniform float uTime; uniform sampler2D uNoise;
+  varying vec2 vUv; varying vec2 vP; varying float vZ;
+  void main(){
+    float t=uTime*0.05+vP.x;
+    float a1=texture2D(uNoise,vUv*vec2(0.9,0.5)+vec2(t*0.4,-t*1.2)).r;
+    float a2=texture2D(uNoise,vUv*vec2(1.7,0.8)+vec2(-t*0.3,-t*0.9)).r;
+    float mask=sin(3.14159*vUv.x)*smoothstep(0.0,0.22,vUv.y)*(1.0-smoothstep(0.5,1.0,vUv.y));
+    float a=a1*a2*mask*vP.y*1.6;
+    float f=fogF(vZ);
+    vec3 c=vec3(0.055,0.045,0.075)*1.5;
+    gl_FragColor=vec4(mix(c,uFogColor,f), a*(1.0-f*0.8));
+  }`,
+  transparent:true, depthWrite:false, blending:THREE.NormalBlending, side:THREE.DoubleSide,
+});
+{
+  const n=steamList.length;
+  const g=instGeo(); g.instanceCount=n;
+  const pos=new Float32Array(n*3), sc=new Float32Array(n*2), ph=new Float32Array(n), aa=new Float32Array(n);
+  steamList.forEach((e,i)=>{ pos.set([e.x,e.y,e.z],i*3); sc.set([e.sx,e.sy],i*2); ph[i]=e.phase; aa[i]=e.a; });
+  g.setAttribute('iPos',new THREE.InstancedBufferAttribute(pos,3));
+  g.setAttribute('iS',new THREE.InstancedBufferAttribute(sc,2));
+  g.setAttribute('iPh',new THREE.InstancedBufferAttribute(ph,1));
+  g.setAttribute('iA',new THREE.InstancedBufferAttribute(aa,1));
+  const m=new THREE.Mesh(g,steamMat); m.frustumCulled=false; m.renderOrder=4; scene.add(m);
+}
+
+// ============================================================
+// RAIN — 4600 wind-slanted streaks + 340 impact ripples
+// ============================================================
+const RAIN_N=4600;
+{
+  const pos=new Float32Array(RAIN_N*2*3), end=new Float32Array(RAIN_N*2), rnd=new Float32Array(RAIN_N*2);
+  for(let i=0;i<RAIN_N;i++){
+    const sx=R()*64, sy=R()*44, sz=R()*64, rv=R();
+    for(let e=0;e<2;e++){
+      pos.set([sx,sy,sz],(i*2+e)*3); end[i*2+e]=e; rnd[i*2+e]=rv;
+    }
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('aEnd',new THREE.Float32BufferAttribute(end,1));
+  g.setAttribute('aRnd',new THREE.Float32BufferAttribute(rnd,1));
+  const m=shaderMat({
+    uniforms:{uWind:{value:new THREE.Vector3(4.2,0,1.5)}},
+    vs:`
+    attribute float aEnd; attribute float aRnd;
+    uniform float uTime; uniform vec3 uCam; uniform vec3 uWind;
+    varying float vA; varying float vZ;
+    void main(){
+      float fall=21.0+9.0*aRnd;
+      vec3 vel=vec3(uWind.x*(0.7+0.6*aRnd),-fall,uWind.z*(0.7+0.6*aRnd));
+      vec3 box=vec3(64.0,44.0,64.0);
+      vec3 p=fract((position+vel*uTime)/box)*box;
+      p+=uCam-box*0.5;
+      p+=normalize(vel)*aEnd*(0.45+0.55*aRnd);
+      vec4 mv=viewMatrix*vec4(p,1.0); vZ=-mv.z;
+      vA=1.0-aEnd*0.75;
+      gl_Position=projectionMatrix*mv; }`,
+    fs:`
+    varying float vA; varying float vZ;
+    void main(){
+      float a=vA*0.22*(1.0-smoothstep(28.0,50.0,vZ))*smoothstep(0.8,3.2,vZ);
+      gl_FragColor=vec4(vec3(0.40,0.48,0.56)*a,1.0); }`,
+    transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
+  });
+  const ln=new THREE.LineSegments(g,m); ln.frustumCulled=false; ln.renderOrder=5; scene.add(ln);
+}
+const SPLASH_N=340;
+let splashPos, splashD, splashLat, splashFixed;
+{
+  splashD=new Float32Array(SPLASH_N); splashLat=new Float32Array(SPLASH_N); splashFixed=new Uint8Array(SPLASH_N);
+  const g=instGeo(); g.instanceCount=SPLASH_N;
+  const pos=new Float32Array(SPLASH_N*3), ph=new Float32Array(SPLASH_N), sc2=new Float32Array(SPLASH_N), rn=new Float32Array(SPLASH_N);
+  for(let i=0;i<SPLASH_N;i++){
+    ph[i]=R(); sc2[i]=rr(0.28,0.55); rn[i]=R();
+    if(i<40){ // fixed drips near the early route
+      splashFixed[i]=1;
+      const d=rr(10,D_CLIMB); const f=getFrame(d);
+      const st=chance(0.5)?-1:1;
+      const px=f.x+f.lx*st*rr(4.9,6.4), pz=f.z+f.lz*st*rr(4.9,6.4);
+      pos.set([px,f.y+0.06,pz],i*3);
+    } else {
+      splashD[i]=startD+rr(-16,70); splashLat[i]=rr(-4.4,4.4);
+    }
+  }
+  g.setAttribute('iPos',(()=>{ const a=new THREE.InstancedBufferAttribute(pos,3); a.setUsage(THREE.DynamicDrawUsage); return a; })());
+  g.setAttribute('iPh',new THREE.InstancedBufferAttribute(ph,1));
+  g.setAttribute('iSc',new THREE.InstancedBufferAttribute(sc2,1));
+  g.setAttribute('iRn',new THREE.InstancedBufferAttribute(rn,1));
+  const m=shaderMat({
+    vs:`
+    attribute vec3 iPos; attribute float iPh; attribute float iSc; attribute float iRn;
+    uniform float uTime;
+    varying vec2 vUv; varying float vL; varying float vZ;
+    void main(){ vUv=uv;
+      float life=fract(uTime*(0.9+0.6*iRn)+iPh); vL=life;
+      float s=iSc*(0.25+1.05*life);
+      vec3 p=iPos+vec3(position.x*s,0.015,-position.y*s);
+      vec4 mv=viewMatrix*vec4(p,1.0); vZ=-mv.z;
+      gl_Position=projectionMatrix*mv; }`,
+    fs:`
+    varying vec2 vUv; varying float vL; varying float vZ;
+    void main(){
+      float r=length(vUv-0.5)*2.0;
+      float rr2=vL*0.92;
+      float ring=smoothstep(rr2-0.30,rr2,r)*(1.0-smoothstep(rr2,rr2+0.10,r));
+      float a=ring*(1.0-vL)*(1.0-vL)*0.32;
+      a+=(1.0-smoothstep(0.0,0.18,r))*max(0.0,0.3-vL)*0.8;
+      a*=1.0-smoothstep(18.0,32.0,vZ);
+      gl_FragColor=vec4(vec3(0.42,0.52,0.60)*a,1.0); }`,
+    transparent:true, depthWrite:false, blending:THREE.AdditiveBlending, side:THREE.DoubleSide,
+  });
+  const mesh=new THREE.Mesh(g,m); mesh.frustumCulled=false; mesh.renderOrder=5; scene.add(mesh);
+  splashPos=g.getAttribute('iPos');
+}
+
+// ============================================================
+// WATER — flooded basin, reservoir, canals
+// ============================================================
+const waterMat=shaderMat({
+  uniforms:{
+    uGlowPos:{value:[new THREE.Vector3(470,88,6),new THREE.Vector3(503,55,8),new THREE.Vector3(672,240,5),
+                     new THREE.Vector3(672,340,5),new THREE.Vector3(620,200,7),new THREE.Vector3(448,90,9)]},
+    uGlowCol:{value:[scale(col(HEX.amb),0.5),scale(col(HEX.teal),0.55),scale(col(HEX.amb),0.45),
+                     scale(col(HEX.amb),0.45),scale(col(HEX.rose),0.5),scale(col(HEX.teal),0.4)]},
+  },
+  vs:`varying vec3 vW; varying float vZ;
+  void main(){ vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+    vec4 mv=viewMatrix*wp; vZ=-mv.z; gl_Position=projectionMatrix*mv; }`,
+  fs:`${GLSL_H}${GLSL_FOG}
+  uniform float uTime; uniform vec3 uCam;
+  uniform vec3 uGlowPos[6]; uniform vec3 uGlowCol[6];
+  varying vec3 vW; varying float vZ;
+  void main(){
+    vec2 p=vW.xz;
+    vec3 V=normalize(uCam-vW);
+    float fr=pow(1.0-max(V.y,0.02),2.6);
+    vec3 c=vec3(0.005,0.006,0.011)+uFogColor*fr*0.9;
+    float sp=smoothstep(0.74,0.97,n2(p*vec2(2.6,1.1)+vec2(0.0,uTime*0.5)));
+    c+=sp*fr*vec3(0.07,0.09,0.12);
+    float rip=n2(p*0.35+vec2(uTime*0.04,uTime*0.03));
+    c+=fr*rip*vec3(0.02,0.025,0.04);
+    for(int i=0;i<6;i++){
+      vec3 g=uGlowPos[i]; vec3 gc=uGlowCol[i];
+      float dx=p.x-g.x, dz=p.y-g.y;
+      float band=exp(-dx*dx/(g.z*g.z));
+      float len=exp(-abs(dz)*0.014);
+      float shim=0.6+0.4*n2(vec2(p.y*0.35-uTime*0.8,p.x*0.2));
+      c+=gc*band*len*shim*fr;
+    }
+    c=mix(c,uFogColor,fogF(vZ));
+    gl_FragColor=vec4(c,1.0);
+  }`,
+});
+{
+  const g0=new THREE.PlaneGeometry(1,1); g0.rotateX(-Math.PI/2);
+  // main flooded basin, reaching past the city edge into the fog
+  const main=new THREE.Mesh(g0,waterMat);
+  main.position.set((FLOOD.x0+960)/2,FLOOD.wy,(60+470)/2);
+  main.scale.set(960-FLOOD.x0,1,470-60); scene.add(main);
+  for(const w of waterMeshes){
+    const m=new THREE.Mesh(g0,waterMat);
+    m.position.set((w.x0+w.x1)/2,w.y,(w.z0+w.z1)/2);
+    m.scale.set(w.x1-w.x0,1,w.z1-w.z0); scene.add(m);
+  }
+}
+
+// ============================================================
+// SKY DOME
+// ============================================================
+const skyMesh=(()=> {
+  const m=shaderMat({
+    vs:`varying vec3 vD; void main(){ vD=position;
+      vec4 mv=viewMatrix*vec4(position+cameraPosition,1.0);
+      gl_Position=projectionMatrix*mv; gl_Position.z=gl_Position.w*0.99999; }`,
+    fs:`${GLSL_H}
+    uniform float uTime; uniform float uLmAz;
+    varying vec3 vD;
+    void main(){
+      vec3 d=normalize(vD);
+      float h=clamp(d.y,-0.08,1.0);
+      vec3 zen=vec3(0.004,0.003,0.010);
+      vec3 hor=vec3(0.030,0.016,0.048);
+      vec3 c=mix(hor,zen,smoothstep(0.0,0.5,h));
+      float az=atan(d.z,d.x);
+      float g=n2(vec2(az*2.2,1.7));
+      vec3 gl2=mix(vec3(0.10,0.16,0.19),vec3(0.20,0.09,0.13),n2(vec2(az*1.3,7.7)));
+      c+=gl2*0.16*pow(1.0-h,3.5)*(0.5+g);
+      float ad=abs(atan(sin(az-uLmAz),cos(az-uLmAz)));
+      c+=vec3(0.09,0.15,0.17)*exp(-ad*ad*4.5)*pow(1.0-h,2.2)*0.42;
+      float cl=n2(vec2(az*3.0+uTime*0.008,d.y*6.0))*n2(vec2(az*7.0-uTime*0.005,d.y*13.0));
+      c=mix(c,vec3(0.016,0.010,0.024),smoothstep(0.42,0.8,cl)*smoothstep(0.04,0.35,h)*0.75);
+      gl_FragColor=vec4(c,1.0);
+    }`,
+    uniforms:{uLmAz:{value:0}},
+    side:THREE.BackSide, depthWrite:false,
+  });
+  const mesh=new THREE.Mesh(new THREE.SphereGeometry(1250,24,12),m);
+  mesh.frustumCulled=false; mesh.renderOrder=-10; scene.add(mesh);
+  return mesh;
+})();
+
+// ============================================================
+// POST — restrained bloom crowning construction, vignette, grain
+// ============================================================
+const composer=new EffectComposer(renderer,
+  new THREE.WebGLRenderTarget(2,2,{type:THREE.HalfFloatType,samples:4}));
+composer.addPass(new RenderPass(scene,camera));
+const bloom=new UnrealBloomPass(new THREE.Vector2(window.innerWidth,window.innerHeight),0.5,0.55,0.82);
+composer.addPass(bloom);
+const gradePass=new ShaderPass({
+  uniforms:{ tDiffuse:{value:null}, uT:{value:0} },
+  vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+  fragmentShader:`
+  uniform sampler2D tDiffuse; uniform float uT;
+  varying vec2 vUv;
+  float hg(vec2 p){ vec3 q=fract(vec3(p.xyx)*443.897); q+=dot(q,q.yzx+19.19); return fract((q.x+q.y)*q.z); }
+  void main(){
+    vec3 c=texture2D(tDiffuse,vUv).rgb;
+    vec2 v=vUv*2.0-1.0;
+    float vig=smoothstep(1.75,0.45,length(v*vec2(1.02,1.22)));
+    c*=mix(0.70,1.0,vig);
+    float lum=dot(c,vec3(0.299,0.587,0.114));
+    c+=vec3(0.004,0.007,0.010)*(1.0-smoothstep(0.0,0.22,lum));
+    c+=(hg(vUv*vec2(917.0,733.0)+fract(uT)*13.7)-0.5)*0.015;
+    gl_FragColor=vec4(c,1.0);
+  }`,
+});
+composer.addPass(gradePass);
+composer.addPass(new OutputPass());
+composer.setSize(window.innerWidth,window.innerHeight);
+
+// ============================================================
+// RIDER — input, camera, ride state
+// ============================================================
+let simT=0, started=false, holdT=0, paused=false, ended=false;
+let s=startD, speed=0, targetSpeed=9;
+let lat=0, latT=0, latV=0;
+let yawOff=0, pitOff=0, lastMouse=-10, baseYaw=0, roll=0, ant=0, firstFrame=true;
+const keys={};
+function restart(){
+  s=startD; speed=0; targetSpeed=9; lat=0; latT=0; latV=0;
+  yawOff=0; pitOff=0; started=false; holdT=0; ended=false; paused=false; firstFrame=true;
+}
+window.addEventListener('keydown',(e)=>{
+  if(e.code==='Space'){ e.preventDefault(); if(!e.repeat) paused=!paused; return; }
+  if(e.code==='KeyR'&&!e.repeat){ restart(); return; }
+  keys[e.code]=true;
+});
+window.addEventListener('keyup',(e)=>{ keys[e.code]=false; });
+window.addEventListener('mousemove',(e)=>{
+  const mx=e.movementX||0, my=e.movementY||0;
+  yawOff=clamp(yawOff-mx*0.0021,-2.6,2.6);
+  pitOff=clamp(pitOff-my*0.0019,-1.0,0.9);
+  lastMouse=simT;
+});
+cv.addEventListener('click',()=>{ try{ cv.requestPointerLock&&cv.requestPointerLock(); }catch(e){} });
+const wrapPi=a=>{ while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; };
+
+// chapter fog schedule
+const FOGK=[
+  [0,               26, 960, col(0x140B20)],
+  [D_TRAM*0.85,     23, 780, col(0x150C23)],
+  [D_CLIMB,         30, 960, col(0x170D26)],
+  [D_PEAK-90,       32,1000, col(0x180E27)],
+  [D_PEAK+130,      28, 880, col(0x131024)],
+  [D_FLOOD+90,      20, 730, col(0x0F1220)],
+  [1e9,             20, 730, col(0x0F1220)],
+];
+function updateFog(d){
+  let a=FOGK[0], b=FOGK[1];
+  for(let i=0;i<FOGK.length-1;i++){ if(d>=FOGK[i][0]&&d<FOGK[i+1][0]){ a=FOGK[i]; b=FOGK[i+1]; break; } }
+  const t=clamp((d-a[0])/Math.max(1,(b[0]-a[0])),0,1), tt=t*t*(3-2*t);
+  U.uFogNear.value=a[1]+(b[1]-a[1])*tt;
+  U.uFogFar.value=a[2]+(b[2]-a[2])*tt;
+  U.uFogColor.value.copy(a[3]).lerp(b[3],tt);
+  scene.fog.color.copy(U.uFogColor.value);
+  scene.fog.near=U.uFogNear.value; scene.fog.far=U.uFogFar.value;
+}
+
+// ============================================================
+// MAIN LOOP
+// ============================================================
+let lastNow=performance.now();
+const _dg=dynGlow.pos.array, _ds=dynStreak.pos.array;
+function setDyn(arr,i,x,y,z){ arr[i*3]=x; arr[i*3+1]=y; arr[i*3+2]=z; }
+renderer.setAnimationLoop(()=>{
+  const now=performance.now();
+  const dt=Math.min((now-lastNow)/1000,0.05); lastNow=now;
+  simT+=dt; U.uTime.value=simT; gradePass.uniforms.uT.value=simT;
+
+  // ---- ride state ----
+  if(!started){ holdT+=dt; if(holdT>=1.05) started=true; }
+  if(keys['KeyW']) targetSpeed=clamp(targetSpeed+7.5*dt,4,18);
+  if(keys['KeyS']) targetSpeed=clamp(targetSpeed-9*dt,4,18);
+  const steer=(keys['KeyA']?1:0)-(keys['KeyD']?1:0);  // lat runs along the LEFT vector
+  if(steer) latT=clamp(latT+steer*5.2*dt,-2.55,2.55);
+  else latT*=Math.exp(-dt*0.12);
+  const f=getFrame(s);
+  if(started&&!paused){
+    const gradeMul=clamp(1-f.ty*3.2,0.55,1.28);
+    const tgt=ended?0:targetSpeed*gradeMul;
+    speed+=(tgt-speed)*(1-Math.exp(-dt*0.85));
+    s+=speed*dt;
+    if(s>ROUTE_LEN-24) ended=true;
+  }
+  const nl=lat+(latT-lat)*(1-Math.exp(-dt*5));
+  latV=latV+(((nl-lat)/Math.max(dt,0.001))-latV)*0.3; lat=nl;
+
+  // ---- camera ----
+  const yawTgt=Math.atan2(-f.tx,-f.tz);
+  if(firstFrame){ baseYaw=yawTgt; firstFrame=false; }
+  baseYaw+=wrapPi(yawTgt-baseYaw)*(1-Math.exp(-dt*7));
+  ant+=(clamp(f.k*speed*0.9,-0.15,0.15)-ant)*(1-Math.exp(-dt*3));
+  const rollTgt=clamp(Math.atan(f.k*speed*speed/9.81)*0.5,-0.2,0.2)+latV*0.028;
+  roll+=(rollTgt-roll)*(1-Math.exp(-dt*4));
+  const idle=simT-lastMouse>1.6;
+  const dec=Math.exp(-dt*(idle?1.0:0.22));
+  yawOff*=dec; pitOff*=dec;
+  camera.rotation.order='YXZ';
+  // designed opening: hold the Raincatcher in the upper central third, ease out with distance
+  const openBias=Math.exp(-Math.max(0,s-startD)*0.02);
+  camera.rotation.y=baseYaw+ant+yawOff-0.15*openBias+Math.sin(simT*1.15)*0.005*(speed/9);
+  camera.rotation.x=Math.asin(clamp(f.ty,-1,1))*0.72-0.025+0.03*openBias+pitOff;
+  camera.rotation.z=-roll;
+  camera.position.set(f.x+f.lx*lat, f.y+1.55, f.z+f.lz*lat);
+  U.uCam.value.copy(camera.position);
+  skyMesh.position.copy(camera.position);
+  skyMesh.material.uniforms.uLmAz.value=Math.atan2(56-camera.position.z,448-camera.position.x);
+  updateFog(s);
+
+  // ---- ambient life (never stops) ----
+  if(turbineRotor) turbineRotor.rotation.y=simT*0.55;
+  // tram
+  {
+    const st=tramCyc(simT+tramT0);
+    const t01=clamp(st.d/tramLen,0,0.9999);
+    const p=tramCurve.getPointAt(t01), tg=tramCurve.getTangentAt(t01);
+    tramGrp.position.set(p.x,9.12,p.z);
+    tramGrp.rotation.y=Math.atan2(tg.x,tg.z)+ (st.dir<0?Math.PI:0);
+    const fw=st.dir<0? tg.clone().negate():tg;
+    setDyn(_dg,0,p.x+fw.x*7.7,10.3,p.z+fw.z*7.7);
+    setDyn(_dg,1,p.x-fw.x*7.7,10.3,p.z-fw.z*7.7);
+  }
+  // vehicles
+  vehicles.forEach((v,i)=>{
+    const travel=((v.phase+simT*v.v)%v.span+v.span)%v.span;
+    const c2=v.dir>0? v.a+travel : v.b-travel;
+    let px,pz,fx2,fz2;
+    if(v.axis==='z'){ px=v.fixed; pz=c2; fx2=0; fz2=v.dir; }
+    else { px=c2; pz=v.fixed; fx2=v.dir; fz2=0; }
+    v.grp.position.set(px,0.05,pz);
+    v.grp.rotation.y=Math.atan2(fx2,fz2)+Math.PI;
+    const base=2+i*4;
+    setDyn(_dg,base,  px+fx2*2.4-fz2*0.7, 0.85, pz+fz2*2.4+fx2*0.7);
+    setDyn(_dg,base+1,px+fx2*2.4+fz2*0.7, 0.85, pz+fz2*2.4-fx2*0.7);
+    setDyn(_dg,base+2,px-fx2*2.3-fz2*0.6, 0.9,  pz-fz2*2.3+fx2*0.6);
+    setDyn(_dg,base+3,px-fx2*2.3+fz2*0.6, 0.9,  pz-fz2*2.3-fx2*0.6);
+    setDyn(_ds,i, px+fx2*7.5, 0.12, pz+fz2*7.5);
+  });
+  // drones
+  drones.forEach((d2,i)=>{
+    const a2=simT*d2.w+d2.ph;
+    const px=d2.cx+Math.cos(a2)*d2.rx, pz=d2.cz+Math.sin(a2)*d2.rz;
+    const py=d2.h+Math.sin(simT*0.5+d2.ph)*d2.bob;
+    d2.grp.position.set(px,py,pz);
+    const vx=-Math.sin(a2)*d2.rx*d2.w, vz2=Math.cos(a2)*d2.rz*d2.w;
+    d2.grp.rotation.y=Math.atan2(-vx,-vz2);
+    d2.grp.rotation.z=Math.sin(simT*0.8+d2.ph)*0.08;
+    const base=26+i*2;
+    setDyn(_dg,base,px,py-0.15,pz);
+    setDyn(_dg,base+1,px,py+0.22,pz);
+  });
+  dynGlow.pos.needsUpdate=true; dynStreak.pos.needsUpdate=true;
+  // splashes recycle through the world ahead of the rider
+  {
+    const arr=splashPos.array;
+    for(let i=40;i<SPLASH_N;i++){
+      let sd=splashD[i];
+      while(sd<s-16) sd+=86;
+      while(sd>s+70) sd-=86;
+      if(sd!==splashD[i]){ splashD[i]=sd; splashLat[i]=(RF()*2-1)*4.4; }
+      const fd=getFrame(sd);
+      arr[i*3]=fd.x+fd.lx*splashLat[i]; arr[i*3+1]=fd.y+0.06; arr[i*3+2]=fd.z+fd.lz*splashLat[i];
+    }
+    splashPos.needsUpdate=true;
+  }
+  composer.render();
+});
+
+// resize
+window.addEventListener('resize',()=>{
+  const w=window.innerWidth,h=window.innerHeight;
+  camera.aspect=w/h; camera.updateProjectionMatrix();
+  renderer.setSize(w,h);
+  composer.setSize(w,h);
+});
+</script>
+</body>
+</html>
