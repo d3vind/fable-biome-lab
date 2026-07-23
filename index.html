@@ -1,0 +1,1341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sunscar Passage</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#1A0830; }
+  canvas { display:block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+
+/* ============================================================
+   SUNSCAR PASSAGE — a seeded corridor through Red Canyon
+   Utah gravel at magic hour, ten years after the last human.
+   One string seed drives the whole world.
+   ============================================================ */
+
+const WORLD_SEED = 'SUNSCAR-PASSAGE-01';
+
+// ---------- seeded PRNG (string -> streams). No Math.random. ----------
+function xmur3(str){ let h=1779033703^str.length;
+  for(let i=0;i<str.length;i++){ h=Math.imul(h^str.charCodeAt(i),3432918353); h=h<<13|h>>>19; }
+  return function(){ h=Math.imul(h^(h>>>16),2246822507); h=Math.imul(h^(h>>>13),3266489909); return (h^=h>>>16)>>>0; }; }
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+const seedGen = xmur3(WORLD_SEED);
+const R  = mulberry32(seedGen());   // world-construction stream
+const RT = mulberry32(seedGen());   // runtime stream (pebble recycling)
+const rr = (a,b)=>a+(b-a)*R();
+const ri = (a,b)=>Math.floor(a+(b-a+1)*R());
+const pick = a=>a[Math.floor(R()*a.length)];
+const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
+const lerp = (a,b,t)=>a+(b-a)*t;
+const smooth = (a,b,x)=>{ const t=clamp((x-a)/(b-a),0,1); return t*t*(3-2*t); };
+
+// value noise on the build stream (frozen tables so it is seed-stable)
+const NTAB = new Float32Array(512); for(let i=0;i<512;i++) NTAB[i]=R();
+function n1(x){ const i=Math.floor(x), f=x-i, u=f*f*(3-2*f);
+  const a=NTAB[((i%512)+512)%512], b=NTAB[(((i+1)%512)+512)%512]; return a+(b-a)*u; }
+function fbm1(x){ return n1(x)*0.62 + n1(x*2.13+7.7)*0.26 + n1(x*4.71+19.3)*0.12; }
+
+// ---------- palette (Red Canyon, locked to magic hour) ----------
+const PAL = {
+  zenith:0x1A0830, magenta:0x34104A, coral:0xB83A56, orange:0xE8693E, peach:0xF4945A,
+  groundA:0x8A4A2B, groundB:0x6E3A21, road:0x5E331D, roadEdge:0x38200F,
+  dust:0xC97B4A, rock:0x7C3A26, rockDark:0x4A2014, rim:0xF4945A,
+  sage:0x4A4A38, sagePurple:0x4E3A50, spire:0x1E0E14,
+  cyan:0x46E0D4, magentaC:0xE04ACF,
+  duskFog:0x6A2C50, glowFog:0xE8693E,
+};
+const col = h=>new THREE.Color(h);
+
+// ---------- renderer ----------
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 1.75));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;   // deliberate: flat saturated illustration, not film
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = col(PAL.magenta);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 9000);
+
+// ---------- shared uniforms + GLSL ----------
+const U = {
+  uTime:{value:0}, uCam:{value:new THREE.Vector3()},
+  uSunDir:{value:new THREE.Vector3(0,0,-1)},         // set after the route is generated
+  uDusk:{value:col(PAL.duskFog)}, uGlow:{value:col(PAL.glowFog)},
+};
+const GLSL_H = `
+float h11(float p){ vec3 q=fract(vec3(p)*vec3(0.1031,0.1030,0.0973)); q+=dot(q,q.yzx+33.33); return fract((q.x+q.y)*q.z); }
+float h21(vec2 p){ vec3 q=fract(vec3(p.xyx)*vec3(0.1031,0.1030,0.0973)); q+=dot(q,q.yzx+33.33); return fract((q.x+q.y)*q.z); }
+float n2(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=h21(i),b=h21(i+vec2(1.0,0.0)),c=h21(i+vec2(0.0,1.0)),d=h21(i+vec2(1.0,1.0));
+  return mix(mix(a,b,f.x),mix(c,d,f.x),f.y); }
+`;
+const GLSL_FOG = `
+uniform vec3 uCam; uniform vec3 uSunDir; uniform vec3 uDusk; uniform vec3 uGlow;
+float fogAmt(float dist){ return 1.0-exp(-dist*0.00115); }
+vec3 fogTint(vec3 wp){
+  vec3 dir=normalize(wp-uCam);
+  float toSun=max(dot(normalize(vec3(dir.x,0.0,dir.z)),uSunDir),0.0);
+  float glow=pow(toSun,3.0);
+  return mix(uDusk,uGlow,glow*0.75);
+}
+vec3 applyFog(vec3 c, vec3 wp){
+  float d=distance(wp,uCam);
+  return mix(c, fogTint(wp), fogAmt(d));
+}
+`;
+function shaderMat(o){
+  const u=Object.assign({},o.uniforms||{});
+  u.uTime=U.uTime; u.uCam=U.uCam; u.uSunDir=U.uSunDir; u.uDusk=U.uDusk; u.uGlow=U.uGlow;
+  return new THREE.ShaderMaterial({ vertexShader:o.vs, fragmentShader:o.fs, uniforms:u,
+    transparent:!!o.transparent, depthWrite:o.depthWrite!==undefined?o.depthWrite:true,
+    depthTest:o.depthTest!==undefined?o.depthTest:true, blending:o.blending||THREE.NormalBlending,
+    side:o.side||THREE.FrontSide, vertexColors:!!o.vertexColors });
+}
+
+// ============================================================
+// ROUTE — five phases, one real fork, all structure from the seed
+// ============================================================
+const TOTAL = rr(2150, 2600);              // metres of spine
+let fr=[rr(0.16,0.21), rr(0.15,0.20), rr(0.21,0.26), rr(0.21,0.26)];
+{ const s=fr[0]+fr[1]+fr[2]+fr[3]; const p5=1-s;
+  if(p5<0.13){ const k=(1-0.14)/s; fr=fr.map(v=>v*k); } }
+const SB=[0, fr[0]*TOTAL, (fr[0]+fr[1])*TOTAL, (fr[0]+fr[1]+fr[2])*TOTAL,
+          (fr[0]+fr[1]+fr[2]+fr[3])*TOTAL, TOTAL];   // phase boundaries
+const PHASES=['open','passage','mesa','climb','exhale'];
+function phaseOf(s){ for(let i=4;i>=0;i--) if(s>=SB[i]) return PHASES[Math.min(i,4)]; return PHASES[0]; }
+// fork lives inside the mesa phase
+const S_FORK = SB[2]+ (SB[3]-SB[2])*rr(0.10,0.18);
+const S_JOIN = S_FORK + rr(260,330);
+// climb crest, where the arch waits
+const S_CREST = SB[3] + (SB[4]-SB[3])*rr(0.60,0.75);
+const CLIMB_H = rr(22,30);
+function evalH(s){
+  let h = fbm1(s*0.004+3.1)*4.4 - 2.2;                    // gentle rolls all through
+  h += smooth(SB[1],SB[2],s)*-2.5;                        // passage dips slightly
+  h += smooth(SB[3],S_CREST,s)*CLIMB_H;                   // the long crested climb
+  h -= smooth(S_CREST+30,SB[5]-60,s)*(CLIMB_H*0.55);      // exhale descent to the viewpoint
+  return h;
+}
+// spine points: heading walk with phase-shaped curvature
+const spinePts=[]; const spineS=[];
+{
+  let x=0,z=0,heading=0; const STEP=40;
+  // per-phase turn character (radians per 40 m step)
+  const turnAmp=[rr(0.05,0.09), rr(0.10,0.16), rr(0.05,0.10), rr(0.05,0.08), rr(0.02,0.05)];
+  let wob=R()*10;
+  for(let s=0;s<=TOTAL+STEP;s+=STEP){
+    spinePts.push(new THREE.Vector3(x,evalH(Math.min(s,TOTAL)),z));
+    spineS.push(Math.min(s,TOTAL));
+    const ph=PHASES.indexOf(phaseOf(Math.min(s,TOTAL)));
+    let turn=(fbm1(s*0.011+wob)-0.5)*2*turnAmp[ph];
+    // drift right through the mesa, come back through the climb —
+    // so the left fork genuinely skirts closer to the arch's ridge
+    turn+= ph===2?0.020 : ph===3?-0.014 : 0.0;
+    heading+=turn;
+    x+=Math.sin(heading)*STEP; z-=Math.cos(heading)*STEP;
+  }
+}
+// index helpers on the spine
+function spineIdx(s){ return clamp(Math.round(s/40),0,spinePts.length-1); }
+function spinePos(s){
+  const i=clamp(s/40,0,spinePts.length-1.001), i0=Math.floor(i), t=i-i0;
+  return spinePts[i0].clone().lerp(spinePts[Math.min(i0+1,spinePts.length-1)],t);
+}
+function spineLeft(s){
+  const a=spinePos(Math.max(0,s-8)), b=spinePos(Math.min(TOTAL,s+8));
+  const tx=b.x-a.x, tz=b.z-a.z, l=Math.hypot(tx,tz)||1;
+  return new THREE.Vector3(tz/l,0,-tx/l);
+}
+// branch bulges: left skirts the arch side, right loops behind the balanced rock
+const AMP_L=rr(30,48), AMP_R=-rr(46,72);
+function branchPts(amp){
+  const out=[]; const i0=spineIdx(S_FORK), i1=spineIdx(S_JOIN);
+  for(let i=i0;i<=i1;i++){
+    const t=(i-i0)/(i1-i0);
+    const off=Math.pow(Math.sin(t*Math.PI),1.6)*amp*(0.85+0.3*n1(i*0.7+amp));
+    const p=spinePts[i].clone().addScaledVector(spineLeft(spineS[i]),off);
+    out.push(p);
+  }
+  return out;
+}
+function fullRoute(amp){
+  const i0=spineIdx(S_FORK), i1=spineIdx(S_JOIN);
+  const pts=[...spinePts.slice(0,i0), ...branchPts(amp), ...spinePts.slice(i1+1)];
+  return new THREE.CatmullRomCurve3(pts,false,'centripetal');
+}
+const curveL=fullRoute(AMP_L), curveR=fullRoute(AMP_R);
+function buildFrames(curve){
+  const len=curve.getLength(); const N=Math.ceil(len/1.0); const step=len/N;
+  const p=curve.getSpacedPoints(N);
+  const F={x:new Float32Array(N+1),y:new Float32Array(N+1),z:new Float32Array(N+1),
+           tx:new Float32Array(N+1),tz:new Float32Array(N+1),
+           lx:new Float32Array(N+1),lz:new Float32Array(N+1),k:new Float32Array(N+1),
+           len,step,N};
+  for(let i=0;i<=N;i++){ F.x[i]=p[i].x; F.y[i]=p[i].y; F.z[i]=p[i].z; }
+  const yaw=new Float32Array(N+1);
+  for(let i=0;i<=N;i++){
+    const a=Math.max(0,i-1), b=Math.min(N,i+1);
+    let tx=F.x[b]-F.x[a], tz=F.z[b]-F.z[a]; const l=Math.hypot(tx,tz)||1; tx/=l; tz/=l;
+    F.tx[i]=tx; F.tz[i]=tz; F.lx[i]=tz; F.lz[i]=-tx;
+    yaw[i]=Math.atan2(tx,-tz);
+  }
+  const wrap=a=>{ while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; return a; };
+  const kR=new Float32Array(N+1);
+  for(let i=1;i<N;i++) kR[i]=wrap(yaw[i+1]-yaw[i-1])/(2*step);
+  for(let i=0;i<=N;i++){ let s=0,n=0;
+    for(let j=Math.max(0,i-10);j<=Math.min(N,i+10);j++){ s+=kR[j]; n++; } F.k[i]=s/n; }
+  return F;
+}
+const FRAMES={ left:buildFrames(curveL), right:buildFrames(curveR) };
+const _fr={};
+function getFrame(F,s){
+  s=clamp(s,0,F.len-0.001);
+  const f=s/F.step, i=Math.min(F.N-1,Math.floor(f)), t=f-i;
+  _fr.x=F.x[i]+(F.x[i+1]-F.x[i])*t; _fr.y=F.y[i]+(F.y[i+1]-F.y[i])*t; _fr.z=F.z[i]+(F.z[i+1]-F.z[i])*t;
+  _fr.tx=F.tx[i]+(F.tx[i+1]-F.tx[i])*t; _fr.tz=F.tz[i]+(F.tz[i+1]-F.tz[i])*t;
+  _fr.lx=F.lx[i]+(F.lx[i+1]-F.lx[i])*t; _fr.lz=F.lz[i]+(F.lz[i+1]-F.lz[i])*t;
+  _fr.k=F.k[i]+(F.k[i+1]-F.k[i])*t;
+  return _fr;
+}
+// fork arc-length markers on each frame set (branch bulge starts at the same spine point)
+function nearestS(F,p){ let best=1e9,bs=0;
+  for(let i=0;i<=F.N;i+=4){ const d=(F.x[i]-p.x)**2+(F.z[i]-p.z)**2; if(d<best){best=d;bs=i*F.step;} }
+  return bs; }
+const forkPos=spinePos(S_FORK), joinPos=spinePos(S_JOIN);
+const S_FORK_L=nearestS(FRAMES.left,forkPos),  S_JOIN_L=nearestS(FRAMES.left,joinPos);
+const S_FORK_R=nearestS(FRAMES.right,forkPos), S_JOIN_R=nearestS(FRAMES.right,joinPos);
+// the dying light lives where the crest points
+{
+  const a=spinePos(S_CREST-10), b=spinePos(S_CREST+10);
+  const tx=b.x-a.x, tz=b.z-a.z, l=Math.hypot(tx,tz)||1;
+  U.uSunDir.value.set(tx/l,0,tz/l);
+}
+const sunAz=Math.atan2(U.uSunDir.value.x,-U.uSunDir.value.z);
+const endPos=spinePos(TOTAL-4), endLeft=spineLeft(TOTAL-4);
+const endFwd=(()=>{ const a=spinePos(TOTAL-30), b=spinePos(TOTAL-2);
+  const v=new THREE.Vector3(b.x-a.x,0,b.z-a.z); return v.normalize(); })();
+
+// ============================================================
+// PROOF — runtime-generated instrumentation, no hardcoded counts
+// ============================================================
+const proofState={ pebbles:0, boulders:0, sage:0, landmarks:{}, terrainHash:'', fps:0,
+  drawCalls:0, triangles:0, forkBranch:null, ended:false, audio:{started:false,events:[]} };
+let rideS=0, rideBranch='left';
+window.__proof = {
+  get seed(){ return WORLD_SEED; },
+  get pebbles(){ return proofState.pebbles; },
+  get boulders(){ return proofState.boulders; },
+  get sage(){ return proofState.sage; },
+  get landmarks(){ return proofState.landmarks; },
+  get terrainPhase(){ return phaseOf(Math.min(rideS,TOTAL)); },
+  get forkBranch(){ return proofState.forkBranch; },
+  get terrainHash(){ return proofState.terrainHash; },
+  get fps(){ return Math.round(proofState.fps*10)/10; },
+  get drawCalls(){ return proofState.drawCalls; },
+  get triangles(){ return proofState.triangles; },
+  get s(){ return Math.round(rideS*10)/10; },
+  get routeLength(){ return { left:Math.round(FRAMES.left.len), right:Math.round(FRAMES.right.len) }; },
+  get ended(){ return proofState.ended; },
+  get audio(){ return proofState.audio; },
+};
+// FNV-1a over route + terrain arrays — same seed must reproduce this exactly
+function fnv(arrs){
+  let h=0x811c9dc5;
+  for(const a of arrs) for(let i=0;i<a.length;i+=7){
+    const v=Math.round(a[i]*100)|0;
+    h^=v&0xff; h=Math.imul(h,0x01000193); h^=(v>>>8)&0xff; h=Math.imul(h,0x01000193);
+  }
+  return (h>>>0).toString(16).padStart(8,'0');
+}
+
+// ============================================================
+// SKY — magic hour, locked. Two celestial bodies. Sparse stars.
+// ============================================================
+const C0=(()=>{ const b=new THREE.Box3(); for(const p of spinePts) b.expandByPoint(p);
+  const c=new THREE.Vector3(); b.getCenter(c); c.y=0; return c; })();
+function azDir(az,el){ return new THREE.Vector3(Math.sin(az)*Math.cos(el),Math.sin(el),-Math.cos(az)*Math.cos(el)); }
+const moonDir=azDir(sunAz+0.52,0.34);          // teal moon, upper-right of the glow
+const planetDir=azDir(sunAz-0.60,0.24);        // ringed planet, low left — asymmetry sells it
+const planetA=new THREE.Vector3().crossVectors(planetDir,new THREE.Vector3(0,1,0)).normalize();
+const planetB=new THREE.Vector3().crossVectors(planetA,planetDir).normalize()
+  .applyAxisAngle(planetDir,0.5);
+{
+  const m=shaderMat({
+    uniforms:{ uMoon:{value:moonDir}, uPlanet:{value:planetDir},
+      uPA:{value:planetA}, uPB:{value:planetB} },
+    vs:`varying vec3 vD; void main(){ vD=position;
+      vec4 mv=modelViewMatrix*vec4(position,1.0); gl_Position=projectionMatrix*mv; }`,
+    fs:`${GLSL_H}
+    uniform float uTime; uniform vec3 uSunDir; uniform vec3 uMoon; uniform vec3 uPlanet;
+    uniform vec3 uPA; uniform vec3 uPB;
+    varying vec3 vD;
+    void main(){
+      vec3 d=normalize(vD);
+      float e=d.y;
+      // vertical gradient: peach -> orange -> coral -> magenta -> indigo
+      vec3 c=mix(vec3(0.957,0.580,0.353),vec3(0.910,0.412,0.243),smoothstep(0.000,0.055,e));
+      c=mix(c,vec3(0.722,0.227,0.337),smoothstep(0.045,0.16,e));
+      c=mix(c,vec3(0.204,0.063,0.290),smoothstep(0.14,0.42,e));
+      c=mix(c,vec3(0.102,0.031,0.188),smoothstep(0.40,0.75,e));
+      // horizon glow toward the dying sun
+      float toSun=max(dot(normalize(vec3(d.x,0.0,d.z)),uSunDir),0.0);
+      float low=exp(-max(e,0.0)*9.0);
+      float glow=pow(toSun,4.0)*low;
+      c+=vec3(0.957,0.580,0.353)*glow*0.55;
+      c+=vec3(1.0,0.84,0.66)*pow(toSun,26.0)*exp(-max(e,0.0)*16.0)*0.55;
+      // coral haze band above the horizon
+      float band=exp(-pow((e-0.045)/0.028,2.0));
+      c=mix(c,vec3(0.722,0.227,0.337),band*0.34*(0.5+0.5*toSun));
+      // high thin cloud drift, slow
+      float cl=n2(vec2(atan(d.x,-d.z)*4.0+uTime*0.006, e*34.0));
+      cl*=n2(vec2(atan(d.x,-d.z)*9.0-uTime*0.004, e*60.0));
+      c=mix(c,vec3(0.35,0.13,0.30),smoothstep(0.42,0.75,cl)*smoothstep(0.06,0.16,e)*smoothstep(0.5,0.25,e)*0.5);
+      // stars: sparse, warm-white with a few teal accents, thinning to the glow
+      vec3 sp=d*230.0; vec3 cell=floor(sp); vec3 f=fract(sp)-0.5;
+      float sh=h21(cell.xy+cell.z*7.31);
+      float starVis=smoothstep(0.16,0.34,e)*(1.0-glow*0.95);
+      if(sh>0.982){
+        float b=(sh-0.982)/0.018;
+        float tw=0.75+0.25*sin(uTime*(1.2+b*2.0)+sh*40.0);
+        float ds=length(f);
+        float star=smoothstep(0.30,0.05,ds)*b*tw*starVis;
+        vec3 sc=h21(cell.xy*1.7+3.3)>0.88 ? vec3(0.55,0.95,0.92) : vec3(1.0,0.93,0.82);
+        c+=sc*star*0.85;
+      }
+      // teal moon with craters and a breathing halo (~20 s)
+      float md=acos(clamp(dot(d,uMoon),-1.0,1.0));
+      float halo=0.058*(1.0+0.26*sin(uTime*0.314159));
+      c+=vec3(0.35,0.75,0.72)*exp(-md*md/(halo*halo))*0.22;
+      float moon=smoothstep(0.0300,0.0272,md);
+      if(moon>0.0){
+        vec3 mo=d-uMoon*dot(d,uMoon);
+        float cr=n2(mo.xy*220.0+mo.z*140.0+7.0)*0.5+n2(mo.xy*430.0+31.0)*0.5;
+        vec3 mc=mix(vec3(0.58,0.93,0.90),vec3(0.36,0.66,0.66),smoothstep(0.42,0.72,cr));
+        float limb=smoothstep(0.0300,0.0180,md);
+        c=mix(c,mc*(0.75+0.25*limb),moon);
+      }
+      // small ringed planet, static: the second body
+      float pd=acos(clamp(dot(d,uPlanet),-1.0,1.0));
+      vec3 po=d-uPlanet*dot(d,uPlanet);
+      float pu=dot(po,uPA), pv=dot(po,uPB);
+      float ringR=length(vec2(pu,pv*2.6));
+      float ring=smoothstep(0.0165,0.0150,ringR)*smoothstep(0.0105,0.0120,ringR);
+      float disc=smoothstep(0.0072,0.0060,pd);
+      vec3 pc=vec3(0.89,0.78,0.66);
+      c=mix(c,pc*0.92,disc);
+      c+=pc*ring*0.55*(1.0-disc);
+      gl_FragColor=vec4(c,1.0);
+    }`,
+    side:THREE.BackSide, depthWrite:false,
+  });
+  const dome=new THREE.Mesh(new THREE.SphereGeometry(6500,48,24),m);
+  dome.position.copy(C0); scene.add(dome);
+}
+
+// ============================================================
+// GROUND — one shallow valley that breathes with the phases
+// ============================================================
+const groundArrays={pos:null};
+let groundHAt=null;
+{
+  const LAT=[-320,-240,-175,-125,-88,-62,-44,-30,-20,-13,-8,-5,-3.2,-2.1,0,2.1,3.2,5,8,13,20,30,44,62,88,125,175,240,320];
+  const STEPG=6;
+  const rows=Math.floor(TOTAL/STEPG)+1;
+  const P=[],CC=[],IDX=[];
+  const passC=s=>smooth(SB[1]-40,SB[1]+50,s)*(1-smooth(SB[2]-60,SB[2]+40,s));
+  const mesaC=s=>smooth(SB[2]-30,SB[2]+70,s)*(1-smooth(SB[3]-70,SB[3]+40,s));
+  const wallNoise=rr(0,100);
+  function groundH(s,lat){
+    const a=Math.abs(lat), base=evalH(s);
+    const bedY=spinePos(s).y;               // the exact height the road curves through
+    const cP=passC(s);
+    const ws=lerp(56,15,cP), steep=lerp(0.11,0.46,cP);
+    let lift=a>ws? (a-ws)*steep*(0.55+0.55*fbm1(s*0.02+lat*0.05+wallNoise)) : 0;
+    lift=Math.min(lift,52);
+    let h=base+lift+Math.pow(a/320,2)*16;
+    if(lat>58&&lat<175){ // the mesa rides the left through phase three
+      const m=mesaC(s)*smooth(62,86,lat)*(1-smooth(150,172,lat));
+      h+=m*(21+fbm1(s*0.01+lat*0.02)*4);
+    }
+    h+=fbm1(s*0.035+lat*0.13+9.7)*1.3*Math.min(a,26)/26;
+    if(a<4.6) h=bedY-0.16;
+    // flatten a bed beneath both fork branches
+    if(s>S_FORK-10&&s<S_JOIN+10){
+      const t=clamp((s-S_FORK)/(S_JOIN-S_FORK),0,1);
+      for(const amp of [AMP_L,AMP_R]){
+        const off=Math.pow(Math.sin(t*Math.PI),1.6)*amp*(0.85+0.3*n1((s/40)*0.7+amp));
+        const d2=Math.abs(lat-off);
+        if(d2<5.8){ const k2=smooth(2.4,5.8,d2); h=lerp(bedY-0.16,h,k2); }
+      }
+    }
+    return h;
+  }
+  groundHAt=groundH;
+  for(let r2=0;r2<rows;r2++){
+    const s=r2*STEPG;
+    const pos=spinePos(s), L2=spineLeft(s);
+    for(let ci=0;ci<LAT.length;ci++){
+      const lat=LAT[ci];
+      const h=groundH(s,lat);
+      P.push(pos.x+L2.x*lat, h, pos.z+L2.z*lat);
+      // vertex colour: warm floor, tilt-shaded edges, dust bloom by the road
+      const a=Math.abs(lat);
+      const t=fbm1(s*0.013+lat*0.07+2.2);
+      const base=col(PAL.groundA).lerp(col(PAL.groundB),t);
+      const rel=h-evalH(s);
+      base.multiplyScalar(clamp(1-rel*0.012-Math.pow(a/320,1.4)*0.35,0.42,1));
+      const dust=Math.exp(-Math.pow((a-4.6)/3.4,2));
+      base.lerp(col(PAL.dust),clamp(dust*0.42,0,0.42));
+      CC.push(base.r,base.g,base.b);
+    }
+  }
+  const W2=LAT.length;
+  for(let r2=0;r2<rows-1;r2++) for(let ci=0;ci<W2-1;ci++){
+    const a=r2*W2+ci;
+    IDX.push(a,a+W2,a+1, a+1,a+W2,a+W2+1);
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(CC,3));
+  g.setIndex(IDX); g.computeVertexNormals();
+  groundArrays.pos=g.getAttribute('position').array;
+  const m=shaderMat({
+    vertexColors:true,
+    vs:`varying vec3 vC; varying vec3 vW; varying vec3 vN;
+    void main(){ vC=color; vN=normal;
+      vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp; }`,
+    fs:`${GLSL_H}${GLSL_FOG}
+    uniform float uTime;
+    varying vec3 vC; varying vec3 vW; varying vec3 vN;
+    void main(){
+      vec3 c=vC;
+      vec2 p=vW.xz;
+      float det=clamp(1.5-length(vW-uCam)*0.030,0.0,1.0);
+      if(det>0.01){
+        float crack=1.0-smoothstep(0.0,0.030,abs(n2(p*2.2)-0.5));  // cracked-earth hairlines
+        c*=1.0-crack*0.10*det;
+        c*=1.0+(h21(floor(p*9.0))-0.5)*0.10*det;                     // warm sand speckle
+      }
+      float sun=max(dot(normalize(vec3(vN.x,0.35,vN.z)),uSunDir),0.0);
+      c*=0.86+0.20*sun;                                              // dying light grazes the floor
+      c=applyFog(c,vW);
+      gl_FragColor=vec4(c,1.0);
+    }`,
+    side:THREE.DoubleSide,
+  });
+  const mesh=new THREE.Mesh(g,m); scene.add(mesh);
+}
+
+// ============================================================
+// THE BOWL — ring ranges that dip below the road's end
+// ============================================================
+function ridgeArc(radius,az0,az1,segs,hFn,tint,fade){
+  const P=[],CC=[],IDX=[];
+  for(let i=0;i<=segs;i++){
+    const t=i/segs, az=az0+(az1-az0)*t;
+    const x=C0.x+Math.sin(az)*radius, z=C0.z-Math.cos(az)*radius;
+    const h=hFn(az,t);
+    P.push(x,-24,z, x,h,z);
+    const cTop=tint.clone(), cBot=tint.clone().lerp(col(PAL.coral),fade);
+    CC.push(cBot.r,cBot.g,cBot.b, cTop.r,cTop.g,cTop.b);
+    if(i>0){ const a=(i-1)*2; IDX.push(a,a+2,a+1, a+1,a+2,a+3); }
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(CC,3));
+  g.setIndex(IDX);
+  const m=shaderMat({
+    vertexColors:true,
+    vs:`varying vec3 vC; varying vec3 vW;
+    void main(){ vC=color; vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp; }`,
+    fs:`${GLSL_FOG}
+    varying vec3 vC; varying vec3 vW;
+    void main(){ vec3 c=applyFog(vC,vW); gl_FragColor=vec4(c,1.0); }`,
+    side:THREE.DoubleSide,
+  });
+  const mesh=new THREE.Mesh(g,m); scene.add(mesh); return mesh;
+}
+const dipAz=(()=>{ const p=endPos.clone().addScaledVector(endFwd,1900).sub(C0);
+  return Math.atan2(p.x,-p.z); })();
+function angDist(a,b){ let d=a-b; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return Math.abs(d); }
+{
+  const ringSeed=rr(0,100);
+  // outer ring, tall, with the dip the road sinks into
+  ridgeArc(1900, dipAz-Math.PI, dipAz+Math.PI, 168, (az)=>{
+    const base=58+72*fbm1(az*3.1+ringSeed);
+    const dip=smooth(0.55,0.18,angDist(az,dipAz));
+    return lerp(base,9+4*fbm1(az*7.0+ringSeed),dip);
+  }, col(0x4A1838), 0.42);
+  // two low ranges laid straight across the viewpoint ray: the bowl reads in layers
+  function farRange(dist,h0,tint,fade){
+    const ctr=endPos.clone().addScaledVector(endFwd,dist);
+    const perp=new THREE.Vector3(-endFwd.z,0,endFwd.x);
+    const P=[],CC=[],IDX=[];
+    const segs=42, half=900;
+    for(let i=0;i<=segs;i++){
+      const t=i/segs, off=(t-0.5)*2*half;
+      const x=ctr.x+perp.x*off, z=ctr.z+perp.z*off;
+      const edge=1-smooth(0.62,1.0,Math.abs(t-0.5)*2);
+      const h=(h0+h0*0.5*fbm1(off*0.006+ringSeed+dist))*edge;
+      P.push(x,-24,z, x,h,z);
+      const cT=tint.clone(), cB=tint.clone().lerp(col(PAL.coral),fade);
+      CC.push(cB.r,cB.g,cB.b, cT.r,cT.g,cT.b);
+      if(i>0){ const a=(i-1)*2; IDX.push(a,a+2,a+1, a+1,a+2,a+3); }
+    }
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+    g.setAttribute('color',new THREE.Float32BufferAttribute(CC,3));
+    g.setIndex(IDX);
+    const m=shaderMat({ vertexColors:true,
+      vs:`varying vec3 vC; varying vec3 vW;
+      void main(){ vC=color; vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+        gl_Position=projectionMatrix*viewMatrix*wp; }`,
+      fs:`${GLSL_FOG}
+      varying vec3 vC; varying vec3 vW;
+      void main(){ vec3 c=applyFog(vC,vW); gl_FragColor=vec4(c,1.0); }`,
+      side:THREE.DoubleSide });
+    scene.add(new THREE.Mesh(g,m));
+  }
+  farRange(1350, 30, col(0x6E2846), 0.62);
+  farRange(900, 15, col(0x84334E), 0.74);
+  // the distant plain seen from the viewpoint
+  const plain=new THREE.Mesh(new THREE.CircleGeometry(2600,40),
+    shaderMat({
+      vs:`varying vec3 vW; void main(){ vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+        gl_Position=projectionMatrix*viewMatrix*wp; }`,
+      fs:`${GLSL_FOG}
+      varying vec3 vW;
+      void main(){ vec3 c=vec3(0.36,0.17,0.10);
+        c=applyFog(c,vW); gl_FragColor=vec4(c,1.0); }`,
+    }));
+  plain.rotation.x=-Math.PI/2; plain.position.set(C0.x,-14,C0.z); scene.add(plain);
+  // radial haze exactly at the vanishing point — the seam dissolver
+  const hazeTex=(()=>{ const cv=document.createElement('canvas'); cv.width=cv.height=128;
+    const x=cv.getContext('2d'); const gJ=x.createRadialGradient(64,64,2,64,64,64);
+    gJ.addColorStop(0,'rgba(244,148,90,0.85)'); gJ.addColorStop(0.45,'rgba(232,105,62,0.38)');
+    gJ.addColorStop(1,'rgba(232,105,62,0)'); x.fillStyle=gJ; x.fillRect(0,0,128,128);
+    const t=new THREE.CanvasTexture(cv); t.colorSpace=THREE.SRGBColorSpace; return t; })();
+  const haze=new THREE.Sprite(new THREE.SpriteMaterial({map:hazeTex,transparent:true,
+    depthWrite:false,blending:THREE.AdditiveBlending,opacity:0.8}));
+  haze.position.copy(endPos).addScaledVector(endFwd,820); haze.position.y+=30;
+  haze.scale.set(640,420,1); scene.add(haze);
+}
+
+// ============================================================
+// THE ROAD — the surface a rider stares at for the whole ride
+// ============================================================
+const roadSeedOff=rr(0,64);
+function roadShader(len){
+  return shaderMat({
+    uniforms:{uLen:{value:len},uSeedOff:{value:roadSeedOff}},
+    vs:`attribute vec2 aUv; varying vec2 vUv; varying vec3 vW;
+    void main(){ vUv=aUv; vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp; }`,
+    fs:`${GLSL_H}${GLSL_FOG}
+    uniform float uTime; uniform float uLen; uniform float uSeedOff;
+    varying vec2 vUv; varying vec3 vW;
+    vec3 pebbleLayer(vec2 p, float size, inout float mask){
+      vec2 g=p/size; vec2 cell=floor(g); vec2 f=fract(g)-0.5;
+      float rnd=h21(cell+uSeedOff);
+      vec2 cj=(vec2(h21(cell+1.7),h21(cell+3.1))-0.5)*0.55;
+      float d=length(f-cj);
+      float r=0.24+0.16*h21(cell+9.2);
+      float m=smoothstep(r,r-0.16,d)*step(0.52,rnd);
+      mask=max(mask,m);
+      float fam=h21(cell+5.3);
+      vec3 pc= fam<0.30? vec3(0.290,0.145,0.090)
+             : fam<0.62? vec3(0.486,0.290,0.165)
+             : fam<0.90? vec3(0.710,0.510,0.360)
+             :           vec3(0.851,0.706,0.541);
+      return pc*m;
+    }
+    void main(){
+      float u=vUv.x, v=vUv.y;
+      vec3 base=vec3(0.298,0.160,0.092)*(0.94+0.10*n2(vec2(v*0.05,u*2.0)));
+      // gravel: two pebble scales, four colour families, seeded
+      vec2 p=vec2(u*2.05,v);
+      float det=clamp(1.35-fwidth(v)*60.0,0.0,1.0);
+      vec3 c=base;
+      if(det>0.01){
+        float mA=0.0,mB=0.0;
+        vec3 pa=pebbleLayer(p,0.085,mA);
+        vec3 pb=pebbleLayer(p+vec2(7.3,3.1),0.048,mB);
+        vec3 peb=mix(pa,pb,0.5*step(0.5,mB));
+        float m=max(mA*0.9,mB);
+        c=mix(base,mix(base,peb/max(m,0.0001)*0.82,0.62),m*det);
+      }
+      // tire tracks: dark pressed stroke, lighter clean stone beneath
+      float tt=abs(abs(u)-0.36);
+      float dark=smoothstep(0.11,0.045,tt);
+      c*=1.0-dark*0.30;
+      float lite=smoothstep(0.022,0.008,abs(tt-0.118));
+      c+=vec3(0.30,0.20,0.12)*lite*0.11;
+      // crown catches a little more light
+      c*=1.0+0.05*smoothstep(0.24,0.0,abs(u));
+      // hard dark edges
+      c=mix(c,vec3(0.219,0.125,0.059),smoothstep(0.84,0.965,abs(u)));
+      c*=1.0-0.35*smoothstep(0.955,1.0,abs(u));
+      // the road literally fades into the mountains at its end
+      float endF=smoothstep(uLen-110.0,uLen-30.0,v);
+      endF*=smoothstep(120.0,320.0,distance(vW,uCam));
+      c=mix(applyFog(c,vW),fogTint(vW),endF);
+      gl_FragColor=vec4(c,1.0);
+    }`,
+  });
+}
+function buildRoad(F,s0,s1,widthFn){
+  const P=[],UV=[],IDX=[]; let vc=0;
+  const step=1.6;
+  for(let s=s0;s<=s1;s+=step){
+    const f=getFrame(F,s);
+    const hw=widthFn? widthFn(s) : 2.05;
+    P.push(f.x-f.lx*hw,f.y+0.02,f.z-f.lz*hw, f.x+f.lx*hw,f.y+0.02,f.z+f.lz*hw);
+    UV.push(-hw/2.05,s, hw/2.05,s);
+    if(vc>0) IDX.push(vc-2,vc,vc+1, vc-2,vc+1,vc-1);
+    vc+=2;
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('aUv',new THREE.Float32BufferAttribute(UV,2));
+  g.setIndex(IDX);
+  const mesh=new THREE.Mesh(g,roadShader(F.len));
+  scene.add(mesh); return g;
+}
+const flare=(sEnd)=>(s)=>2.05+0.85*smooth(sEnd-26,sEnd,s);
+const taper=(sStart)=>(s)=>2.05+0.85*(1-smooth(sStart,sStart+30,s));
+const roadGeoms=[];
+roadGeoms.push(buildRoad(FRAMES.left, 0, S_FORK_L, flare(S_FORK_L)));
+roadGeoms.push(buildRoad(FRAMES.left, S_FORK_L-4, S_JOIN_L+8, taper(S_FORK_L)));
+roadGeoms.push(buildRoad(FRAMES.right, S_FORK_R-4, S_JOIN_R+8, taper(S_FORK_R)));
+const dieOut=(sEnd)=>(s)=>2.05*(1-smooth(sEnd-14,sEnd-1,s))+0.12;
+roadGeoms.push(buildRoad(FRAMES.left, S_JOIN_L, FRAMES.left.len-6, dieOut(FRAMES.left.len-6)));
+// terrain hash: route frames + ground mesh, rounded — the determinism contract
+proofState.terrainHash=fnv([FRAMES.left.x,FRAMES.left.y,FRAMES.left.z,
+  FRAMES.right.x,FRAMES.right.z, groundArrays.pos]);
+
+// near-field pebbles: real counted instances riding the road with you
+let pebbleMesh, pebbleData;
+{
+  const N=680;
+  const geo=new THREE.InstancedBufferGeometry();
+  const base=new THREE.DodecahedronGeometry(0.036,0);
+  base.scale(1,0.55,1);
+  geo.index=base.index;
+  geo.setAttribute('position',base.getAttribute('position'));
+  geo.setAttribute('normal',base.getAttribute('normal'));
+  const off=new Float32Array(N*3), colr=new Float32Array(N*3), sc=new Float32Array(N);
+  const fams=[[0.243,0.122,0.075],[0.365,0.216,0.122],[0.502,0.357,0.243],[0.604,0.494,0.373]];
+  pebbleData={s:new Float32Array(N),lat:new Float32Array(N)};
+  for(let i=0;i<N;i++){
+    pebbleData.s[i]=rr(0,70); pebbleData.lat[i]=rr(-1.9,1.9);
+    sc[i]=rr(0.5,1.25);
+    const f=fams[Math.min(3,Math.floor(R()*4.6))];
+    colr.set(f,i*3);
+  }
+  geo.setAttribute('iOff',new THREE.InstancedBufferAttribute(off,3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('iCol',new THREE.InstancedBufferAttribute(colr,3));
+  geo.setAttribute('iSc',new THREE.InstancedBufferAttribute(sc,1));
+  geo.instanceCount=N;
+  const m=shaderMat({
+    vs:`attribute vec3 iOff; attribute vec3 iCol; attribute float iSc;
+    varying vec3 vC; varying vec3 vW; varying float vTop;
+    void main(){ vC=iCol; vTop=normal.y;
+      vec3 p=position*iSc+iOff;
+      vec4 wp=modelMatrix*vec4(p,1.0); vW=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp; }`,
+    fs:`${GLSL_FOG}
+    varying vec3 vC; varying vec3 vW; varying float vTop;
+    void main(){
+      vec3 c=vC*(0.72+0.20*max(vTop,0.0));
+      c=applyFog(c,vW);
+      gl_FragColor=vec4(c,1.0); }`,
+  });
+  pebbleMesh=new THREE.Mesh(geo,m); pebbleMesh.frustumCulled=false; scene.add(pebbleMesh);
+  proofState.pebbles=N;
+}
+
+// ============================================================
+// ROCK MATERIAL — flat paint, coral rim from the dying sun,
+// silhouette darkening for line weight
+// ============================================================
+const rockMat=shaderMat({
+  vertexColors:true,
+  vs:`varying vec3 vC; varying vec3 vW; varying vec3 vN;
+  void main(){ vC=color; vN=normalize(mat3(modelMatrix)*normal);
+    vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+    gl_Position=projectionMatrix*viewMatrix*wp; }`,
+  fs:`${GLSL_FOG}
+  varying vec3 vC; varying vec3 vW; varying vec3 vN;
+  void main(){
+    vec3 n=normalize(vN);
+    vec3 view=normalize(uCam-vW);
+    vec3 c=vC;
+    vec3 sunUp=normalize(uSunDir+vec3(0.0,0.85,0.0));
+    float rim=pow(max(dot(n,sunUp),0.0),3.0);
+    c=mix(c,vec3(0.957,0.580,0.353),rim*0.55);          // coral catch on top edges
+    float sil=pow(1.0-abs(dot(n,view)),2.5);
+    c*=1.0-sil*0.30;                                     // thick-line silhouette darkening
+    c=applyFog(c,vW);
+    gl_FragColor=vec4(c,1.0);
+  }`,
+});
+function lumpRock(r,squash,seedK){
+  const g=new THREE.IcosahedronGeometry(r,1);
+  const p=g.getAttribute('position');
+  for(let i=0;i<p.count;i++){
+    const v=new THREE.Vector3().fromBufferAttribute(p,i);
+    const k=0.72+0.55*n1(seedK+v.x*1.7+v.y*2.3+v.z*3.1);
+    v.multiplyScalar(k); v.y*=squash;
+    p.setXYZ(i,v.x,v.y,v.z);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+function paintRock(g,cA,cB){
+  const p=g.getAttribute('position'); const cc=new Float32Array(p.count*3);
+  let ymin=1e9,ymax=-1e9;
+  for(let i=0;i<p.count;i++){ ymin=Math.min(ymin,p.getY(i)); ymax=Math.max(ymax,p.getY(i)); }
+  for(let i=0;i<p.count;i++){
+    const t=(p.getY(i)-ymin)/Math.max(0.001,ymax-ymin);
+    const c=cB.clone().lerp(cA,t);
+    cc.set([c.r,c.g,c.b],i*3);
+  }
+  g.setAttribute('color',new THREE.Float32BufferAttribute(cc,3));
+  return g;
+}
+const shadowMat=new THREE.MeshBasicMaterial({color:0x2A1208,transparent:true,opacity:0.55,depthWrite:false});
+function contactShadow(x,y,z,r){
+  const m=new THREE.Mesh(new THREE.CircleGeometry(r,18),shadowMat);
+  m.rotation.x=-Math.PI/2; m.position.set(x,y+0.05,z); m.scale.x=1.35; scene.add(m);
+}
+function propGround(s,lat){ return groundHAt? groundHAt(s,lat) : evalH(s); }
+function propPos(s,lat){ const p=spinePos(s), L2=spineLeft(s);
+  return new THREE.Vector3(p.x+L2.x*lat, propGround(s,lat), p.z+L2.z*lat); }
+
+// ---------- six boulders, three per side, sitting on their shadows ----------
+const boulderList=[];
+{
+  const sides=[1,-1,1,-1,1,-1];
+  for(let i=0;i<6;i++){
+    let s=rr(60,TOTAL-160);
+    if(s>S_FORK-40&&s<S_JOIN+40) s=S_FORK-rr(60,180);   // stay clear of the fork mouth
+    const lat=sides[i]*rr(9,26);
+    const r=rr(1.5,3.1);
+    const g=paintRock(lumpRock(r,rr(0.72,0.9),rr(0,50)),col(PAL.rock),col(PAL.rockDark));
+    const m=new THREE.Mesh(g,rockMat);
+    const p=propPos(s,lat);
+    m.position.set(p.x,p.y+r*0.42,p.z);
+    m.rotation.y=rr(0,6.28);
+    scene.add(m);
+    contactShadow(p.x,p.y,p.z,r*0.95);
+    boulderList.push([Math.round(p.x),Math.round(p.y),Math.round(p.z)]);
+  }
+  proofState.boulders=boulderList.length;
+}
+// ---------- sage, swaying a little in the wind ----------
+let sageCount=0;
+{
+  const N=76;
+  const quads=[]; // 3 crossed planes, origin at base
+  for(let q=0;q<3;q++){
+    const a=q*Math.PI/3;
+    const c=Math.cos(a), s2=Math.sin(a);
+    quads.push([[-0.5*c,0,-0.5*s2],[0.5*c,0,0.5*s2],[0.5*c,1,0.5*s2],[-0.5*c,1,-0.5*s2]]);
+  }
+  const P=[],UVQ=[],IDX=[]; let vc=0;
+  for(const qd of quads){
+    for(const v of qd) P.push(v[0],v[1],v[2]);
+    UVQ.push(0,0, 1,0, 1,1, 0,1);
+    IDX.push(vc,vc+1,vc+2, vc,vc+2,vc+3); vc+=4;
+  }
+  const geo=new THREE.InstancedBufferGeometry();
+  const bg=new THREE.BufferGeometry();
+  bg.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  bg.setAttribute('uv',new THREE.Float32BufferAttribute(UVQ,2));
+  bg.setIndex(IDX);
+  geo.index=bg.index;
+  geo.setAttribute('position',bg.getAttribute('position'));
+  geo.setAttribute('uv',bg.getAttribute('uv'));
+  const off=new Float32Array(N*3), sc=new Float32Array(N), ph=new Float32Array(N), tn=new Float32Array(N);
+  let placed=0;
+  for(let i=0;i<N;i++){
+    let s=rr(30,TOTAL-60), lat=(chance05()?1:-1)*rr(4.5,52);
+    if(s>S_FORK-20&&s<S_JOIN+20&&Math.abs(lat)<86){ i--; continue; }
+    const p=propPos(s,lat);
+    off.set([p.x,p.y-0.02,p.z],placed*3);
+    sc[placed]=rr(0.45,0.95); ph[placed]=R()*6.28; tn[placed]=R();
+    placed++;
+    if(placed>=N) break;
+  }
+  function chance05(){ return R()<0.5; }
+  geo.setAttribute('iOff',new THREE.InstancedBufferAttribute(off,3));
+  geo.setAttribute('iSc',new THREE.InstancedBufferAttribute(sc,1));
+  geo.setAttribute('iPh',new THREE.InstancedBufferAttribute(ph,1));
+  geo.setAttribute('iTn',new THREE.InstancedBufferAttribute(tn,1));
+  geo.instanceCount=placed;
+  const m=shaderMat({
+    vs:`attribute vec3 iOff; attribute float iSc; attribute float iPh; attribute float iTn;
+    uniform float uTime;
+    varying vec2 vUv; varying float vTn; varying vec3 vW; varying float vPh;
+    void main(){ vUv=uv; vTn=iTn; vPh=iPh;
+      vec3 p=position*iSc;
+      float sway=sin(uTime*0.85+iPh)*0.05+sin(uTime*2.1+iPh*1.7)*0.02;
+      p.x+=sway*position.y*iSc;
+      vec4 wp=modelMatrix*vec4(p+iOff,1.0); vW=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp; }`,
+    fs:`${GLSL_H}${GLSL_FOG}
+    varying vec2 vUv; varying float vTn; varying vec3 vW; varying float vPh;
+    void main(){
+      vec2 q=vUv-vec2(0.5,0.42);
+      float blob=n2(vUv*3.4+vPh)*0.34;
+      float d=length(q*vec2(1.15,1.35))-0.34-blob*0.35;
+      if(d>0.0) discard;
+      vec3 c=mix(vec3(0.196,0.216,0.157),vec3(0.239,0.180,0.251),vTn);
+      c*=0.62+0.5*vUv.y;
+      c=applyFog(c,vW);
+      gl_FragColor=vec4(c,1.0); }`,
+    side:THREE.DoubleSide,
+  });
+  const mesh=new THREE.Mesh(geo,m); mesh.frustumCulled=false; scene.add(mesh);
+  sageCount=placed; proofState.sage=placed;
+}
+
+// ============================================================
+// LANDMARKS — the four silhouettes that carry the ride
+// ============================================================
+// 1) The Stone Arch — Delicate Arch's stranger cousin, right of the crest
+{
+  const sArch=S_CREST+rr(-25,20), latArch=-rr(38,54);
+  const base=propPos(sArch,latArch);
+  const grp=new THREE.Group(); grp.position.copy(base); grp.position.y-=2;
+  const tan=spineLeft(sArch); // span roughly parallel to the road
+  grp.rotation.y=Math.atan2(-tan.z,tan.x)+rr(-0.2,0.2);
+  const span=rr(36,46), apex=rr(27,34);
+  const asym=rr(0.12,0.3);
+  const geoms=[];
+  // continuous arc spine: a tube, so the silhouette never breaks
+  const arcPts=[];
+  for(let i=0;i<=10;i++){
+    const t=i/10;
+    const px=(t-0.5)*span*(1+asym*(t-0.5)*2.0);
+    const py=Math.pow(Math.sin(Math.PI*Math.max(0.02,Math.min(0.98,t))),0.82)*apex+1.0;
+    arcPts.push(new THREE.Vector3(px,py,Math.sin(t*9.0+asym*20.0)*1.2));
+  }
+  const arcCurve=new THREE.CatmullRomCurve3(arcPts,false,'centripetal');
+  const tubeG=new THREE.TubeGeometry(arcCurve,32,3.1,8,false);
+  geoms.push(tubeG);
+  // organic bulk at the legs and one heavy shoulder
+  for(const [t,k] of [[0.04,1.9],[0.96,1.6],[0.30,1.25],[0.72,1.1]]){
+    const p=arcCurve.getPointAt(t);
+    const g=lumpRock(3.1*k*(t<0.5?1+asym:1),0.95,rr(0,50));
+    g.translate(p.x,p.y,p.z);
+    geoms.push(g);
+  }
+  // one fallen piece at the foot — something already happened here
+  const chunk=lumpRock(2.1,0.7,rr(0,50));
+  chunk.translate(span*0.34,1.0,rr(2,5));
+  geoms.push(chunk);
+  const P=[],NN=[],CC=[],IDX=[]; let vc=0;
+  const cA=col(0x6E2A34), cB=col(0x3A1A26);
+  for(const g of geoms){
+    paintRock(g,cA,cB);
+    const p=g.getAttribute('position'), n=g.getAttribute('normal'), c=g.getAttribute('color'), ix=g.getIndex();
+    for(let i=0;i<p.count;i++){ P.push(p.getX(i),p.getY(i),p.getZ(i)); NN.push(n.getX(i),n.getY(i),n.getZ(i)); CC.push(c.getX(i),c.getY(i),c.getZ(i)); }
+    if(ix){ for(let i=0;i<ix.count;i++) IDX.push(ix.getX(i)+vc); }
+    else { for(let i=0;i<p.count;i++) IDX.push(i+vc); }
+    vc+=p.count;
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('normal',new THREE.Float32BufferAttribute(NN,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(CC,3));
+  g.setIndex(IDX);
+  grp.add(new THREE.Mesh(g,rockMat));
+  scene.add(grp);
+  contactShadow(base.x,base.y,base.z,7);
+  proofState.landmarks.arch=[Math.round(base.x),Math.round(base.y),Math.round(base.z)];
+}
+// 2) The Obsidian Spire — improbably tall, left, near-black
+{
+  const sSp=SB[1]*rr(0.45,0.9), latSp=rr(70,110);
+  const p=propPos(sSp,latSp);
+  const h=rr(40,54);
+  const geoms=[];
+  let yy=0;
+  for(let i=0;i<4;i++){
+    const hh=h*(0.34-i*0.05), r0=2.6*(1-i*0.21), r1=2.6*(1-(i+1)*0.21);
+    const g=new THREE.CylinderGeometry(Math.max(r1,0.3),r0,hh,7);
+    g.translate(rr(-0.3,0.3),yy+hh/2,rr(-0.3,0.3));
+    yy+=hh*0.96;
+    geoms.push(g);
+  }
+  const P=[],NN=[],CC=[],IDX=[]; let vc=0;
+  for(const g of geoms){
+    paintRock(g,col(0x2E1620),col(PAL.spire));
+    const pp=g.getAttribute('position'), n=g.getAttribute('normal'), c=g.getAttribute('color'), ix=g.getIndex();
+    for(let i=0;i<pp.count;i++){ P.push(pp.getX(i),pp.getY(i),pp.getZ(i)); NN.push(n.getX(i),n.getY(i),n.getZ(i)); CC.push(c.getX(i),c.getY(i),c.getZ(i)); }
+    for(let i=0;i<ix.count;i++) IDX.push(ix.getX(i)+vc);
+    vc+=pp.count;
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('normal',new THREE.Float32BufferAttribute(NN,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(CC,3));
+  g.setIndex(IDX);
+  const m=new THREE.Mesh(g,rockMat);
+  m.position.set(p.x,p.y-1,p.z); scene.add(m);
+  contactShadow(p.x,p.y,p.z,3.4);
+  proofState.landmarks.spire=[Math.round(p.x),Math.round(p.y),Math.round(p.z)];
+}
+// 3) The Balanced Rock — the photograph you'd stop for; the right fork slips behind it
+{
+  const sBR=(S_FORK+S_JOIN)/2+rr(-30,30), latBR=-rr(18,28);
+  const p=propPos(sBR,latBR);
+  const g1=paintRock(lumpRock(1.5,0.8,rr(0,50)),col(PAL.rock),col(PAL.rockDark));
+  const g2=paintRock(lumpRock(3.0,0.72,rr(0,50)),col(0x8A4630),col(PAL.rockDark));
+  const m1=new THREE.Mesh(g1,rockMat); m1.position.set(p.x,p.y+0.9,p.z);
+  const m2=new THREE.Mesh(g2,rockMat); m2.position.set(p.x+rr(-0.5,0.5),p.y+3.3,p.z+rr(-0.5,0.5));
+  m2.rotation.set(rr(-0.15,0.15),rr(0,6.28),rr(-0.15,0.15));
+  scene.add(m1); scene.add(m2);
+  contactShadow(p.x,p.y,p.z,2.1);
+  proofState.landmarks.balancedRock=[Math.round(p.x),Math.round(p.y),Math.round(p.z)];
+}
+// 4) Bioluminescent clusters — the only cool notes on the canyon floor
+const crystalUniforms=[];
+function crystalCluster(s,lat,hex,name){
+  const p=propPos(s,lat);
+  const cc=col(hex);
+  const P=[],NN=[],AA=[],IDX=[]; let vc=0;
+  const n=ri(6,8);
+  for(let i=0;i<n;i++){
+    const hgt=rr(0.7,2.2), rad=hgt*rr(0.14,0.2);
+    const g=new THREE.OctahedronGeometry(rad,0);
+    g.scale(1,hgt/rad*0.5,1);
+    const tilt=rr(0.1,0.5), az=rr(0,6.28);
+    g.rotateX(Math.sin(az)*tilt); g.rotateZ(Math.cos(az)*tilt);
+    g.translate(Math.sin(az)*rr(0.2,1.1),hgt*0.42,Math.cos(az)*rr(0.2,1.1));
+    const pp=g.getAttribute('position'), nn=g.getAttribute('normal');
+    const ph=R();
+    const idx=[]; // octahedron is non-indexed in three r160? ensure index
+    const gi=g.getIndex();
+    for(let k2=0;k2<pp.count;k2++){ P.push(pp.getX(k2),pp.getY(k2),pp.getZ(k2)); NN.push(nn.getX(k2),nn.getY(k2),nn.getZ(k2)); AA.push(ph); }
+    if(gi){ for(let k2=0;k2<gi.count;k2++) IDX.push(gi.getX(k2)+vc); }
+    else { for(let k2=0;k2<pp.count;k2++) IDX.push(k2+vc); }
+    vc+=pp.count;
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('normal',new THREE.Float32BufferAttribute(NN,3));
+  g.setAttribute('aPh',new THREE.Float32BufferAttribute(AA,1));
+  g.setIndex(IDX);
+  const m=shaderMat({
+    uniforms:{uTint:{value:cc}},
+    vs:`attribute float aPh; varying float vPh; varying vec3 vN; varying vec3 vW; varying float vY;
+    void main(){ vPh=aPh; vN=normalize(mat3(modelMatrix)*normal); vY=position.y;
+      vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp; }`,
+    fs:`${GLSL_FOG}
+    uniform float uTime; uniform vec3 uTint;
+    varying float vPh; varying vec3 vN; varying vec3 vW; varying float vY;
+    void main(){
+      float pulse=0.55+0.45*sin(uTime*1.5708+vPh*6.28);
+      vec3 view=normalize(uCam-vW);
+      float fres=pow(1.0-abs(dot(normalize(vN),view)),1.5);
+      vec3 c=uTint*(0.36+0.55*pulse)+uTint*fres*0.5;
+      c+=vec3(1.0)*smoothstep(0.55,0.0,vY)*pulse*0.30;   // bright pulse at the heart
+      c=mix(c,fogTint(vW),fogAmt(distance(vW,uCam))*0.55);
+      gl_FragColor=vec4(c,1.0); }`,
+  });
+  const mesh=new THREE.Mesh(g,m); mesh.position.copy(p); scene.add(mesh);
+  // radial glow + ground light
+  const cv=document.createElement('canvas'); cv.width=cv.height=64;
+  const x2=cv.getContext('2d'); const gr=x2.createRadialGradient(32,32,1,32,32,32);
+  const cs=`rgba(${Math.round(cc.r*255)},${Math.round(cc.g*255)},${Math.round(cc.b*255)}`;
+  gr.addColorStop(0,cs+',0.65)'); gr.addColorStop(1,cs+',0)');
+  x2.fillStyle=gr; x2.fillRect(0,0,64,64);
+  const t=new THREE.CanvasTexture(cv); t.colorSpace=THREE.SRGBColorSpace;
+  const sm=new THREE.SpriteMaterial({map:t,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,opacity:0.8});
+  const sp=new THREE.Sprite(sm); sp.position.copy(p); sp.position.y+=1.1; sp.scale.set(7,7,1); scene.add(sp);
+  crystalUniforms.push({mat:sm,phase:R()*6.28});
+  const gl2=new THREE.Mesh(new THREE.CircleGeometry(2.2,16),
+    new THREE.MeshBasicMaterial({color:cc,transparent:true,opacity:0.14,depthWrite:false,blending:THREE.AdditiveBlending}));
+  gl2.rotation.x=-Math.PI/2; gl2.position.set(p.x,p.y+0.06,p.z); scene.add(gl2);
+  proofState.landmarks[name]=[Math.round(p.x),Math.round(p.y),Math.round(p.z)];
+}
+crystalCluster(SB[1]+(SB[2]-SB[1])*rr(0.5,0.8), rr(12,17), PAL.cyan, 'crystalCyan');
+crystalCluster(SB[3]+(SB[4]-SB[3])*rr(0.15,0.4), -rr(12,17), PAL.magentaC, 'crystalMagenta');
+// the cairn at the end of everything
+{
+  const ef=getFrame(FRAMES.left,FRAMES.left.len-11);
+  const p=new THREE.Vector3(ef.x-ef.lx*3.3, 0, ef.z-ef.lz*3.3);
+  p.y=groundHAt? (()=>{ return ef.y-0.1; })() : ef.y-0.1;
+  let y=p.y;
+  for(let i=0;i<7;i++){
+    const r=lerp(0.95,0.24,i/6);
+    const g=paintRock(lumpRock(r,0.52,rr(0,50)),col(PAL.rock),col(PAL.rockDark));
+    const m=new THREE.Mesh(g,rockMat);
+    m.position.set(p.x+rr(-0.08,0.08),y+r*0.32,p.z+rr(-0.08,0.08));
+    m.rotation.y=rr(0,6.28);
+    scene.add(m); y+=r*0.58;
+  }
+  for(let i=0;i<3;i++){ const r2=rr(0.2,0.4);
+    const g=paintRock(lumpRock(r2,0.6,rr(0,50)),col(PAL.rock),col(PAL.rockDark));
+    const m=new THREE.Mesh(g,rockMat);
+    m.position.set(p.x+rr(-2.2,2.2),p.y+r2*0.3,p.z+rr(-2.2,2.2));
+    scene.add(m);
+  }
+  contactShadow(p.x,p.y,p.z,1.3);
+  proofState.landmarks.cairn=[Math.round(p.x),Math.round(p.y),Math.round(p.z)];
+}
+
+// ============================================================
+// SMALL LIVING THINGS — motes, one bird, the photographed frame
+// ============================================================
+{
+  const N=92;
+  const geo=new THREE.InstancedBufferGeometry();
+  const q=new THREE.PlaneGeometry(1,1);
+  geo.index=q.index; geo.setAttribute('position',q.getAttribute('position'));
+  geo.setAttribute('uv',q.getAttribute('uv'));
+  const off=new Float32Array(N*3), ph=new Float32Array(N), sz=new Float32Array(N),
+        sp=new Float32Array(N), am=new Float32Array(N);
+  for(let i=0;i<N;i++){
+    const s=rr(0,TOTAL), lat=(R()<0.5?1:-1)*rr(8,58);
+    const p=spinePos(s), L2=spineLeft(s);
+    off.set([p.x+L2.x*lat, evalH(s)+rr(0.8,6.5), p.z+L2.z*lat],i*3);
+    ph[i]=R()*6.28; sz[i]=rr(0.05,0.2); sp[i]=rr(0.05,0.16); am[i]=rr(0.8,2.6);
+  }
+  geo.setAttribute('iOff',new THREE.InstancedBufferAttribute(off,3));
+  geo.setAttribute('iPh',new THREE.InstancedBufferAttribute(ph,1));
+  geo.setAttribute('iSz',new THREE.InstancedBufferAttribute(sz,1));
+  geo.setAttribute('iSp',new THREE.InstancedBufferAttribute(sp,1));
+  geo.setAttribute('iAm',new THREE.InstancedBufferAttribute(am,1));
+  geo.instanceCount=N;
+  const m=shaderMat({
+    vs:`attribute vec3 iOff; attribute float iPh; attribute float iSz; attribute float iSp; attribute float iAm;
+    uniform float uTime;
+    varying vec2 vUv; varying vec3 vW;
+    void main(){ vUv=uv;
+      vec3 drift=vec3(sin(uTime*iSp+iPh),0.35*sin(uTime*iSp*0.63+iPh*2.0),cos(uTime*iSp*0.81+iPh))*iAm;
+      vec3 base=iOff+drift;
+      vec3 right=vec3(viewMatrix[0][0],viewMatrix[1][0],viewMatrix[2][0]);
+      vec3 up2=vec3(viewMatrix[0][1],viewMatrix[1][1],viewMatrix[2][1]);
+      vec3 p=base+(right*position.x+up2*position.y)*iSz;
+      vW=p;
+      gl_Position=projectionMatrix*viewMatrix*vec4(p,1.0); }`,
+    fs:`varying vec2 vUv; varying vec3 vW;
+    uniform vec3 uCam;
+    void main(){
+      float r=length(vUv-0.5)*2.0;
+      float a=smoothstep(1.0,0.1,r)*0.07;
+      a*=smoothstep(6.0,20.0,distance(vW,uCam));
+      gl_FragColor=vec4(vec3(0.95,0.72,0.5)*a,1.0); }`,
+    transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
+  });
+  const mesh=new THREE.Mesh(geo,m); mesh.frustumCulled=false; scene.add(mesh);
+}
+// one bird. a world with a bird is a place.
+const bird=new THREE.Group();
+{
+  const wingG=new THREE.BufferGeometry();
+  wingG.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0.28, -1.05,0.12,0, 0,0,-0.28],3));
+  wingG.computeVertexNormals();
+  const wm=new THREE.MeshBasicMaterial({color:0x2A1218,side:THREE.DoubleSide});
+  const w1=new THREE.Mesh(wingG,wm);
+  const w2=new THREE.Mesh(wingG.clone(),wm); w2.scale.x=-1;
+  bird.add(w1); bird.add(w2); bird.userData={w1,w2};
+  bird.visible=false; scene.add(bird);
+}
+const birdPlan={ t:rr(70,150), dur:14, t0:0, active:false, done:false,
+  p0:new THREE.Vector3(), p1:new THREE.Vector3() };
+// the photographed frame: radial vignette, ~50% at the corners
+{
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute([-1,-1,0, 3,-1,0, -1,3,0],3));
+  const m=new THREE.ShaderMaterial({
+    vertexShader:`varying vec2 vP; void main(){ vP=position.xy; gl_Position=vec4(position.xy,0.9999,1.0); }`,
+    fragmentShader:`varying vec2 vP;
+    void main(){ float r=length(vP*vec2(1.0,0.85));
+      float a=0.5*smoothstep(0.55,1.5,r);
+      gl_FragColor=vec4(0.0,0.0,0.0,a); }`,
+    transparent:true, depthTest:false, depthWrite:false });
+  const mesh=new THREE.Mesh(g,m); mesh.frustumCulled=false; mesh.renderOrder=999; scene.add(mesh);
+}
+
+// ============================================================
+// SOUND — wind in a slot canyon at dusk, tires on gravel.
+// Synthesized inline. Silence is the score.
+// ============================================================
+const AudioSys={ ctx:null, started:false, master:null, crunchGain:null, crunchBp:null,
+  gustGain:null, gustBp:null, nextGust:0 };
+const rrt=(a,b)=>a+(b-a)*RT();
+const audioEvents=[ {t:rr(40,78),type:'crow',fired:false},
+                    {t:rr(105,165),type:'rockfall',fired:false},
+                    {t:rr(195,255),type:'chimes',fired:false},
+                    {t:rr(285,345),type:'crow',fired:false} ];
+proofState.audio.events=audioEvents.map(e=>({t:Math.round(e.t),type:e.type}));
+function initAudio(){
+  if(AudioSys.started) return;
+  try{
+    const ctx=new (window.AudioContext||window.webkitAudioContext)();
+    AudioSys.ctx=ctx; AudioSys.started=true; proofState.audio.started=true;
+    const master=ctx.createGain(); master.gain.value=0.85; master.connect(ctx.destination);
+    AudioSys.master=master;
+    const nb=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate);
+    { const d=nb.getChannelData(0); const nr=mulberry32(xmur3(WORLD_SEED+'-audio')());
+      for(let i=0;i<d.length;i++) d[i]=nr()*2-1; }
+    // low continuous wind
+    const w=ctx.createBufferSource(); w.buffer=nb; w.loop=true;
+    const lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=420; lp.Q.value=0.6;
+    const wg=ctx.createGain(); wg.gain.value=0.11;
+    w.connect(lp); lp.connect(wg); wg.connect(master); w.start();
+    // canyon-shaped gust resonance
+    const w2=ctx.createBufferSource(); w2.buffer=nb; w2.loop=true; w2.playbackRate.value=0.71;
+    const bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=430; bp.Q.value=5.5;
+    const gg=ctx.createGain(); gg.gain.value=0;
+    w2.connect(bp); bp.connect(gg); gg.connect(master); w2.start();
+    AudioSys.gustGain=gg; AudioSys.gustBp=bp; AudioSys.nextGust=ctx.currentTime+rrt(4,10);
+    // tire crunch, near-field, pitched by speed
+    const c2=ctx.createBufferSource(); c2.buffer=nb; c2.loop=true; c2.playbackRate.value=1.8;
+    const cb=ctx.createBiquadFilter(); cb.type='bandpass'; cb.frequency.value=1500; cb.Q.value=0.8;
+    const cg=ctx.createGain(); cg.gain.value=0;
+    c2.connect(cb); cb.connect(cg); cg.connect(master); c2.start();
+    AudioSys.crunchGain=cg; AudioSys.crunchBp=cb;
+    // one sustained drone at the edge of hearing
+    const dr=ctx.createOscillator(); dr.type='sine'; dr.frequency.value=54;
+    const dg=ctx.createGain(); dg.gain.value=0.015; dr.connect(dg); dg.connect(master); dr.start();
+  }catch(e){ /* audio stays silent; the world does not care */ }
+}
+function playEvent(type){
+  const ctx=AudioSys.ctx; if(!ctx) return;
+  try{
+    const t0=ctx.currentTime+0.05;
+    const pan=ctx.createStereoPanner? ctx.createStereoPanner():null;
+    const out=pan||ctx.createGain(); if(pan) pan.pan.value=rrt(-0.8,0.8);
+    out.connect(AudioSys.master);
+    if(type==='crow'){
+      for(let i=0;i<2;i++){
+        const o=ctx.createOscillator(); o.type='sawtooth';
+        const f=ctx.createBiquadFilter(); f.type='bandpass'; f.frequency.value=1150; f.Q.value=2.2;
+        const g=ctx.createGain(); g.gain.value=0;
+        o.connect(f); f.connect(g); g.connect(out);
+        const ts=t0+i*0.38;
+        o.frequency.setValueAtTime(940,ts); o.frequency.exponentialRampToValueAtTime(610,ts+0.17);
+        g.gain.setValueAtTime(0,ts); g.gain.linearRampToValueAtTime(0.05,ts+0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001,ts+0.22);
+        o.start(ts); o.stop(ts+0.3);
+      }
+    } else if(type==='rockfall'){
+      for(let i=0;i<14;i++){
+        const s2=ctx.createBufferSource(); s2.buffer=AudioSys.master?ctx.createBuffer(1,441,ctx.sampleRate):null;
+        const nz=ctx.createBufferSource();
+        const b=ctx.createBuffer(1,Math.floor(ctx.sampleRate*0.03),ctx.sampleRate);
+        const d=b.getChannelData(0); for(let k2=0;k2<d.length;k2++) d[k2]=(rrt(0,2)-1)*(1-k2/d.length);
+        nz.buffer=b;
+        const f=ctx.createBiquadFilter(); f.type='highpass'; f.frequency.value=900;
+        const g=ctx.createGain(); g.gain.value=0.05*(1-i/16);
+        nz.connect(f); f.connect(g); g.connect(out);
+        nz.start(t0+i*rrt(0.05,0.12));
+      }
+    } else if(type==='chimes'){
+      for(let i=0;i<4;i++){
+        const o=ctx.createOscillator(); o.type='sine'; o.frequency.value=rrt(1100,2200);
+        const g=ctx.createGain(); g.gain.value=0;
+        o.connect(g); g.connect(out);
+        const ts=t0+i*rrt(0.3,0.9);
+        g.gain.setValueAtTime(0,ts); g.gain.linearRampToValueAtTime(0.028,ts+0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001,ts+2.6);
+        o.start(ts); o.stop(ts+2.8);
+      }
+    }
+  }catch(e){}
+}
+
+// ============================================================
+// THE RIDER — pure POV, chase camera, momentum, one real choice
+// ============================================================
+const CRUISE=7.5, VMAX=14, VMIN=2.2;
+let v=CRUISE, latT=0, paused=false, rideClock=0;
+let forkLocked=false, pendingBranch='left';
+let yawOff=0,pitchOff=0,dragging=false,lastMX=0,lastMY=0;
+const S_DECIDE=S_FORK_L-95;
+const keys={};
+function restart(){
+  rideS=0; v=CRUISE; latT=0; paused=false; rideClock=0;
+  forkLocked=false; pendingBranch='left'; rideBranch='left';
+  proofState.forkBranch=null; proofState.ended=false;
+  yawOff=0; pitchOff=0;
+  birdPlan.active=false; birdPlan.done=false; bird.visible=false;
+  for(const e of audioEvents) e.fired=false;
+}
+window.addEventListener('keydown',(e)=>{
+  initAudio();
+  if(e.code==='Space'){ e.preventDefault(); if(!e.repeat) paused=!paused; return; }
+  if(e.code==='KeyR'&&!e.repeat){ restart(); return; }
+  keys[e.code]=true;
+});
+window.addEventListener('keyup',(e)=>{ keys[e.code]=false; });
+window.addEventListener('mousedown',(e)=>{ initAudio(); dragging=true; lastMX=e.clientX; lastMY=e.clientY; });
+window.addEventListener('mouseup',()=>{ dragging=false; });
+window.addEventListener('mouseleave',()=>{ dragging=false; });
+window.addEventListener('mousemove',(e)=>{
+  if(!dragging) return;
+  yawOff=clamp(yawOff-(e.clientX-lastMX)*0.0022,-0.55,0.55);
+  pitchOff=clamp(pitchOff-(e.clientY-lastMY)*0.0018,-0.34,0.20);
+  lastMX=e.clientX; lastMY=e.clientY;
+});
+const camPos=new THREE.Vector3(), camTgt=new THREE.Vector3();
+const fwdS=new THREE.Vector3(0,0,-1);
+let camInit=false, lean=0;
+const frameTimes=[]; let fpsEma=60;
+renderer.info.autoReset=false;
+let lastNow=performance.now();
+
+renderer.setAnimationLoop(()=>{
+  const now=performance.now();
+  const rawDt=(now-lastNow)/1000; lastNow=now;
+  const dt=Math.min(rawDt,0.05);
+  U.uTime.value+=dt; rideClock+=dt;
+  frameTimes.push(rawDt*1000); if(frameTimes.length>240) frameTimes.shift();
+  fpsEma=fpsEma*0.95+(1/Math.max(rawDt,0.0001))*0.05;
+  proofState.fps=fpsEma;
+
+  const F=FRAMES[rideBranch];
+  // slope sampled ahead for grade feel (getFrame reuses one object — copy first)
+  const fA=getFrame(F,rideS+4); const yAhead=fA.y;
+  const f=getFrame(F,rideS);
+  const slope=(yAhead-f.y)/4;
+
+  if(!paused&&!proofState.ended){
+    if(keys['KeyW']||keys['ArrowUp']) v=Math.min(VMAX,v+4.5*dt);
+    else if(keys['KeyS']||keys['ArrowDown']) v=Math.max(VMIN,v-7*dt);
+    else v+=(CRUISE-v)*Math.min(1,dt*0.35);
+    const steer=((keys['KeyA']||keys['ArrowLeft'])?1:0)-((keys['KeyD']||keys['ArrowRight'])?1:0);
+    if(steer) latT=clamp(latT+steer*2.8*dt,-1.25,1.25);
+    else latT*=Math.exp(-dt*0.85);
+    const vEff=v*(1-clamp(slope*2.0,-0.12,0.16));
+    rideS+=vEff*dt;
+    // the fork: steering picks it, locked before the geometry divides
+    if(!forkLocked){
+      if(rideS>S_DECIDE-90&&rideS<S_DECIDE){
+        if(latT>0.15) pendingBranch='left';
+        else if(latT<-0.15) pendingBranch='right';
+      }
+      if(rideS>=S_DECIDE){
+        forkLocked=true; rideBranch=pendingBranch;
+        proofState.forkBranch=pendingBranch;
+      }
+    }
+    const L_end=F.len;
+    if(rideS>L_end-26){ v=Math.max(0,v-6*dt); if(v<0.1){ v=0; proofState.ended=true; } }
+    rideS=Math.min(rideS,L_end-12);
+  }
+
+  // chase camera
+  const up=new THREE.Vector3(0,1,0);
+  const fwd=new THREE.Vector3(f.tx,0,f.tz);
+  fwdS.lerp(fwd,1-Math.exp(-dt*3.2)).normalize();
+  const left=new THREE.Vector3(f.lx,0,f.lz);
+  const rider=new THREE.Vector3(f.x,f.y,f.z).addScaledVector(left,latT*0.6).add(new THREE.Vector3(0,1.30,0));
+  const wantPos=rider.clone().addScaledVector(fwdS,-4.8).addScaledVector(up,1.85);
+  if(!camInit){ camPos.copy(wantPos); fwdS.copy(fwd); camInit=true; }
+  camPos.lerp(wantPos,1-Math.exp(-dt*5));
+  camTgt.copy(rider).addScaledVector(fwdS,8.5).addScaledVector(up,0.55);
+  camera.position.copy(camPos);
+  // mouse look: rotate the target around the camera, road stays in frame
+  const toT=camTgt.clone().sub(camPos);
+  toT.applyAxisAngle(up,yawOff);
+  const right=new THREE.Vector3().crossVectors(toT,up).normalize();
+  toT.applyAxisAngle(right,pitchOff);
+  camera.lookAt(camPos.clone().add(toT));
+  const leanTgt=clamp(-f.k*v*v*0.05,-0.10,0.10);
+  lean+=(leanTgt-lean)*(1-Math.exp(-dt*4));
+  camera.rotateZ(lean);
+  if(!dragging){ yawOff*=Math.exp(-dt*1.4); pitchOff*=Math.exp(-dt*1.4); }
+  U.uCam.value.copy(camera.position);
+
+  // pebbles ride with you on the active branch
+  {
+    const arr=pebbleMesh.geometry.getAttribute('iOff');
+    const a=arr.array;
+    for(let i=0;i<pebbleData.s.length;i++){
+      let ps=pebbleData.s[i];
+      while(ps<rideS-6) ps+=76;
+      while(ps>rideS+70) ps-=76;
+      if(ps!==pebbleData.s[i]){ pebbleData.s[i]=ps; pebbleData.lat[i]=rrt(-1.9,1.9); }
+      const pf=getFrame(F,ps);
+      a[i*3]=pf.x+pf.lx*pebbleData.lat[i]; a[i*3+1]=pf.y+0.045; a[i*3+2]=pf.z+pf.lz*pebbleData.lat[i];
+    }
+    arr.needsUpdate=true;
+  }
+  // crystal halos breathe on their own 4-second hearts
+  for(const cu of crystalUniforms) cu.mat.opacity=0.45+0.4*(0.5+0.5*Math.sin(U.uTime.value*1.5708+cu.phase));
+  // the bird
+  if(!birdPlan.done&&!birdPlan.active&&rideClock>birdPlan.t){
+    birdPlan.active=true; birdPlan.t0=rideClock;
+    birdPlan.p0.copy(rider).addScaledVector(fwd,85).addScaledVector(left,95); birdPlan.p0.y=rider.y+rrt(13,20);
+    birdPlan.p1.copy(rider).addScaledVector(fwd,35).addScaledVector(left,-95); birdPlan.p1.y=rider.y+rrt(10,16);
+    bird.visible=true;
+  }
+  if(birdPlan.active){
+    const u2=(rideClock-birdPlan.t0)/birdPlan.dur;
+    if(u2>=1){ birdPlan.active=false; birdPlan.done=true; bird.visible=false; }
+    else{
+      bird.position.lerpVectors(birdPlan.p0,birdPlan.p1,u2);
+      bird.position.y+=Math.sin(u2*Math.PI)*4;
+      const dir=birdPlan.p1.clone().sub(birdPlan.p0);
+      bird.rotation.y=Math.atan2(dir.x,dir.z);
+      const flap=Math.sin(rideClock*7)*0.55;
+      bird.userData.w1.rotation.z=flap; bird.userData.w2.rotation.z=-flap;
+    }
+  }
+  // sound follows the ride
+  if(AudioSys.ctx){
+    const ctx=AudioSys.ctx;
+    if(ctx.state==='suspended'){ ctx.resume().catch(()=>{}); }
+    const cg=AudioSys.crunchGain;
+    const target=(paused||proofState.ended)?0:clamp(v/VMAX,0,1)*0.16;
+    cg.gain.setTargetAtTime(target,ctx.currentTime,0.08);
+    AudioSys.crunchBp.frequency.setTargetAtTime(1150+v*72,ctx.currentTime,0.1);
+    if(ctx.currentTime>AudioSys.nextGust){
+      const g=AudioSys.gustGain.gain, t0=ctx.currentTime;
+      g.cancelScheduledValues(t0); g.setValueAtTime(0.001,t0);
+      g.linearRampToValueAtTime(0.055,t0+1.6); g.exponentialRampToValueAtTime(0.0001,t0+4.2);
+      AudioSys.gustBp.frequency.setValueAtTime(360,t0);
+      AudioSys.gustBp.frequency.linearRampToValueAtTime(rrt(520,680),t0+4.0);
+      AudioSys.nextGust=t0+rrt(8,20);
+    }
+    for(const e of audioEvents) if(!e.fired&&rideClock>e.t){ e.fired=true; playEvent(e.type); }
+  }
+
+  renderer.info.reset();
+  renderer.render(scene,camera);
+  proofState.drawCalls=renderer.info.render.calls;
+  proofState.triangles=renderer.info.render.triangles;
+});
+window.addEventListener('resize',()=>{
+  camera.aspect=window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth,window.innerHeight);
+});
+</script>
+</body>
+</html>
