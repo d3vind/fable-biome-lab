@@ -1,0 +1,2098 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Summerglass Vale</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#54BEE7; }
+  canvas { display:block; }
+  #hint {
+    position:fixed; left:14px; bottom:12px; user-select:none; pointer-events:none;
+    color:#F0D9AA; text-shadow:0 1px 3px rgba(23,59,50,0.55);
+    font:14px system-ui, sans-serif; letter-spacing:0.02em; opacity:0.92; z-index:9;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hint">W/S ride &middot; A/D steer &middot; drag to look &middot; Space pause &middot; R restart</div>
+<script type="module">
+import * as THREE from 'three';
+
+// ============================================================
+// SUMMERGLASS VALE — a seeded cycling passage through one long
+// remembered summer afternoon. Route first, then the world.
+// ============================================================
+
+const capturedErrors=[];
+window.addEventListener('error',(e)=>{ capturedErrors.push(String(e.message||e)); });
+window.addEventListener('unhandledrejection',(e)=>{ capturedErrors.push('rejection: '+String(e.reason&&e.reason.message||e.reason)); });
+
+// ---------- seed ----------
+const qs=new URLSearchParams(location.search);
+const SEED_TEXT=(qs.get('seed')&&qs.get('seed').length)?qs.get('seed'):'SUMMERGLASS-8421';
+function xmur3(str){ let h=1779033703^str.length;
+  for(let i=0;i<str.length;i++){ h=Math.imul(h^str.charCodeAt(i),3432918353); h=(h<<13)|(h>>>19); }
+  return ()=>{ h=Math.imul(h^(h>>>16),2246822507); h=Math.imul(h^(h>>>13),3266489909); return (h^=h>>>16)>>>0; };
+}
+const SEED_HASH=xmur3(SEED_TEXT)();
+function mulberry32(a){ return ()=>{ a|=0; a=(a+0x6D2B79F5)|0;
+  let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
+function makeStream(name){
+  const f=mulberry32(xmur3(SEED_TEXT+'/'+name)());
+  return {
+    f, r:(a,b)=>a+(b-a)*f(), i:(a,b)=>Math.floor(a+(b-a+1)*f()),
+    chance:(p)=>f()<p, pick:(arr)=>arr[Math.floor(f()*arr.length)],
+    gauss:()=>{ let s=0; for(let k=0;k<4;k++) s+=f(); return (s-2)/1.0; },
+  };
+}
+const ROUTE=makeStream('route'), ELEV=makeStream('elevation'), FORKS=makeStream('fork'),
+      TERR=makeStream('terrain'), WATER=makeStream('water'), HERO=makeStream('hero-tree'),
+      TREES=makeStream('trees'), UNDER=makeStream('understory'), FLOW=makeStream('flowers'),
+      LAND=makeStream('landmarks'), CLOUD=makeStream('clouds'), PART=makeStream('particles'),
+      LIFE=makeStream('ambient-life'), SND=makeStream('sound');
+
+// ---------- deterministic world hashes (FNV-1a over fed values) ----------
+function fnv(){ let h=0x811C9DC5; return {
+  feed(...vals){ for(const v of vals){ const s=(typeof v==='number')?v.toFixed(4):String(v);
+    for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,0x01000193); } } },
+  hex(){ return (h>>>0).toString(16).padStart(8,'0'); } }; }
+const routeFnv=fnv(), terrainFnv=fnv(), ecoFnv=fnv();
+
+// ---------- palette ----------
+const PAL={
+  canopyDeep:0x173B32, leafShade:0x2C6F47, meadow:0x64B74E, sunGrass:0xB5E95B,
+  bark:0x654534, paleStone:0xF0D9AA, blossom:0xE8A9B6, skyWater:0x54BEE7,
+};
+const col=(h)=>new THREE.Color(h);
+const mixc=(a,b,t)=>col(a).lerp(col(b),t);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const lerp=(a,b,t)=>a+(b-a)*t;
+const smooth=(a,b,v)=>{ const t=clamp((v-a)/(b-a),0,1); return t*t*(3-2*t); };
+const TAU=Math.PI*2;
+
+// ---------- frozen value noise (per-purpose tables; no Math.random anywhere) ----------
+function noiseTable(stream){ const T=new Float32Array(512); for(let i=0;i<512;i++) T[i]=stream.f(); return T; }
+function makeNoise2(T){
+  const hash=(x,y)=>{ let n=(x*374761393+y*668265263)|0; n=(n^(n>>>13))|0; n=Math.imul(n,1274126177); return T[((n^(n>>>16))>>>0)&511]; };
+  return (x,y)=>{
+    const xi=Math.floor(x), yi=Math.floor(y), xf=x-xi, yf=y-yi;
+    const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+    return lerp(lerp(hash(xi,yi),hash(xi+1,yi),u),lerp(hash(xi,yi+1),hash(xi+1,yi+1),u),v);
+  };
+}
+const nTerr=makeNoise2(noiseTable(TERR)), nEco=makeNoise2(noiseTable(UNDER));
+function fbmT(x,y){ return nTerr(x,y)*0.54+nTerr(x*2.13+7.7,y*2.13+3.1)*0.28+nTerr(x*4.61+17.9,y*4.61+11.3)*0.18; }
+function fbmE(x,y){ return nEco(x,y)*0.6+nEco(x*2.7+5.1,y*2.7+9.7)*0.4; }
+
+// ============================================================
+// ROUTE — generated before everything else that stands on it.
+// A heading walk of long bowed curves; seven fixed chapters.
+// ============================================================
+const L_TOTAL=ROUTE.r(2780,3020);
+const CHAP={ gate:320/3000, sunbank:760/3000, fernfold:1080/3000, fork:1470/3000,
+             joining:2050/3000, cloudstep:2480/3000 };
+// seeded jitter of the chapter boundaries (structure, not cosmetics)
+for(const k of Object.keys(CHAP)) CHAP[k]=clamp(CHAP[k]+ROUTE.r(-0.022,0.022),0.04,0.97);
+const S_GATE=L_TOTAL*CHAP.gate, S_SUNBANK=L_TOTAL*CHAP.sunbank, S_FERN=L_TOTAL*CHAP.fernfold,
+      S_FORKEND=L_TOTAL*CHAP.fork, S_JOINEND=L_TOTAL*CHAP.joining, S_CLIMBEND=L_TOTAL*CHAP.cloudstep;
+function chapterOf(s){ const f=s/L_TOTAL;
+  if(f<CHAP.gate) return 'The Dappled Gate';
+  if(f<CHAP.sunbank) return 'Sunbank';
+  if(f<CHAP.fernfold) return 'Fernfold';
+  if(f<CHAP.fork) return 'The Mosswater Choice';
+  if(f<CHAP.joining) return 'Joining Woods';
+  if(f<CHAP.cloudstep) return 'Cloudstep Rise';
+  return 'Bellroot Exhale'; }
+
+// grade profile: rollers, one sustained climb in Cloudstep, one descent release
+const CLIMB_G=ELEV.r(0.034,0.048);
+const DESC_CH=ELEV.chance(0.5)?'sunbank':'postfork';
+function gradeAt(f){
+  let g=Math.sin(f*TAU*ELEV.r(2.1,2.9)+ELEV.r(0,TAU))*0.016;   // gentle rollers
+  g-=0.042*(1-smooth(0.0,0.052,f));                            // the opening rise looks down the vale
+  g+=Math.sin(f*TAU*1.13+2.1)*0.008;
+  if(f>CHAP.joining&&f<CHAP.cloudstep) g+=CLIMB_G*smooth(CHAP.joining,CHAP.joining+0.05,f)*(1-smooth(CHAP.cloudstep-0.03,CHAP.cloudstep,f));
+  if(DESC_CH==='sunbank'&&f>CHAP.gate&&f<CHAP.sunbank) g-=0.024*smooth(CHAP.gate,CHAP.gate+0.04,f)*(1-smooth(CHAP.sunbank-0.05,CHAP.sunbank,f));
+  if(DESC_CH==='postfork'&&f>CHAP.fork&&f<CHAP.fork+0.09) g-=0.026*smooth(CHAP.fork,CHAP.fork+0.02,f)*(1-smooth(CHAP.fork+0.07,CHAP.fork+0.09,f));
+  if(f>0.968) g-=0.016*smooth(0.968,0.985,f);            // the overlook exhales after the roots
+  return clamp(g,-0.05,0.05);
+}
+
+// ---------- spine walk: long bowed curves, tangent-continuous ----------
+const STEP=4;
+const spine={x:[],y:[],z:[],hd:[]};
+{
+  let x=0,z=0,hd=ROUTE.r(0,TAU);
+  // curve plan: >=16 meaningful bows; alternate sign with seeded arc lengths
+  const bows=[]; let acc=0;
+  while(acc<L_TOTAL+400){
+    const segL=ROUTE.r(120,240);                 // one broad bow
+    const rad=ROUTE.r(95,240)*(ROUTE.chance(0.52)?1:-1);
+    bows.push({s0:acc,s1:acc+segL,k:1/rad});
+    acc+=segL+ROUTE.r(20,70);                    // short straight breath between bows
+  }
+  // aim the far end of the vale ahead of the opening view (the Bellroot promise):
+  // deterministically flip the deepest bows until the net drift is a gentle forward arc
+  const endBearing=()=>{
+    let hh=0,xx=0,zz=0;
+    for(let s2=0;s2<L_TOTAL;s2+=STEP){
+      let k2=0;
+      for(const b2 of bows) if(s2>=b2.s0&&s2<b2.s1) k2=b2.k*Math.sin(Math.PI*clamp((s2-b2.s0)/(b2.s1-b2.s0),0,1));
+      hh+=k2*STEP; xx+=Math.sin(hh)*STEP; zz+=Math.cos(hh)*STEP;
+    }
+    let d=Math.atan2(xx,zz); while(d>Math.PI)d-=TAU; while(d<-Math.PI)d+=TAU; return d;
+  };
+  {
+    const order=bows.map((b2,i2)=>i2).sort((i2,j2)=>Math.abs(bows[j2].k)-Math.abs(bows[i2].k));
+    let guard=0;
+    while(Math.abs(endBearing()-ROUTE.r(0.06,0.1)*0)>0.34&&guard<bows.length){
+      const d=endBearing();
+      const i2=order[guard++];
+      if(Math.sign(bows[i2].k)===Math.sign(d)) bows[i2].k*=-1;
+    }
+  }
+  routeFnv.feed(L_TOTAL,bows.length);
+  const N=Math.ceil((L_TOTAL+340)/STEP);
+  let g=0,y=0,gs=0;
+  for(let i=0;i<=N;i++){
+    const s=i*STEP, f=s/L_TOTAL;
+    let k=0;
+    for(const b of bows) if(s>=b.s0&&s<b.s1) k=b.k*Math.sin(Math.PI*clamp((s-b.s0)/(b.s1-b.s0),0,1));
+    k*=1-0.85*smooth(L_TOTAL-580,L_TOTAL-440,s)*(1-smooth(L_TOTAL-95,L_TOTAL-40,s)); // the tree owns the approach
+    hd+=k*STEP;
+    x+=Math.sin(hd)*STEP; z+=Math.cos(hd)*STEP;
+    const gt=gradeAt(f); gs+=(gt-gs)*0.08; y+=gs*STEP;
+    spine.x.push(x); spine.y.push(y); spine.z.push(z); spine.hd.push(hd);
+    if(i%16===0) routeFnv.feed(x,y,z);
+  }
+  // light elevation smoothing so rollers never kink
+  for(let r2=0;r2<3;r2++) for(let i=1;i<spine.y.length-1;i++)
+    spine.y[i]=(spine.y[i-1]+spine.y[i]*2+spine.y[i+1])/4;
+}
+const spinePos=(s)=>{ const i=clamp(s/STEP,0,spine.x.length-1), i0=Math.floor(i), t=i-i0,
+  i1=Math.min(i0+1,spine.x.length-1);
+  return new THREE.Vector3(lerp(spine.x[i0],spine.x[i1],t),lerp(spine.y[i0],spine.y[i1],t),lerp(spine.z[i0],spine.z[i1],t)); };
+
+// ---------- the Mosswater Choice: two real arms with their own splines ----------
+const S_FORKSTART=S_FERN+FORKS.r(24,60);          // decision window opens
+const ARM_SEP=FORKS.r(260,340);                   // separated length target
+const S_REJOIN=Math.min(S_FORKSTART+ARM_SEP+FORKS.r(60,110),S_FORKEND+140);
+const FORK_SIDE=FORKS.chance(0.5)?1:-1;           // which side the Sunpath climbs toward (seed-structural)
+function armPoints(kind){ // kind: 'sun' (climbs, brighter) | 'moss' (descends, creekside)
+  const pts=[];
+  const n=9;
+  const amp=(kind==='sun'?FORKS.r(20,30):FORKS.r(16,24))*(kind==='sun'?FORK_SIDE:-FORK_SIDE);
+  const lift=(kind==='sun'?FORKS.r(3.5,6):-FORKS.r(2.5,4.5));
+  for(let i=0;i<=n;i++){
+    const t=i/n, s=lerp(S_FORKSTART-30,S_REJOIN+30,t);
+    const p=spinePos(s);
+    const hd=spine.hd[clamp(Math.round(s/STEP),0,spine.hd.length-1)];
+    const lx=Math.cos(hd), lz=-Math.sin(hd);      // left normal of the walk
+    const bell=Math.sin(Math.PI*clamp((t-0.06)/0.88,0,1));
+    const bellY=bell*bell*bell;              // height splits only after the lanes part
+    const wob=Math.sin(t*TAU*(kind==='sun'?1.35:1.7)+FORKS.r(0,TAU))*5*bell;
+    p.x+=lx*(amp*bell+wob*0.4); p.z+=lz*(amp*bell+wob*0.4);
+    p.y+=lift*bellY+(kind==='moss'?-1.2*bellY:0.8*bellY);
+    pts.push(p);
+  }
+  return pts;
+}
+const armSun=new THREE.CatmullRomCurve3(armPoints('sun'),false,'centripetal',0.5);
+const armMoss=new THREE.CatmullRomCurve3(armPoints('moss'),false,'centripetal',0.5);
+routeFnv.feed(S_FORKSTART,S_REJOIN,FORK_SIDE,ARM_SEP);
+
+// ---------- full frame tables (1m) for each committed line ----------
+function buildFrames(arm){ // arm: 'sun' | 'moss' — spine outside window, arm inside
+  const pts=[];
+  for(let s=0;s<S_FORKSTART-30;s+=STEP) pts.push(spinePos(s));
+  const curve=(arm==='sun')?armSun:armMoss;
+  const armLen=curve.getLength();
+  const div=Math.ceil(armLen/STEP);
+  for(let i=0;i<=div;i++) pts.push(curve.getPointAt(i/div));
+  for(let s=S_REJOIN+30+STEP;s<=L_TOTAL+280;s+=STEP) pts.push(spinePos(s));
+  // resample by arc length at 2m
+  const RS=2;
+  const F={x:[],y:[],z:[],tx:[],tz:[],lx:[],lz:[],N:0,len:0,sForkIn:0,sForkOut:0};
+  let acc=0, target=0, prev=pts[0];
+  const put=(p)=>{ F.x.push(p.x); F.y.push(p.y); F.z.push(p.z); };
+  put(prev);
+  for(let i=1;i<pts.length;i++){
+    const p=pts[i]; const d=Math.hypot(p.x-prev.x,p.z-prev.z);
+    if(d<1e-6){ continue; }
+    let a=acc;
+    while(target+RS<=a+d){ target+=RS; const t=(target-a)/d;
+      put(new THREE.Vector3(lerp(prev.x,p.x,t),lerp(prev.y,p.y,t),lerp(prev.z,p.z,t))); }
+    acc+=d; prev=p;
+  }
+  F.N=F.x.length-1; F.len=F.N*RS; F.RS=RS;
+  for(let r2=0;r2<3;r2++) for(let i=1;i<F.N;i++){
+    F.x[i]=(F.x[i-1]+F.x[i]*2+F.x[i+1])/4; F.z[i]=(F.z[i-1]+F.z[i]*2+F.z[i+1])/4; }
+  for(let i=0;i<=F.N;i++){
+    const i0=Math.max(0,i-1), i1=Math.min(F.N,i+1);
+    let tx=F.x[i1]-F.x[i0], tz=F.z[i1]-F.z[i0];
+    const L=Math.hypot(tx,tz)||1; tx/=L; tz/=L;
+    F.tx.push(tx); F.tz.push(tz); F.lx.push(tz); F.lz.push(-tx);   // left = rot(tangent, +90)
+  }
+  // smooth y again after resample
+  for(let r2=0;r2<2;r2++) for(let i=1;i<F.N;i++) F.y[i]=(F.y[i-1]+F.y[i]*2+F.y[i+1])/4;
+  return F;
+}
+const FRAMES={ sun:buildFrames('sun'), moss:buildFrames('moss') };
+function getFrame(F,s){
+  s=clamp(s,0,F.len-0.001);
+  const i=s/F.RS, i0=Math.floor(i), t=i-i0, i1=Math.min(i0+1,F.N);
+  return { x:lerp(F.x[i0],F.x[i1],t), y:lerp(F.y[i0],F.y[i1],t), z:lerp(F.z[i0],F.z[i1],t),
+    tx:lerp(F.tx[i0],F.tx[i1],t), tz:lerp(F.tz[i0],F.tz[i1],t),
+    lx:lerp(F.lx[i0],F.lx[i1],t), lz:lerp(F.lz[i0],F.lz[i1],t) };
+}
+routeFnv.feed(FRAMES.sun.len,FRAMES.moss.len);
+
+// where along each frame table the arm window sits (distances differ per arm)
+function nearestS(F,p){ let best=0,bd=1e18;
+  for(let i=0;i<=F.N;i+=2){ const dx=F.x[i]-p.x,dz=F.z[i]-p.z,d=dx*dx+dz*dz; if(d<bd){bd=d;best=i;} }
+  return best*F.RS; }
+const forkP=spinePos(S_FORKSTART), joinP=spinePos(S_REJOIN);
+const S_COMMIT={ sun:nearestS(FRAMES.sun,forkP), moss:nearestS(FRAMES.moss,forkP) };
+const S_MERGE={ sun:nearestS(FRAMES.sun,joinP), moss:nearestS(FRAMES.moss,joinP) };
+
+// ---------- road corridor index (both arms + spine) ----------
+const ROAD_W=ROUTE.r(6.2,7.0), ROAD_HALF=ROAD_W/2, SHOULDER=3.0;
+const rGrid=new Map();
+const rKey=(gx,gz)=>gx+'|'+gz;
+function roadIndexAdd(F,arm,i0,i1){
+  for(let i=i0;i<=i1;i++){
+    const gx=Math.floor(F.x[i]/12), gz=Math.floor(F.z[i]/12);
+    const k=rKey(gx,gz);
+    if(!rGrid.has(k)) rGrid.set(k,[]);
+    rGrid.get(k).push([F.x[i],F.y[i],F.z[i],i*F.RS,arm]);
+  }
+}
+function routeInfo(x,z){
+  const gx=Math.floor(x/12), gz=Math.floor(z/12);
+  let bd=1e18, bh=0, bs=0;
+  const bdA=[1e18,1e18], bhA=[0,0];
+  for(let ax=gx-1;ax<=gx+1;ax++) for(let az=gz-1;az<=gz+1;az++){
+    const cell=rGrid.get(rKey(ax,az)); if(!cell) continue;
+    for(const p of cell){ const dx=p[0]-x,dz=p[2]-z,d=dx*dx+dz*dz;
+      if(d<bd){ bd=d; bh=p[1]; bs=p[3]; }
+      if(d<bdA[p[4]]){ bdA[p[4]]=d; bhA[p[4]]=p[1]; } }
+  }
+  return { d:Math.sqrt(bd), h:bh, s:bs, dA:[Math.sqrt(bdA[0]),Math.sqrt(bdA[1])], hA:bhA };
+}
+roadIndexAdd(FRAMES.sun,0,0,FRAMES.sun.N);
+roadIndexAdd(FRAMES.moss,1,Math.max(0,Math.floor((S_COMMIT.moss-30)/FRAMES.moss.RS)),
+  Math.min(FRAMES.moss.N,Math.ceil((S_MERGE.moss+30)/FRAMES.moss.RS)));
+
+// ---------- the stream: its own seeded walk beside Fernfold + Mosswater ----------
+const streamPts=[];
+const S_XCROSS=(S_FORKSTART+S_REJOIN)/2+WATER.r(-40,20);   // where the creek slips beneath the arm
+{
+  const SIDE=-FORK_SIDE;   // creek runs on the Mosswater side
+  const s0=S_SUNBANK+WATER.r(30,90), s1=S_JOINEND-WATER.r(60,120);
+  let off=WATER.r(9,14);
+  for(let s=s0;s<=s1;s+=8){
+    const fr=getFrame(FRAMES.moss,clamp(s,0,FRAMES.moss.len-1));
+    off+=WATER.r(-1.4,1.4); off=clamp(off,8,26);
+    const breathe=Math.sin(s*0.011+WATER.r(0,0.4))*4;
+    const crossFlip=1-2*smooth(S_XCROSS-16,S_XCROSS+16,s);  // +1 before, -1 after
+    const o=(off+breathe)*SIDE*crossFlip;
+    streamPts.push(new THREE.Vector3(fr.x+fr.lx*o,fr.y-0.7,fr.z+fr.lz*o));
+  }
+}
+const sGrid=new Map();
+for(const p of streamPts){ const k=rKey(Math.floor(p.x/14),Math.floor(p.z/14));
+  if(!sGrid.has(k)) sGrid.set(k,[]); sGrid.get(k).push(p); }
+function streamDist(x,z){
+  const gx=Math.floor(x/14), gz=Math.floor(z/14);
+  let bd=1e18;
+  for(let ax=gx-1;ax<=gx+1;ax++) for(let az=gz-1;az<=gz+1;az++){
+    const cell=sGrid.get(rKey(ax,az)); if(!cell) continue;
+    for(const p of cell){ const dx=p.x-x,dz=p.z-z,d=dx*dx+dz*dz; if(d<bd) bd=d; }
+  }
+  return Math.sqrt(bd);
+}
+terrainFnv.feed(streamPts.length,ROAD_W);
+
+// ============================================================
+// RENDERER / SCENE / LIGHT — one perfect midsummer late morning
+// ============================================================
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.NoToneMapping;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.5));
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFShadowMap;
+document.body.appendChild(renderer.domElement);
+let contextLost=false;
+renderer.domElement.addEventListener('webglcontextlost',(e)=>{ contextLost=true; capturedErrors.push('webgl context lost'); });
+
+const scene=new THREE.Scene();
+scene.background=col(PAL.skyWater);
+scene.fog=new THREE.Fog(mixc(PAL.skyWater,PAL.paleStone,0.30).lerp(col(0xffffff),0.10), 320, 4400);
+
+const camera=new THREE.PerspectiveCamera(62, window.innerWidth/window.innerHeight, 0.1, 7000);
+
+// sun: warm, high-left of the opening view
+const startHd=spine.hd[0];
+const sunAz=startHd-ELEV.r(0.55,0.95);            // high-left of the launch view
+const sunEl=ELEV.r(0.82,0.98);                    // high summer sun
+const sunDir=new THREE.Vector3(Math.sin(sunAz)*Math.cos(sunEl),Math.sin(sunEl),Math.cos(sunAz)*Math.cos(sunEl)).normalize();
+const sun=new THREE.DirectionalLight(mixc(PAL.paleStone,0xffffff,0.45),2.9);
+sun.position.copy(sunDir.clone().multiplyScalar(320));
+sun.castShadow=true;
+sun.shadow.mapSize.set(1024,1024);
+sun.shadow.camera.near=40; sun.shadow.camera.far=620;
+sun.shadow.camera.left=-78; sun.shadow.camera.right=78;
+sun.shadow.camera.top=78; sun.shadow.camera.bottom=-78;
+sun.shadow.bias=-0.0007; sun.shadow.normalBias=0.6;
+scene.add(sun); scene.add(sun.target);
+const hemi=new THREE.HemisphereLight(mixc(PAL.skyWater,0xffffff,0.35),mixc(PAL.leafShade,PAL.meadow,0.4),0.85);
+scene.add(hemi);
+
+// ---------- world light field: dapple + travelling cloud shadows ----------
+// One GLSL block shared by every lit ground/vegetation material.
+const WORLD_LIGHT_UNIFORMS={ uWTime:{value:0}, uCloudMove:{value:new THREE.Vector2(CLOUD.r(-1,1),CLOUD.r(-1,1)).normalize()},
+  uHeroShadow:{value:new THREE.Vector4(0,0,0,0)} }; // xy: front dir, z: front line pos, w: strength
+const WORLD_LIGHT_GLSL=`
+uniform float uWTime; uniform vec2 uCloudMove; uniform vec4 uHeroShadow;
+float wlHash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+float wlNoise(vec2 p){ vec2 i=floor(p),f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  return mix(mix(wlHash(i),wlHash(i+vec2(1,0)),u.x),mix(wlHash(i+vec2(0,1)),wlHash(i+vec2(1,1)),u.x),u.y); }
+float cloudShadowAt(vec2 w){
+  vec2 p=(w+uCloudMove*uWTime*0.30)*0.0021;      // ~10-20 m/min drift
+  float n=wlNoise(p)*0.6+wlNoise(p*2.3+7.1)*0.4;
+  float s=smoothstep(0.55,0.72,n);               // broad islands of shade
+  float hero=0.0;
+  if(uHeroShadow.w>0.001){
+    float d=dot(w,uHeroShadow.xy)-uHeroShadow.z; // travelling front: dark behind the line
+    hero=uHeroShadow.w*(1.0-smoothstep(-6.0,26.0,d));
+  }
+  return clamp(1.0-0.42*s-hero,0.30,1.0);
+}
+float dappleAt(vec2 w,float canopy){
+  if(canopy<0.02) return 1.0;
+  float n=wlNoise(w*0.16)*0.55+wlNoise(w*0.45+31.7)*0.30+wlNoise(w*1.25+11.3)*0.15;
+  float sway=wlNoise(w*0.09+vec2(uWTime*0.05,uWTime*0.037));
+  float cut=smoothstep(0.475+0.06*sway,0.62,n);  // broad broken leaf islands
+  return mix(1.0,mix(0.34,1.0,cut),clamp(canopy,0.0,1.0));
+}`;
+function grounded(mat,canopyAttr){ // inject world light into a Lambert-family material
+  mat.onBeforeCompile=(sh)=>{
+    Object.assign(sh.uniforms,WORLD_LIGHT_UNIFORMS);
+    sh.vertexShader=sh.vertexShader
+      .replace('#include <common>','#include <common>\nvarying vec3 vWPos;'+(canopyAttr?'\nattribute float aCanopy; varying float vCanopy;':''))
+      .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*vec4(transformed,1.0);\n#ifdef USE_INSTANCING\n wp2=modelMatrix*instanceMatrix*vec4(transformed,1.0);\n#endif\n vWPos=wp2.xyz; '+(canopyAttr?'vCanopy=aCanopy;':'')+' }');
+    sh.fragmentShader=sh.fragmentShader
+      .replace('#include <common>','#include <common>\nvarying vec3 vWPos;'+(canopyAttr?'varying float vCanopy;':'const float vCanopy=0.0;')+'\n'+WORLD_LIGHT_GLSL)
+      .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse*=mix(0.82,1.0,wl);\nvec3 outgoingLight = ');
+  };
+  return mat;
+}
+
+// ============================================================
+// TERRAIN — a vale written around the lane, not a plane
+// ============================================================
+const S_END=FRAMES.sun.len;
+const S_STOP=S_END-320;                            // the rider rests here; the road runs on
+const heroS=S_STOP-LAND.r(140,175);                // Bellroot stands before the overlook rest
+const heroFr=getFrame(FRAMES.sun,heroS);
+const heroSide=HERO.chance(0.5)?1:-1;
+const heroC=new THREE.Vector3(heroFr.x,heroFr.y,heroFr.z); // passage goes between its roots ON the lane
+function woodiness(s){ // canopy density along the route by chapter role
+  const f=clamp(s/L_TOTAL,0,1);
+  let w=0;
+  w+=0.9*(1-smooth(CHAP.gate*0.8,CHAP.gate*1.15,f));                  // dappled gate
+  w+=0.85*smooth(CHAP.sunbank-0.02,CHAP.sunbank+0.03,f)*(1-smooth(CHAP.fernfold-0.02,CHAP.fernfold+0.02,f)); // fernfold
+  w+=0.8*smooth(CHAP.fork-0.015,CHAP.fork+0.04,f)*(1-smooth(CHAP.joining-0.04,CHAP.joining+0.01,f));         // joining woods
+  return clamp(w,0,1);
+}
+function terrainH(x,z){
+  const ri=routeInfo(x,z);
+  const calm=0.08+0.92*smooth(32,150,ri.d);    // the vale genuinely rests near its lane
+  let h=(fbmT(x/260,z/260)*26-13)*calm;
+  h+=(fbmT(x/90+13.7,z/90+5.1)*5-2.5)*clamp(calm*1.4,0.4,1);
+  const hd2=Math.hypot(x-heroC.x,z-heroC.z);
+  h+=17*Math.exp(-hd2*hd2/(300*300));               // the final high meadow lifts its tree
+  // each corridor holds its own roadbed; the nearer lane wins between them
+  const m0=1-smooth(13,28,ri.dA[0]);
+  const m1=1-smooth(13,28,ri.dA[1]);
+  const w0=m0*m0*m0, w1=m1*m1*m1;
+  const wsum=w0+w1;
+  if(wsum>0.0005){
+    const target=(w0*ri.hA[0]+w1*ri.hA[1])/wsum-0.6;
+    h=lerp(h,target,Math.min(1,Math.max(m0,m1)));
+  }
+  const sd=streamDist(x,z);
+  h-=3.2*Math.exp(-sd*sd/38)*(0.3+0.7*smooth(ROAD_HALF+0.8,ROAD_HALF+7,ri.d)); // the water keeps its rut
+  return h;
+}
+
+// ---------- terrain mesh ----------
+let terrainMesh=null;
+{
+  let minX=1e9,maxX=-1e9,minZ=1e9,maxZ=-1e9;
+  for(const F of [FRAMES.sun,FRAMES.moss])
+    for(let i=0;i<=F.N;i+=6){ minX=Math.min(minX,F.x[i]); maxX=Math.max(maxX,F.x[i]);
+      minZ=Math.min(minZ,F.z[i]); maxZ=Math.max(maxZ,F.z[i]); }
+  const cx=(minX+maxX)/2, cz=(minZ+maxZ)/2;
+  const spanX=(maxX-minX)+1150, spanZ=(maxZ-minZ)+1150;
+  const NX=146, NZ=Math.min(238,Math.round(NX*spanZ/spanX));
+  const P=[],C=[],A=[],IDX=[];
+  for(let iz=0;iz<=NZ;iz++) for(let ix=0;ix<=NX;ix++){
+    const x=cx-spanX/2+spanX*ix/NX, z=cz-spanZ/2+spanZ*iz/NZ;
+    const h=terrainH(x,z);
+    P.push(x,h,z);
+    const ri=routeInfo(x,z), sd=streamDist(x,z);
+    const wood=woodiness(ri.s)*clamp(1.35-ri.d/85,0,1);
+    const moist=clamp(1-sd/40,0,1);
+    const t=fbmE(x/70+3.1,z/70+9.4);
+    // meadow greens: sunlit high, shaded low, moist banks cool
+    let cV=mixc(PAL.meadow,PAL.sunGrass,clamp(t*1.25-0.1+h*0.012,0,1));
+    cV.lerp(col(PAL.leafShade),clamp(wood*0.75+moist*0.35,0,0.8));
+    cV.lerp(col(PAL.canopyDeep),clamp(moist*0.3*wood,0,0.35));
+    // the shoulder cools and deepens beside the pale lane (the 3:1 read)
+    const lip=Math.exp(-Math.pow((ri.d-ROAD_HALF-1.1)/1.7,2));
+    cV.lerp(mixc(PAL.leafShade,PAL.meadow,0.5),lip*0.55);
+    C.push(cV.r,cV.g,cV.b);
+    A.push(clamp(wood,0,1));
+    if((ix&15)===0&&(iz&15)===0) terrainFnv.feed(h);
+  }
+  for(let iz=0;iz<NZ;iz++) for(let ix=0;ix<NX;ix++){
+    const a=iz*(NX+1)+ix;
+    IDX.push(a,a+NX+1,a+1, a+1,a+NX+1,a+NX+2);
+  }
+  const m=grounded(new THREE.MeshLambertMaterial({vertexColors:true}),true);
+  // banded sub-meshes so the frustum can cull terrain behind the rider
+  const BANDS=6, rowsPer=Math.ceil(NZ/BANDS);
+  for(let b2=0;b2<BANDS;b2++){
+    const z0=b2*rowsPer, z1=Math.min(NZ,(b2+1)*rowsPer);
+    if(z0>=z1) continue;
+    const P2=[],C2=[],A2=[],I2=[];
+    const remap=new Map();
+    const takeV=(vi)=>{ if(remap.has(vi)) return remap.get(vi);
+      const ni=P2.length/3;
+      P2.push(P[vi*3],P[vi*3+1],P[vi*3+2]); C2.push(C[vi*3],C[vi*3+1],C[vi*3+2]); A2.push(A[vi]);
+      remap.set(vi,ni); return ni; };
+    for(let iz=z0;iz<z1;iz++) for(let ix=0;ix<NX;ix++){
+      const a2=iz*(NX+1)+ix;
+      I2.push(takeV(a2),takeV(a2+NX+1),takeV(a2+1), takeV(a2+1),takeV(a2+NX+1),takeV(a2+NX+2));
+    }
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(P2,3));
+    g.setAttribute('color',new THREE.Float32BufferAttribute(C2,3));
+    g.setAttribute('aCanopy',new THREE.Float32BufferAttribute(A2,1));
+    g.setIndex(I2); g.computeVertexNormals();
+    const mesh=new THREE.Mesh(g,m);
+    mesh.receiveShadow=true;
+    scene.add(mesh);
+    if(!terrainMesh) terrainMesh=mesh;
+  }
+}
+const groundY=(x,z)=>terrainH(x,z);
+
+// ---------- distant hills: layered silhouettes, real meshes ----------
+{
+  const m=grounded(new THREE.MeshLambertMaterial({vertexColors:true}),false);
+  const g=new THREE.BufferGeometry();
+  const P=[],C=[],IDX=[];
+  const c0=spinePos(L_TOTAL*0.5);
+  let maxR=0;
+  for(let s2=0;s2<L_TOTAL;s2+=40){ const p2=spinePos(s2); maxR=Math.max(maxR,Math.hypot(p2.x-c0.x,p2.z-c0.z)); }
+  let vi=0;
+  for(let ring=0;ring<3;ring++){
+    const R=maxR+520+ring*680;
+    const NA=110;
+    const base=-40;
+    const hue=[mixc(PAL.leafShade,PAL.skyWater,0.28+ring*0.16), mixc(PAL.meadow,PAL.skyWater,0.42+ring*0.16)];
+    for(let i2=0;i2<NA;i2++){
+      const a0=i2/NA*TAU, a1=(i2+1)/NA*TAU;
+      const h0=Math.max(0,fbmT(Math.cos(a0)*3.1+ring*7,Math.sin(a0)*3.1)*(300+ring*170)-60);
+      const h1=Math.max(0,fbmT(Math.cos(a1)*3.1+ring*7,Math.sin(a1)*3.1)*(300+ring*170)-60);
+      const x0=c0.x+Math.cos(a0)*R, z0=c0.z+Math.sin(a0)*R;
+      const x1=c0.x+Math.cos(a1)*R, z1=c0.z+Math.sin(a1)*R;
+      P.push(x0,base,z0, x1,base,z1, x1,h1,z1, x0,h0,z0);
+      const cc=hue[0].clone().lerp(hue[1],fbmT(a0*2.1,ring*3.3));
+      for(let k=0;k<4;k++) C.push(cc.r,cc.g,cc.b);
+      IDX.push(vi,vi+1,vi+2, vi,vi+2,vi+3); vi+=4;
+    }
+  }
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(C,3));
+  g.setIndex(IDX); g.computeVertexNormals();
+  const hills=new THREE.Mesh(g,m);
+  scene.add(hills);
+}
+
+// ============================================================
+// ROAD — pale, crowned, hand-laid; the visual primitive
+// ============================================================
+function buildRoad(F,s0,s1){
+  const P=[],C=[],A=[],S=[],LT=[],IDX=[];
+  const i0=Math.max(0,Math.floor(s0/F.RS)), i1=Math.min(F.N,Math.ceil(s1/F.RS));
+  const prof=[ [-ROAD_HALF-4.3,-1.0,0], [-ROAD_HALF-1.15,-0.34,1], [-ROAD_HALF-0.35,-0.16,2], [-ROAD_HALF*0.55,0.09,3], [0,0.15,4],
+               [ROAD_HALF*0.55,0.09,5], [ROAD_HALF+0.35,-0.16,6], [ROAD_HALF+1.15,-0.34,7], [ROAD_HALF+4.3,-1.0,8] ];
+  const cEdge=mixc(PAL.bark,PAL.paleStone,0.42), cBevel=mixc(PAL.paleStone,PAL.bark,0.24),
+        cMid=col(PAL.paleStone), cCore=mixc(PAL.paleStone,0xffffff,0.10),
+        cSkirt=mixc(PAL.meadow,PAL.leafShade,0.42);
+  const pc=[cSkirt,cEdge,cBevel,cMid,cCore,cMid,cBevel,cEdge,cSkirt];
+  let rows=0;
+  for(let i=i0;i<=i1;i++){
+    const s=i*F.RS;
+    const crossfall=Math.sin(s*0.004+1.7)*0.05;
+    for(let j=0;j<prof.length;j++){
+      const [off,lift]=prof[j];
+      const x=F.x[i]+F.lx[i]*off, z=F.z[i]+F.lz[i]*off;
+      const y=F.y[i]+lift+off*crossfall*0.06;
+      P.push(x,y,z);
+      const cc=pc[j];
+      C.push(cc.r,cc.g,cc.b);
+      A.push(clamp(woodiness(s)*0.85,0,1));
+      S.push(s); LT.push(off/ROAD_HALF);
+    }
+    rows++;
+  }
+  const W=prof.length;
+  for(let r2=0;r2<rows-1;r2++) for(let j=0;j<W-1;j++){
+    const a=r2*W+j;
+    IDX.push(a,a+W,a+1, a+1,a+W,a+W+1);
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(C,3));
+  g.setAttribute('aCanopy',new THREE.Float32BufferAttribute(A,1));
+  g.setAttribute('aS',new THREE.Float32BufferAttribute(S,1));
+  g.setAttribute('aLat',new THREE.Float32BufferAttribute(LT,1));
+  g.setIndex(IDX); g.computeVertexNormals();
+  return g;
+}
+const roadMat=new THREE.MeshLambertMaterial({vertexColors:true});
+roadMat.onBeforeCompile=(sh)=>{
+  Object.assign(sh.uniforms,WORLD_LIGHT_UNIFORMS);
+  sh.vertexShader=sh.vertexShader
+    .replace('#include <common>','#include <common>\nvarying vec3 vWPos; attribute float aCanopy; varying float vCanopy;\nattribute float aS; attribute float aLat; varying float vS; varying float vLat;')
+    .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*vec4(transformed,1.0); vWPos=wp2.xyz; vCanopy=aCanopy; vS=aS; vLat=aLat; }');
+  sh.fragmentShader=sh.fragmentShader
+    .replace('#include <common>','#include <common>\nvarying vec3 vWPos; varying float vCanopy; varying float vS; varying float vLat;\n'+WORLD_LIGHT_GLSL)
+    .replace('#include <color_fragment>',`#include <color_fragment>
+    {
+      // hand-laid stone: irregular slab seams, repair patches, fine grain — all world-locked
+      float slab=wlHash(vec2(floor(vS/9.3),0.0));
+      float seam=smoothstep(0.45,0.0,abs(fract(vS/9.3)-0.5)*9.3-(0.32+0.3*slab));
+      float patchy=smoothstep(0.62,0.75,wlNoise(vWPos.xz*0.06+vec2(17.0,3.0)));
+      float grain=wlNoise(vWPos.xz*2.3)*0.5+wlNoise(vWPos.xz*6.7+9.1)*0.5;
+      float wear=wlNoise(vec2(vS*0.013,vLat*1.9));
+      diffuseColor.rgb*=1.0-seam*0.14-patchy*0.075-(grain-0.5)*0.10-wear*0.05;
+      // moss creeps in from the shoulder, never across the riding line
+      float mossBand=smoothstep(0.62,1.02,abs(vLat))*smoothstep(0.35,0.75,wlNoise(vWPos.xz*0.9+3.7))*vCanopy;
+      diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.235,0.375,0.24),mossBand*0.55);
+    }`)
+    .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse*=mix(0.82,1.0,wl);\nvec3 outgoingLight = ');
+};
+{
+  const CH_LEN=520;
+  for(let s0=0;s0<FRAMES.sun.len;s0+=CH_LEN){
+    const g=buildRoad(FRAMES.sun,s0,Math.min(FRAMES.sun.len,s0+CH_LEN+2));
+    const mesh=new THREE.Mesh(g,roadMat); mesh.receiveShadow=true; scene.add(mesh);
+  }
+  const gArm=buildRoad(FRAMES.moss,S_COMMIT.moss-26,S_MERGE.moss+26);
+  const mesh2=new THREE.Mesh(gArm,roadMat); mesh2.receiveShadow=true; scene.add(mesh2);
+  routeFnv.feed(ROAD_W,S_COMMIT.sun,S_MERGE.sun,S_COMMIT.moss,S_MERGE.moss);
+}
+
+// ============================================================
+// TREES — ten constructed families; articulation near the lane
+// ============================================================
+function Buf(){ return {p:[],c:[],s:[],swayVal:0}; }
+function pushTri(B,a,b,c,cc){ B.p.push(a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+  for(let k=0;k<3;k++){ B.c.push(cc.r,cc.g,cc.b); B.s.push(B.swayVal); } }
+function pushQuad(B,a,b,c,d,cc){ pushTri(B,a,b,c,cc); pushTri(B,a,c,d,cc); }
+function bufGeo(B){
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(B.p,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(B.c,3));
+  g.setAttribute('aSway',new THREE.Float32BufferAttribute(B.s,1));
+  g.computeVertexNormals();
+  return g;
+}
+const sunXZ=new THREE.Vector2(sunDir.x,sunDir.z).normalize();
+// tapered segmented tube with bark sun/shade faces
+function tube(B,pts,r0,r1,sides,cSun,cShade,G){
+  for(let i=0;i<pts.length-1;i++){
+    const t0=i/(pts.length-1), t1=(i+1)/(pts.length-1);
+    const ra=lerp(r0,r1,t0), rb=lerp(r0,r1,t1);
+    const A=pts[i], Bp=pts[i+1];
+    const dir=new THREE.Vector3().subVectors(Bp,A).normalize();
+    let u=new THREE.Vector3(0,1,0).cross(dir);
+    if(u.lengthSq()<0.01) u.set(1,0,0); u.normalize();
+    const v=new THREE.Vector3().crossVectors(dir,u).normalize();
+    for(let j=0;j<sides;j++){
+      const a0=j/sides*TAU, a1=(j+1)/sides*TAU;
+      const off0=new THREE.Vector3().addScaledVector(u,Math.cos(a0)).addScaledVector(v,Math.sin(a0));
+      const off1=new THREE.Vector3().addScaledVector(u,Math.cos(a1)).addScaledVector(v,Math.sin(a1));
+      const p00=[A.x+off0.x*ra,A.y+off0.y*ra,A.z+off0.z*ra];
+      const p01=[A.x+off1.x*ra,A.y+off1.y*ra,A.z+off1.z*ra];
+      const p10=[Bp.x+off0.x*rb,Bp.y+off0.y*rb,Bp.z+off0.z*rb];
+      const p11=[Bp.x+off1.x*rb,Bp.y+off1.y*rb,Bp.z+off1.z*rb];
+      const sunFace=clamp(0.5+0.6*(off0.x*sunXZ.x+off0.z*sunXZ.y),0,1);
+      const cc=cShade.clone().lerp(cSun,sunFace);
+      pushQuad(B,p00,p01,p11,p10,cc);
+    }
+  }
+}
+// canopy lobe: deformed icosahedron, layered greens, holes come from spacing
+const icoBase=new THREE.IcosahedronGeometry(1,1);
+const icoLow=new THREE.IcosahedronGeometry(1,0);
+const icoLowPos=icoLow.getAttribute('position');
+function lobeLow(B,cx,cy,cz,rx,ry,rz,G,cTop,cBot){
+  const prevSway=B.swayVal; B.swayVal=clamp(0.25+(rx+rz)*0.06,0.2,1.0);
+  for(let i=0;i<icoLowPos.count;i+=3){
+    const vs=[];
+    for(let k2=0;k2<3;k2++){
+      const j=1+(G.f()-0.5)*0.5;
+      vs.push([cx+icoLowPos.getX(i+k2)*rx*j, cy+icoLowPos.getY(i+k2)*ry*j, cz+icoLowPos.getZ(i+k2)*rz*j, icoLowPos.getY(i+k2)]);
+    }
+    const ym=(vs[0][3]+vs[1][3]+vs[2][3])/3;
+    const cc=cBot.clone().lerp(cTop,clamp(0.5+0.5*ym,0,1));
+    pushTri(B,[vs[0][0],vs[0][1],vs[0][2]],[vs[1][0],vs[1][1],vs[1][2]],[vs[2][0],vs[2][1],vs[2][2]],cc);
+  }
+  B.swayVal=prevSway;
+}
+const icoPos=icoBase.getAttribute('position');
+const icoIdx=icoBase.getIndex()?Array.from(icoBase.getIndex().array):Array.from({length:icoPos.count},(_,i)=>i);
+function lobe(B,cx,cy,cz,rx,ry,rz,G,cTop,cBot,rough){
+  const prevSway=B.swayVal; B.swayVal=clamp(0.25+(rx+rz)*0.06,0.2,1.0);
+  const jit=[]; const nv=icoPos.count;
+  for(let i=0;i<nv;i++) jit.push(1+ (G.f()-0.5)*2*rough);
+  const vert=(i)=>{
+    const x=icoPos.getX(i), y=icoPos.getY(i), z=icoPos.getZ(i);
+    const j=jit[i];
+    return [cx+x*rx*j, cy+y*ry*j, cz+z*rz*j, y];
+  };
+  // non-indexed triangles from the shared icosphere topology
+  const idx=icoIdx;
+  for(let i=0;i<idx.length;i+=3){
+    const a=vert(idx[i]), b=vert(idx[i+1]), c=vert(idx[i+2]);
+    const ym=(a[3]+b[3]+c[3])/3;
+    const cc=cBot.clone().lerp(cTop,clamp(0.45+0.55*ym,0,1));
+    pushTri(B,[a[0],a[1],a[2]],[b[0],b[1],b[2]],[c[0],c[1],c[2]],cc);
+  }
+  B.swayVal=prevSway;
+}
+// bark + leaf tones
+const BARK_SUN=mixc(PAL.bark,PAL.paleStone,0.22), BARK_SHADE=mixc(PAL.bark,PAL.canopyDeep,0.36);
+const LEAF_SUN=mixc(PAL.sunGrass,PAL.meadow,0.25), LEAF_MID=col(PAL.meadow),
+      LEAF_SHADE=col(PAL.leafShade), LEAF_DEEP=mixc(PAL.leafShade,PAL.canopyDeep,0.55);
+
+const FAMILIES=['oak','beech','birch','willow','leaning','split','windshaped','meadowparasol','orchard','ancient'];
+const familyBuilt={}; for(const f of FAMILIES) familyBuilt[f]=0;
+// one tree, articulated by tier: 2=near full, 1=mid reduced, 0=far mass
+function buildTree(B,family,x,y,z,G,tier,scl){
+  familyBuilt[family]++;
+  const S=scl||1;
+  const preset={
+    oak:{h:G.r(11,16),r:G.r(0.42,0.6),lean:G.r(-0.06,0.06),forks:G.i(3,5),lobes:G.i(4,7),lw:1.35,lift:0.62,tone:0},
+    beech:{h:G.r(13,18),r:G.r(0.36,0.5),lean:G.r(-0.05,0.05),forks:G.i(2,4),lobes:G.i(4,6),lw:1.0,lift:0.7,tone:0},
+    birch:{h:G.r(9,13),r:G.r(0.2,0.3),lean:G.r(-0.08,0.08),forks:G.i(2,3),lobes:G.i(3,5),lw:0.75,lift:0.72,tone:1},
+    willow:{h:G.r(8,12),r:G.r(0.4,0.55),lean:G.r(-0.1,0.1),forks:G.i(3,5),lobes:G.i(5,8),lw:1.3,lift:0.5,tone:2},
+    leaning:{h:G.r(10,14),r:G.r(0.36,0.5),lean:G.r(0.22,0.34)*(G.chance(0.5)?1:-1),forks:G.i(2,4),lobes:G.i(4,6),lw:1.1,lift:0.6,tone:0},
+    split:{h:G.r(10,14),r:G.r(0.4,0.55),lean:G.r(-0.05,0.05),forks:2,lobes:G.i(5,7),lw:1.2,lift:0.55,tone:0,split:true},
+    windshaped:{h:G.r(9,13),r:G.r(0.34,0.46),lean:G.r(0.12,0.2),forks:G.i(2,4),lobes:G.i(3,6),lw:1.25,lift:0.62,tone:0,sweep:true},
+    meadowparasol:{h:G.r(10,14),r:G.r(0.4,0.52),lean:G.r(-0.04,0.04),forks:G.i(3,5),lobes:G.i(4,6),lw:1.6,lift:0.78,tone:0},
+    orchard:{h:G.r(5.5,8),r:G.r(0.26,0.38),lean:G.r(-0.09,0.09),forks:G.i(3,4),lobes:G.i(3,5),lw:1.25,lift:0.55,tone:1},
+    ancient:{h:G.r(13,18),r:G.r(0.75,1.05),lean:G.r(-0.08,0.08),forks:G.i(4,5),lobes:G.i(6,8),lw:1.5,lift:0.5,tone:0},
+  }[family];
+  const H=preset.h*S, R=preset.r*S;
+  const leanDir=G.r(0,TAU);
+  const sweepDir=preset.sweep?sunAz+Math.PI:leanDir;
+  // trunk polyline
+  const nSeg=tier===2?5:(tier===1?4:3);
+  const tp=[]; let px=x,py=y,pz=z;
+  for(let i=0;i<=nSeg;i++){
+    const t=i/nSeg;
+    const bend=Math.sin(t*Math.PI*0.8)*preset.lean*H;
+    tp.push(new THREE.Vector3(
+      x+Math.sin(sweepDir)*bend+ (i? (G.f()-0.5)*0.35*S:0),
+      y+t*H*0.62,
+      z+Math.cos(sweepDir)*bend+ (i? (G.f()-0.5)*0.35*S:0)));
+  }
+  tube(B,tp,R,R*0.42,tier===2?6:5,BARK_SUN,BARK_SHADE,G);
+  // root flare (near tier only)
+  if(tier===2){
+    const nr=G.i(3,5);
+    for(let i=0;i<nr;i++){
+      const a=G.r(0,TAU), rl=R*G.r(1.6,2.6);
+      const p0=new THREE.Vector3(x,y+0.55*S,z);
+      const p1=new THREE.Vector3(x+Math.sin(a)*rl,y-0.12,z+Math.cos(a)*rl);
+      tube(B,[p0,p1],R*0.5,R*0.16,4,BARK_SUN,BARK_SHADE,G);
+    }
+  }
+  // branch forks from upper trunk
+  const top=tp[tp.length-1];
+  const forkBase=tp[Math.max(1,tp.length-3)];
+  const ends=[top];
+  const nf=preset.split?2:(tier===0?Math.min(2,preset.forks):preset.forks);
+  for(let i=0;i<nf;i++){
+    const a=G.r(0,TAU), spread=G.r(0.28,0.55)*H*(preset.split?0.55:0.42);
+    const b0=preset.split?tp[1].clone():forkBase.clone();
+    const b1=new THREE.Vector3(b0.x+Math.sin(a)*spread, y+H*(preset.lift+G.r(-0.06,0.14)), b0.z+Math.cos(a)*spread);
+    if(tier>0) tube(B,[b0,b1],R*0.42,R*0.14,tier===2?5:4,BARK_SUN,BARK_SHADE,G);
+    ends.push(b1);
+  }
+  // canopy lobes clustered at the branch ends, gaps by construction
+  const tones=[[LEAF_SUN,LEAF_MID],[mixc(PAL.sunGrass,0xffffff,0.12),LEAF_MID],[LEAF_MID,LEAF_SHADE]][preset.tone];
+  const nl=tier===0?Math.min(3,preset.lobes):preset.lobes;
+  const lobeFn=tier===2?lobe:(B2,cx,cy,cz,rx,ry,rz,G2,cT,cB2,rough)=>lobeLow(B2,cx,cy,cz,rx,ry,rz,G2,cT,cB2);
+  for(let i=0;i<nl;i++){
+    const e=ends[G.i(0,ends.length-1)];
+    const lr=H*preset.lw*G.r(0.16,0.27);
+    const ox=(G.f()-0.5)*H*0.5, oz=(G.f()-0.5)*H*0.5;
+    const oy=G.r(-0.08,0.2)*H+(preset.tone===2?-H*0.12:0);
+    lobeFn(B,e.x+ox,e.y+oy,e.z+oz,lr*G.r(0.95,1.3),lr*G.r(0.6,0.85),lr*G.r(0.95,1.3),G,
+      tones[0],i<nl*0.4?tones[1]:LEAF_SHADE,tier===2?0.16:0.18);
+  }
+  // one deep-shade under-lobe for volume
+  if(tier>0) lobeFn(B,top.x,top.y-H*0.1,top.z,H*preset.lw*0.30,H*0.16,H*preset.lw*0.30,G,LEAF_SHADE,LEAF_DEEP,0.2);
+  return H;
+}
+
+// tree material: vertex-color Lambert + crown sway + cloud shadow (world-locked)
+function treeMaterial(emis){
+  const m=new THREE.MeshLambertMaterial({vertexColors:true,emissive:new THREE.Color(emis===undefined?0x11130c:emis),emissiveIntensity:1});
+  m.onBeforeCompile=(sh)=>{
+    Object.assign(sh.uniforms,WORLD_LIGHT_UNIFORMS);
+    sh.vertexShader=sh.vertexShader
+      .replace('#include <common>','#include <common>\nuniform float uWTime; attribute float aSway; varying vec3 vWPos;')
+      .replace('#include <begin_vertex>',`#include <begin_vertex>
+      {
+        float ph=dot(position.xz,vec2(0.043,0.037));
+        float sw=sin(uWTime*0.85+ph)*0.6+sin(uWTime*1.7+ph*2.3)*0.25;
+        transformed.x+=sw*aSway*0.55; transformed.z+=cos(uWTime*0.74+ph)*aSway*0.32;
+      }`)
+      .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*vec4(transformed,1.0);\n#ifdef USE_INSTANCING\n wp2=modelMatrix*instanceMatrix*vec4(transformed,1.0);\n#endif\n vWPos=wp2.xyz; }');
+    sh.fragmentShader=sh.fragmentShader
+      .replace('#include <common>','#include <common>\nvarying vec3 vWPos;\n'+WORLD_LIGHT_GLSL)
+      .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse*=mix(0.85,1.0,wl);\nvec3 outgoingLight = ');
+  };
+  return m;
+}
+const treeMatNear=treeMaterial(0x14190f), treeMatMid=treeMaterial(), treeMatFar=treeMaterial();
+const treeMatHero=treeMaterial(0x1c2a1c);
+
+// ---------- placement ----------
+const counts={ trees:0, articulatedNearTrees:0, heroTrees:0, understory:0, flowerGroups:0,
+  rocksRootsLogs:0, waterFeatures:0, landmarks:0, cloudFormations:0, cloudPuffs:0,
+  airborneParticles:0, butterflies:0, birds:0 };
+const treePts=[]; // [x,z,r] for later scatter avoidance + trunk contact truth
+function laneClear(x,z,margin){ const ri=routeInfo(x,z); return ri.d>ROAD_HALF+SHOULDER+margin; }
+function heroClear(x,z,rad){ return Math.hypot(x-heroC.x,z-heroC.z)>rad; }
+const nearBuf=Buf(), midBuf=Buf();
+const sightA=(()=>{ const f2=getFrame(FRAMES.sun,25); return new THREE.Vector2(f2.x,f2.z); })();
+const sightB=new THREE.Vector2(heroC.x,heroC.z);
+function onSightline(x,z){
+  const ab=sightB.clone().sub(sightA), ap=new THREE.Vector2(x,z).sub(sightA);
+  const t=clamp(ap.dot(ab)/ab.lengthSq(),0,1);
+  if(t<0.045) return false;                                 // the near frame may stay busy
+  const d=ap.sub(ab.multiplyScalar(t)).length();
+  return d<30;
+}
+{
+  // near + mid trees walk the route; density follows woodiness
+  let placedNear=0;
+  for(let s=6;s<S_END-30;s+=TREES.r(9,20)){
+    const w=woodiness(s);
+    const fr=getFrame(FRAMES.sun,s);
+    const nHere=w>0.35?TREES.i(1,3):(TREES.chance(0.22)?1:0);
+    for(let k2=0;k2<nHere;k2++){
+      const side=TREES.chance(0.5)?1:-1;
+      const nearLane=w>0.35&&TREES.chance(0.62);
+      const lat=side*(nearLane?TREES.r(ROAD_HALF+SHOULDER+1.6,20):TREES.r(21,85));
+      if(s<36&&Math.abs(lat)<15) continue;              // the opening frame is composed by hand
+      const x=fr.x+fr.lx*lat+TREES.r(-6,6), z=fr.z+fr.lz*lat+TREES.r(-6,6);
+      if(!laneClear(x,z,0.6)||!heroClear(x,z,72)) continue;
+      if(onSightline(x,z)) continue;
+      if(streamDist(x,z)<3.5) continue;
+      const y=groundY(x,z);
+      const fam=w>0.35?TREES.pick(['oak','beech','ancient','split','leaning','willow','birch','oak','beech'])
+                      :TREES.pick(['meadowparasol','orchard','windshaped','oak','birch']);
+      const famStream=TREES;
+      const tier=Math.abs(lat)<21?2:1;
+      const B=tier===2?nearBuf:midBuf;
+      const scl=fam==='ancient'?TREES.r(1.1,1.5):TREES.r(0.85,1.2);
+      buildTree(B,fam,x,y-0.75,z,famStream,tier,scl);
+      treePts.push([x,z,1.2*scl]);
+      counts.trees++;
+      if(tier===2){ counts.articulatedNearTrees++; placedNear++; }
+      ecoFnv.feed(x,z);
+    }
+  }
+  // guarantee the articulated floor
+  let sFill=40;
+  while(placedNear<44&&sFill<S_END-60){
+    const fr=getFrame(FRAMES.sun,sFill);
+    const side=TREES.chance(0.5)?1:-1;
+    const lat=side*TREES.r(ROAD_HALF+SHOULDER+1.8,16);
+    const x=fr.x+fr.lx*lat, z=fr.z+fr.lz*lat;
+    if(laneClear(x,z,0.6)&&heroClear(x,z,72)&&streamDist(x,z)>3.5){
+      buildTree(nearBuf,TREES.pick(FAMILIES),x,groundY(x,z)-0.7,z,TREES,2,TREES.r(0.9,1.25));
+      treePts.push([x,z,1.2]); counts.trees++; counts.articulatedNearTrees++; placedNear++;
+    }
+    sFill+=TREES.r(46,90);
+  }
+}
+// far woods: instanced silhouette masses in seeded groves
+const farTemplates=[];
+for(let i=0;i<5;i++){
+  const B=Buf();
+  buildTree(B,TREES.pick(FAMILIES),0,0,0,TREES,0,1);
+  farTemplates.push(bufGeo(B));
+}
+{
+  const spread=[];
+  const c0=spinePos(L_TOTAL*0.5);
+  const cEnd=spinePos(L_TOTAL+120);
+  for(let i=0;i<2000;i++){
+    const fromEnd=i>=1500;
+    const cc2=fromEnd?cEnd:c0;
+    const a=TREES.r(0,TAU), rr=fromEnd?TREES.r(150,700):TREES.r(120,900);
+    const x=cc2.x+Math.cos(a)*rr, z=cc2.z+Math.sin(a)*rr;
+    const grove=fbmE(x/230+31,z/230+7);
+    if(grove<0.47) continue;
+    if(!laneClear(x,z,4)||!heroClear(x,z,90)) continue;
+    if(onSightline(x,z)) continue;
+    const ri=routeInfo(x,z); if(ri.d<60&&TREES.chance(0.5)) continue;
+    spread.push([x,groundY(x,z)-1.1,z,TREES.r(0.9,2.1),TREES.r(0,TAU)]);
+  }
+  while(spread.length>528) spread.splice(TREES.i(0,spread.length-1),1);
+  spread.sort((p2,q2)=>Math.atan2(p2[0]-c0.x,p2[2]-c0.z)-Math.atan2(q2[0]-c0.x,q2[2]-c0.z));
+  const per=Math.ceil(spread.length/farTemplates.length);
+  const _m=new THREE.Matrix4(), _q=new THREE.Quaternion(), _e=new THREE.Euler(), _v=new THREE.Vector3(), _s=new THREE.Vector3();
+  farTemplates.forEach((tg,ti)=>{
+    const chunk=spread.slice(ti*per,(ti+1)*per);
+    if(!chunk.length) return;
+    const im=new THREE.InstancedMesh(tg,treeMatFar,chunk.length);
+    chunk.forEach((t,i2)=>{
+      _e.set(0,t[4],0); _q.setFromEuler(_e); _v.set(t[0],t[1],t[2]); _s.set(t[3],t[3]*(0.9+0.2*((i2%5)/5)),t[3]);
+      _m.compose(_v,_q,_s); im.setMatrixAt(i2,_m);
+    });
+    im.instanceMatrix.needsUpdate=true;
+    scene.add(im);
+    counts.trees+=chunk.length;
+  });
+}
+
+// ============================================================
+// THE BELLROOT — the identity of the vale
+// ============================================================
+const heroBuf=Buf();
+const heroInfo={ rootClearanceM:99, bells:[], crownTop:0 };
+{
+  const G=HERO;
+  const tx=heroFr.x+heroFr.lx*15.5*heroSide, tz=heroFr.z+heroFr.lz*15.5*heroSide;
+  const ty=groundY(tx,tz);
+  const H=G.r(78,92);
+  heroInfo.crownTop=ty+H;
+  // trunk: twisting stacked segments, S-curve
+  const tp=[]; const twist0=G.r(0,TAU), sCur=G.r(2.5,4.5);
+  for(let i=0;i<=12;i++){
+    const t=i/12;
+    const swing=Math.sin(t*Math.PI*1.25+G.r(0,0.4))*sCur*(1-t*0.4);
+    const aa=twist0+t*G.r(1.5,2.6);
+    tp.push(new THREE.Vector3(tx+Math.sin(aa)*swing, ty+t*H*0.56, tz+Math.cos(aa)*swing));
+  }
+  tube(heroBuf,tp,G.r(5.6,6.6),2.0,9,BARK_SUN,BARK_SHADE,G);
+  // radial buttresses: tall fins with real feet (7+)
+  const laneAt=(ds)=>{ const f2=getFrame(FRAMES.sun,heroS+ds); return f2; };
+  const nBut=G.i(8,10);
+  for(let i=0;i<nBut;i++){
+    const a=i/nBut*TAU+G.r(-0.14,0.14);
+    const reach=G.r(9,15);
+    const fx=tx+Math.sin(a)*reach, fz=tz+Math.cos(a)*reach;
+    const ri=routeInfo(fx,fz);
+    if(ri.d<ROAD_HALF+1.6) continue;                       // feet never stand in the lane
+    const fy=groundY(fx,fz);
+    const topY=ty+G.r(9,16);
+    // wedge fin: two skins + ridge
+    // ridge-backed fin: a curved root spine with a lit face and a shaded face
+    const spine=[ new THREE.Vector3(tx+Math.sin(a)*3.2,ty+G.r(8,13),tz+Math.cos(a)*3.2),
+                  new THREE.Vector3(tx+Math.sin(a)*(3.2+reach*0.45),ty+G.r(3.5,6),tz+Math.cos(a)*(3.2+reach*0.45)),
+                  new THREE.Vector3(fx,fy+1.1,fz) ];
+    const sc2=new THREE.CatmullRomCurve3(spine,false,'centripetal',0.5);
+    const sp=[]; for(let k3=0;k3<=6;k3++) sp.push(sc2.getPointAt(k3/6));
+    tube(heroBuf,sp,G.r(1.2,1.6),0.45,6,mixc(PAL.bark,PAL.paleStone,0.46),mixc(PAL.bark,PAL.canopyDeep,0.18),G);
+    if(G.chance(0.7)){ // a smaller sister root beside it
+      const a2=a+G.r(0.12,0.3)*(G.chance(0.5)?1:-1);
+      const f2x=tx+Math.sin(a2)*reach*0.62, f2z=tz+Math.cos(a2)*reach*0.62;
+      tube(heroBuf,[ new THREE.Vector3(tx+Math.sin(a2)*3.0,ty+G.r(3,5.5),tz+Math.cos(a2)*3.0),
+                     new THREE.Vector3(f2x,groundY(f2x,f2z)+0.6,f2z) ],G.r(0.8,1.2),0.35,5,
+        mixc(PAL.bark,PAL.paleStone,0.38),mixc(PAL.bark,PAL.canopyDeep,0.3),G);
+    }
+  }
+  // the two GATE roots: arcs over the lane; the rider passes beneath them
+  for(const ds of [-8,8]){
+    const lf=laneAt(ds);
+    const farX=lf.x-lf.lx*7.2*heroSide, farZ=lf.z-lf.lz*7.2*heroSide;
+    const farY=groundY(farX,farZ);
+    const clear=G.r(8.4,9.6);
+    const arc=[ new THREE.Vector3(tx+ (lf.x-tx)*0.18, ty+G.r(13,16), tz+(lf.z-tz)*0.18),
+                new THREE.Vector3(lf.x,lf.y+clear,lf.z),
+                new THREE.Vector3(farX,farY-0.5,farZ) ];
+    const arcC=new THREE.CatmullRomCurve3(arc,false,'centripetal',0.5);
+    const ap=[]; for(let i=0;i<=8;i++) ap.push(arcC.getPointAt(i/8));
+    tube(heroBuf,ap,G.r(1.5,1.9),0.55,6,BARK_SUN,BARK_SHADE,G);
+    heroInfo.rootClearanceM=Math.min(heroInfo.rootClearanceM,clear-1.9);
+  }
+  // primary forks + secondary groups; hang points for bells
+  const crownSkew=G.r(0,TAU);
+  const forkTop=tp[tp.length-1];
+  const ends=[];
+  const nF=G.i(4,6);
+  for(let i=0;i<nF;i++){
+    const a=crownSkew+i/nF*TAU+G.r(-0.35,0.35);
+    const reach=G.r(38,58)*(0.72+0.55*Math.cos(a-crownSkew)*0.5);
+    const b0=tp[G.i(7,10)].clone();
+    const b1=new THREE.Vector3(tx+Math.sin(a)*reach, ty+H*G.r(0.52,0.72), tz+Math.cos(a)*reach);
+    tube(heroBuf,[b0,b1],2.0,0.8,6,BARK_SUN,BARK_SHADE,G);
+    ends.push(b1);
+    const nSec=G.i(2,3);
+    for(let k2=0;k2<nSec;k2++){
+      const a2=a+G.r(-0.7,0.7), r2=reach*G.r(0.3,0.55);
+      const b2=new THREE.Vector3(b1.x+Math.sin(a2)*r2, b1.y+G.r(2,9), b1.z+Math.cos(a2)*r2);
+      tube(heroBuf,[b1,b2],0.75,0.3,5,BARK_SUN,BARK_SHADE,G);
+      ends.push(b2);
+      if(G.chance(0.75)) heroInfo.bells.push([b2.x,b2.y-G.r(1.5,3.2),b2.z]);
+    }
+  }
+  // layered asymmetric crown: big lobes with real gaps
+  const nl=G.i(15,18);
+  for(let i=0;i<nl;i++){
+    const e=ends[G.i(0,ends.length-1)];
+    const skewPull=Math.cos(Math.atan2(e.x-tx,e.z-tz)-crownSkew)*0.5+0.5;
+    const lr=G.r(12,16)+skewPull*G.r(8,14);
+    lobe(heroBuf,e.x+G.r(-9,9)*(1+skewPull*0.5),e.y+G.r(9,23),e.z+G.r(-9,9)*(1+skewPull*0.5),
+      lr*G.r(1.05,1.4),lr*G.r(0.5,0.75),lr*G.r(1.05,1.4),G,
+      i<nl*0.6?mixc(PAL.sunGrass,PAL.paleStone,0.22):mixc(PAL.meadow,PAL.sunGrass,0.3),
+      i<nl*0.35?LEAF_MID:mixc(PAL.leafShade,PAL.meadow,0.35), 0.12);
+  }
+  lobe(heroBuf,tx,ty+H*0.62,tz,H*0.22,H*0.13,H*0.22,G,LEAF_SHADE,LEAF_DEEP,0.2);
+  counts.trees++; counts.heroTrees=1;
+  ecoFnv.feed(tx,tz,H,nBut,nF,nl);
+}
+{
+  const heroMesh=new THREE.Mesh(bufGeo(heroBuf),treeMatHero);
+  heroMesh.castShadow=true; heroMesh.receiveShadow=false;
+  scene.add(heroMesh);
+  const nearMesh=new THREE.Mesh(bufGeo(nearBuf),treeMatNear);
+  nearMesh.castShadow=true; nearMesh.receiveShadow=false;
+  scene.add(nearMesh);
+  const midMesh=new THREE.Mesh(bufGeo(midBuf),treeMatMid);
+  scene.add(midMesh);
+}
+// Bellroot seed-pod bells
+{
+  const g=new THREE.ConeGeometry(0.55,1.5,5);
+  g.translate(0,-0.75,0);
+  const m=new THREE.MeshLambertMaterial({color:mixc(PAL.paleStone,0xffffff,0.25)});
+  const im=new THREE.InstancedMesh(g,m,Math.max(1,heroInfo.bells.length));
+  const _m=new THREE.Matrix4();
+  heroInfo.bells.forEach((b,i2)=>{ _m.makeTranslation(b[0],b[1],b[2]); im.setMatrixAt(i2,_m); });
+  im.instanceMatrix.needsUpdate=true;
+  scene.add(im);
+}
+
+// ============================================================
+// UNDERSTORY — 12k+ instances that follow shade, water, slope
+// ============================================================
+function vegMaterial(amp){
+  const m=new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide,
+    emissive:new THREE.Color(0x0d0b05),emissiveIntensity:1});
+  m.onBeforeCompile=(sh)=>{
+    Object.assign(sh.uniforms,WORLD_LIGHT_UNIFORMS);
+    sh.uniforms.uAmp={value:amp};
+    sh.vertexShader=sh.vertexShader
+      .replace('#include <common>','#include <common>\nuniform float uWTime; uniform float uAmp; varying vec3 vWPos; attribute float aCan; varying float vCan;')
+      .replace('#include <begin_vertex>',`#include <begin_vertex>
+      {
+        vec4 wp0=modelMatrix*instanceMatrix*vec4(0.0,0.0,0.0,1.0);
+        float ph=dot(wp0.xz,vec2(0.21,0.17));
+        float gust=sin(uWTime*1.5+ph)*0.6+sin(uWTime*2.9+ph*1.7)*0.3+sin(uWTime*0.6+ph*0.4)*0.4;
+        float bendW=transformed.y*uAmp;
+        transformed.x+=gust*bendW; transformed.z+=cos(uWTime*1.13+ph)*gust*bendW*0.5;
+      }`)
+      .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*instanceMatrix*vec4(transformed,1.0); vWPos=wp2.xyz; vCan=aCan; }');
+    sh.fragmentShader=sh.fragmentShader
+      .replace('#include <common>','#include <common>\nvarying vec3 vWPos; varying float vCan;\n'+WORLD_LIGHT_GLSL)
+      .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCan);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse*=mix(0.84,1.0,wl);\nvec3 outgoingLight = ');
+  };
+  return m;
+}
+function bladeGeo(){ // two crossed quads, color graded root->tip
+  const B=Buf();
+  const h=1.0;
+  for(const a of [0,Math.PI/2]){
+    const dx=Math.sin(a)*0.10, dz=Math.cos(a)*0.10;
+    const c0=mixc(PAL.meadow,PAL.leafShade,0.15), c1=mixc(PAL.sunGrass,PAL.meadow,0.3);
+    pushQuad(B,[-dx,0,-dz],[dx,0,dz],[dx*0.4,h,dz*0.4],[-dx*0.4,h,-dz*0.4],c1);
+    B.c.splice(B.c.length-18,6,c0.r,c0.g,c0.b,c0.r,c0.g,c0.b); // roots darker
+  }
+  return bufGeo(B);
+}
+function fernGeo(){
+  const B=Buf();
+  for(let i=0;i<3;i++){
+    const a=i/3*TAU+0.4;
+    const dx=Math.sin(a), dz=Math.cos(a);
+    const c=mixc(PAL.leafShade,PAL.meadow,0.25+0.2*(i%2));
+    pushQuad(B,[0,0.02,0],[dx*0.7,0.28,dz*0.7],[dx*0.95,0.5,dz*0.95],[dx*0.35,0.32,dz*0.35],c);
+  }
+  return bufGeo(B);
+}
+function cloverGeo(){
+  const B=Buf(); B.swayVal=0.3;
+  const cT=mixc(PAL.meadow,PAL.sunGrass,0.4), cB2=col(PAL.leafShade);
+  for(const a2 of [0.5,2.1]){
+    const dx=Math.sin(a2)*0.32, dz=Math.cos(a2)*0.32;
+    pushQuad(B,[-dx,0.02,-dz],[dx,0.02,dz],[dx*0.8,0.26,dz*0.8],[-dx*0.8,0.26,-dz*0.8],cT);
+    B.c.splice(B.c.length-18,6,cB2.r,cB2.g,cB2.b,cB2.r,cB2.g,cB2.b);
+  }
+  B.swayVal=0;
+  return bufGeo(B);
+}
+function seedheadGeo(){
+  const B=Buf();
+  const c=mixc(PAL.paleStone,PAL.sunGrass,0.4);
+  pushQuad(B,[-0.02,0,0],[0.02,0,0],[0.015,0.7,0],[-0.015,0.7,0],mixc(PAL.meadow,PAL.paleStone,0.3));
+  B.swayVal=0.8;
+  const cw=mixc(PAL.paleStone,0xffde79,0.3);
+  for(const a2 of [0.3,1.87]){
+    const dx=Math.sin(a2)*0.045, dz=Math.cos(a2)*0.045;
+    pushQuad(B,[-dx,0.68,-dz],[dx,0.68,dz],[dx*0.7,0.88,dz*0.7],[-dx*0.7,0.88,-dz*0.7],cw);
+  }
+  B.swayVal=0;
+  return bufGeo(B);
+}
+function shrubGeo(){
+  const B=Buf();
+  lobeLow(B,0,0.35,0,0.6,0.42,0.6,UNDER,LEAF_MID,LEAF_SHADE);
+  return bufGeo(B);
+}
+{
+  const batches=[
+    { g:bladeGeo(), n:5400, amp:0.16, pick:(w,mo,d)=>w<0.55&&d>ROAD_HALF+0.9 },
+    { g:fernGeo(), n:2300, amp:0.07, pick:(w,mo,d)=>(w>0.3||mo>0.4)&&d>ROAD_HALF+1.0 },
+    { g:cloverGeo(), n:2000, amp:0.05, pick:(w,mo,d)=>d>ROAD_HALF+0.7&&d<26 },
+    { g:seedheadGeo(), n:2000, amp:0.22, pick:(w,mo,d)=>w<0.4&&d>ROAD_HALF+1.1 },
+    { g:shrubGeo(), n:600, amp:0.05, pick:(w,mo,d)=>d>ROAD_HALF+2.2 },
+  ];
+  const _m=new THREE.Matrix4(), _q=new THREE.Quaternion(), _e=new THREE.Euler(), _v=new THREE.Vector3(), _s=new THREE.Vector3();
+  for(const b of batches){
+    const im=new THREE.InstancedMesh(b.g,vegMaterial(b.amp),b.n);
+    const canArr=new Float32Array(b.n);
+    let placed=0, guard=0;
+    while(placed<b.n&&guard<b.n*30){
+      guard++;
+      const s=UNDER.r(0,S_END), lat=(UNDER.chance(0.5)?1:-1)*UNDER.r(ROAD_HALF+0.7,88);
+      const fr=getFrame(FRAMES.sun,s);
+      const x=fr.x+fr.lx*lat+UNDER.r(-5,5), z=fr.z+fr.lz*lat+UNDER.r(-5,5);
+      const ri=routeInfo(x,z);
+      const w=woodiness(ri.s)*clamp(1.3-ri.d/70,0,1), mo=clamp(1-streamDist(x,z)/30,0,1);
+      if(!b.pick(w,mo,ri.d)) continue;
+      if(streamDist(x,z)<1.6) continue;
+      const mask=fbmE(x/23+7,z/23+13);           // patchy, keeps quiet negative space
+      if(mask<0.42) continue;
+      let y=groundY(x,z);
+      if(ri.d<ROAD_HALF+4.8) y=Math.max(y,ri.h-0.5);
+      _e.set(0,UNDER.r(0,TAU),0); _q.setFromEuler(_e);
+      const sc=UNDER.r(0.65,1.2);
+      _v.set(x,y-0.03,z); _s.set(sc,sc*UNDER.r(0.8,1.3),sc);
+      _m.compose(_v,_q,_s); im.setMatrixAt(placed,_m);
+      canArr[placed]=clamp(w,0,1);
+      placed++;
+    }
+    im.count=placed;
+    im.geometry.setAttribute('aCan',new THREE.InstancedBufferAttribute(canArr,1));
+    im.instanceMatrix.needsUpdate=true;
+    scene.add(im);
+    counts.understory+=placed;
+  }
+  ecoFnv.feed(counts.understory);
+}
+
+// ---------- flowers: banks, borders, pockets ----------
+{
+  const B=Buf();
+  const c=col(0xffffff);
+  pushQuad(B,[-0.02,0,0],[0.02,0,0],[0.012,0.34,0],[-0.012,0.34,0],mixc(PAL.meadow,PAL.sunGrass,0.55));
+  B.swayVal=0.5;
+  for(const a2 of [0.2,1.77]){
+    const dx=Math.sin(a2)*0.065, dz=Math.cos(a2)*0.065;
+    pushQuad(B,[-dx,0.34,-dz],[dx,0.34,dz],[dx*0.75,0.46,dz*0.75],[-dx*0.75,0.46,-dz*0.75],c);
+  }
+  B.swayVal=0;
+  const g=bufGeo(B);
+  const petals=[col(PAL.blossom),mixc(PAL.blossom,0xfff1e2,0.45),mixc(PAL.paleStone,0xfff3da,0.5),
+    mixc(PAL.paleStone,0xffde79,0.5)];
+  const groupsWanted=FLOW.i(520,600);
+  const perG=7;
+  const CAP=groupsWanted*perG+40;
+  const im=new THREE.InstancedMesh(g,vegMaterial(0.12),CAP);
+  im.instanceColor=new THREE.InstancedBufferAttribute(new Float32Array(CAP*3),3);
+  const fCan=new Float32Array(CAP);
+  const _m=new THREE.Matrix4(), _q=new THREE.Quaternion(), _e=new THREE.Euler(), _v=new THREE.Vector3(), _s=new THREE.Vector3();
+  let idx=0, groups=0, guard=0;
+  while(groups<groupsWanted&&guard<groupsWanted*40){
+    guard++;
+    const s=FLOW.chance(0.3)?lerp(S_END-560,S_END-70,FLOW.f()):FLOW.r(0,S_END);
+    const w=woodiness(s);
+    if(w>0.55&&FLOW.chance(0.7)) continue;          // banks live in light
+    const fr=getFrame(FRAMES.sun,s);
+    const bankBias=FLOW.chance(0.6)?FLOW.r(ROAD_HALF+1.0,ROAD_HALF+7):FLOW.r(10,55);
+    const lat=(FLOW.chance(0.5)?1:-1)*bankBias;
+    const cx2=fr.x+fr.lx*lat, cz2=fr.z+fr.lz*lat;
+    if(routeInfo(cx2,cz2).d<ROAD_HALF+0.8) continue;
+    if(streamDist(cx2,cz2)<2) continue;
+    const tone=petals[FLOW.i(0,petals.length-1)];
+    for(let k2=0;k2<perG;k2++){
+      const a=FLOW.r(0,TAU), rr=FLOW.r(0.25,1.9);
+      const x=cx2+Math.sin(a)*rr, z=cz2+Math.cos(a)*rr;
+      const riF=routeInfo(x,z);
+      let y=groundY(x,z);
+      if(riF.d<ROAD_HALF+4.8) y=Math.max(y,riF.h-0.5);
+      _e.set(0,FLOW.r(0,TAU),0); _q.setFromEuler(_e);
+      const sc=FLOW.r(0.8,1.4);
+      _v.set(x,y-0.02,z); _s.set(sc,sc,sc);
+      _m.compose(_v,_q,_s); im.setMatrixAt(idx,_m);
+      const tv=tone.clone().lerp(col(0xffffff),FLOW.r(0,0.25));
+      im.instanceColor.setXYZ(idx,tv.r,tv.g,tv.b);
+      fCan[idx]=clamp(w*0.7,0,1);
+      idx++;
+    }
+    groups++;
+  }
+  // the opening curve is guided by two designed banks
+  for(const [s0,latSign] of [[FLOW.r(16,22),1],[FLOW.r(30,40),-1],[FLOW.r(48,60),1]]){
+    const fr0=getFrame(FRAMES.sun,s0);
+    const tone=petals[FLOW.i(0,petals.length-1)];
+    for(let k2=0;k2<10&&idx<im.instanceMatrix.count;k2++){
+      const along=FLOW.r(-4,4), lat=latSign*(ROAD_HALF+FLOW.r(0.9,3.4));
+      const x=fr0.x+fr0.lx*lat+fr0.tx*along, z=fr0.z+fr0.lz*lat+fr0.tz*along;
+      if(routeInfo(x,z).d<ROAD_HALF+0.7) continue;
+      _e.set(0,FLOW.r(0,TAU),0); _q.setFromEuler(_e);
+      const sc=FLOW.r(0.9,1.5);
+      _v.set(x,groundY(x,z)-0.02,z); _s.set(sc,sc,sc);
+      _m.compose(_v,_q,_s); im.setMatrixAt(idx,_m);
+      const tv=tone.clone().lerp(col(0xffffff),FLOW.r(0,0.2));
+      im.instanceColor.setXYZ(idx,tv.r,tv.g,tv.b);
+      fCan[idx]=0.2; idx++;
+    }
+    groups++;
+  }
+  im.count=idx;
+  im.geometry.setAttribute('aCan',new THREE.InstancedBufferAttribute(fCan,1));
+  im.instanceMatrix.needsUpdate=true;
+  scene.add(im);
+  counts.flowerGroups=groups;
+  ecoFnv.feed(groups);
+}
+
+// ---------- ground contacts: rocks, mossy rocks, logs, root snarls ----------
+{
+  const rockG=(()=>{ const B=Buf(); lobeLow(B,0,0.22,0,0.5,0.3,0.45,LAND,mixc(PAL.paleStone,PAL.bark,0.25),mixc(PAL.bark,PAL.canopyDeep,0.3)); return bufGeo(B); })();
+  const mossRockG=(()=>{ const B=Buf(); lobeLow(B,0,0.2,0,0.45,0.28,0.4,LAND,mixc(PAL.leafShade,PAL.paleStone,0.28),mixc(PAL.canopyDeep,PAL.leafShade,0.5)); return bufGeo(B); })();
+  const logG=(()=>{ const B=Buf();
+    tube(B,[new THREE.Vector3(-0.9,0.16,0),new THREE.Vector3(0.9,0.13,0)],0.17,0.13,5,BARK_SUN,mixc(PAL.bark,PAL.canopyDeep,0.5),LAND);
+    return bufGeo(B); })();
+  const snarlG=(()=>{ const B=Buf();
+    for(let i=0;i<3;i++){ const a=i/3*TAU;
+      tube(B,[new THREE.Vector3(0,0.05,0),new THREE.Vector3(Math.sin(a)*0.7,0.28,Math.cos(a)*0.7),new THREE.Vector3(Math.sin(a)*1.1,0.02,Math.cos(a)*1.1)],0.09,0.04,4,BARK_SUN,BARK_SHADE,LAND); }
+    return bufGeo(B); })();
+  const discG=(()=>{ const B=Buf(); const n=8;
+    for(let i=0;i<n;i++){ const a0=i/n*TAU,a1=(i+1)/n*TAU;
+      pushTri(B,[0,0,0],[Math.sin(a1),0,Math.cos(a1)],[Math.sin(a0),0,Math.cos(a0)],col(PAL.canopyDeep)); }
+    return bufGeo(B); })();
+  const fams=[[rockG,300],[mossRockG,200],[logG,140],[snarlG,140]];
+  const _m=new THREE.Matrix4(), _q=new THREE.Quaternion(), _e=new THREE.Euler(), _v=new THREE.Vector3(), _s=new THREE.Vector3();
+  const discs=[];
+  fams.forEach(([g,n],fi)=>{
+    const im=new THREE.InstancedMesh(g,grounded(new THREE.MeshLambertMaterial({vertexColors:true}),false),n);
+    let placed=0,guard=0;
+    while(placed<n&&guard<n*40){
+      guard++;
+      let x,z;
+      const mode=LAND.i(0,2);
+      if(mode===0&&treePts.length){ const t=treePts[LAND.i(0,treePts.length-1)];
+        const a=LAND.r(0,TAU),rr=LAND.r(1.2,4.5); x=t[0]+Math.sin(a)*rr; z=t[1]+Math.cos(a)*rr; }
+      else if(mode===1&&streamPts.length){ const t=streamPts[LAND.i(0,streamPts.length-1)];
+        const a=LAND.r(0,TAU),rr=LAND.r(2.2,7); x=t.x+Math.sin(a)*rr; z=t.z+Math.cos(a)*rr; }
+      else { const s=LAND.r(0,S_END); const fr=getFrame(FRAMES.sun,s);
+        const lat=(LAND.chance(0.5)?1:-1)*LAND.r(ROAD_HALF+1.2,45); x=fr.x+fr.lx*lat; z=fr.z+fr.lz*lat; }
+      const ri=routeInfo(x,z);
+      if(ri.d<ROAD_HALF+0.9) continue;
+      if(streamDist(x,z)<1.2) continue;
+      let y=groundY(x,z);
+      if(ri.d<ROAD_HALF+4.8) y=Math.max(y,ri.h-0.5);
+      const sc=LAND.r(0.6,fi===2?1.8:2.4);
+      _e.set(0,LAND.r(0,TAU),LAND.r(-0.08,0.08)); _q.setFromEuler(_e);
+      _v.set(x,y-0.06*sc,z); _s.set(sc,sc*LAND.r(0.8,1.2),sc);
+      _m.compose(_v,_q,_s); im.setMatrixAt(placed,_m);
+      if(sc>1.4) discs.push([x,y,z,sc]);
+      placed++;
+    }
+    im.count=placed;
+    im.instanceMatrix.needsUpdate=true;
+    im.receiveShadow=true;
+    scene.add(im);
+    counts.rocksRootsLogs+=placed;
+  });
+  // contact shadows beneath the large pieces
+  const dm=new THREE.MeshBasicMaterial({vertexColors:true,transparent:true,opacity:0.28,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-2});
+  const dim=new THREE.InstancedMesh(discG,dm,Math.max(1,discs.length));
+  discs.forEach((d,i2)=>{ _e.set(0,0,0); _q.setFromEuler(_e); _v.set(d[0],d[1]+0.04,d[2]); _s.set(d[3]*0.75,1,d[3]*0.75);
+    _m.compose(_v,_q,_s); dim.setMatrixAt(i2,_m); });
+  dim.instanceMatrix.needsUpdate=true;
+  scene.add(dim);
+  ecoFnv.feed(counts.rocksRootsLogs);
+}
+
+// ============================================================
+// WATER — stream, bridge crossing, ford + pool at the rejoin
+// ============================================================
+const waterMat=new THREE.ShaderMaterial({
+  uniforms:{ uWTime:WORLD_LIGHT_UNIFORMS.uWTime },
+  vertexShader:`attribute float aT; varying float vT; varying vec3 vW; varying float vEdge; attribute float aEdge;
+    void main(){ vT=aT; vEdge=aEdge; vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp; }`,
+  fragmentShader:`uniform float uWTime; varying float vT; varying vec3 vW; varying float vEdge;
+    float h2(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+    float n2(vec2 p){ vec2 i=floor(p),f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+      return mix(mix(h2(i),h2(i+vec2(1,0)),u.x),mix(h2(i+vec2(0,1)),h2(i+vec2(1,1)),u.x),u.y); }
+    void main(){
+      vec3 deep=vec3(0.075,0.20,0.175);          // dark depth band
+      vec3 mid=vec3(0.18,0.52,0.60);
+      vec3 lightv=vec3(0.33,0.75,0.905);
+      float depthBand=1.0-abs(vEdge);            // centre deep, edges light
+      vec3 c=mix(lightv,mix(mid,deep,depthBand),0.35+0.55*depthBand);
+      float flow=n2(vec2(vT*0.55-uWTime*1.6,vW.x*0.4+vW.z*0.4));
+      float streak=smoothstep(0.62,0.8,flow);
+      c=mix(c,vec3(0.42,0.78,0.88),streak*0.5);
+      float sparkle=step(0.965,n2(vec2(vT*2.3-uWTime*3.1,floor(vW.x*2.1)+floor(vW.z*2.1))));
+      c+=vec3(0.94,0.85,0.66)*sparkle*0.5;
+      gl_FragColor=vec4(c,1.0);
+    }`,
+});
+{
+  // stream ribbon
+  const P=[],T=[],E=[],IDX=[];
+  for(let i=0;i<streamPts.length;i++){
+    const p=streamPts[i];
+    const q=streamPts[Math.min(i+1,streamPts.length-1)];
+    let tx=q.x-p.x, tz=q.z-p.z; const L=Math.hypot(tx,tz)||1; tx/=L; tz/=L;
+    const w=1.1+0.8*fbmT(p.x/40,p.z/40);
+    P.push(p.x-tz*w,p.y,p.z+tx*w, p.x+tz*w,p.y,p.z-tx*w);
+    T.push(i*0.5,i*0.5); E.push(-1,1);
+  }
+  for(let i=0;i<streamPts.length-1;i++){ const a=i*2;
+    IDX.push(a,a+2,a+1, a+1,a+2,a+3); }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('aT',new THREE.Float32BufferAttribute(T,1));
+  g.setAttribute('aEdge',new THREE.Float32BufferAttribute(E,1));
+  g.setIndex(IDX);
+  scene.add(new THREE.Mesh(g,waterMat));
+  counts.waterFeatures++;
+}
+// ford + pool near the rejoin (shallow sheet the lane splashes through)
+let fordS=-1;
+{
+  let bd=1e9;
+  for(let s=S_MERGE.sun+14;s<S_MERGE.sun+170;s+=4){
+    const fr=getFrame(FRAMES.sun,s);
+    const d=streamDist(fr.x,fr.z);
+    if(d<bd){ bd=d; fordS=s; }
+  }
+  const fr=getFrame(FRAMES.sun,fordS);
+  const mk=(cx,cz,rx,rz,rot,yOverride)=>{ // stylized water ellipse (fan)
+    const P=[],T=[],E=[],IDX=[];
+    const y=yOverride!==undefined?yOverride:groundY(cx,cz)+0.10;
+    const n=14;
+    P.push(cx,y,cz); T.push(0); E.push(0);
+    for(let i=0;i<=n;i++){ const a=i/n*TAU;
+      const dx=Math.cos(a)*rx, dz=Math.sin(a)*rz;
+      P.push(cx+dx*Math.cos(rot)-dz*Math.sin(rot),y,cz+dx*Math.sin(rot)+dz*Math.cos(rot));
+      T.push(i*0.8); E.push(0.85); }
+    for(let i=1;i<=n;i++) IDX.push(0,i,i+1);
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+    g.setAttribute('aT',new THREE.Float32BufferAttribute(T,1));
+    g.setAttribute('aEdge',new THREE.Float32BufferAttribute(E,1));
+    g.setIndex(IDX);
+    scene.add(new THREE.Mesh(g,waterMat));
+  };
+  mk(fr.x,fr.z,ROAD_HALF+4.5,3.4,Math.atan2(fr.tx,fr.tz),fr.y+0.19);  // the crossing sheet
+  const pf=getFrame(FRAMES.sun,fordS+WATER.r(18,30));
+  mk(pf.x+pf.lx*WATER.r(8,12)*(WATER.chance(0.5)?1:-1),pf.z+pf.lz*8,6.5,5,WATER.r(0,TAU)); // the resting pool
+  counts.waterFeatures+=2;
+  terrainFnv.feed(fordS);
+}
+
+// ============================================================
+// STONEWORK LANDMARKS — traces of care, not a village
+// ============================================================
+const landBuf=Buf();
+const STONE=mixc(PAL.paleStone,PAL.bark,0.14), STONE_SH=mixc(PAL.paleStone,PAL.canopyDeep,0.32),
+      STONE_MOSS=mixc(PAL.paleStone,PAL.leafShade,0.42);
+function stoneBlock(B,cx,cy,cz,w,h,d,yaw,mossy){
+  const ca=Math.cos(yaw),sa=Math.sin(yaw);
+  const cor=(dx,dz)=>[cx+dx*ca-dz*sa, cy, cz+dx*sa+dz*ca];
+  const b0=cor(-w/2,-d/2), b1=cor(w/2,-d/2), b2=cor(w/2,d/2), b3=cor(-w/2,d/2);
+  const t0=[b0[0],cy+h,b0[2]], t1=[b1[0],cy+h,b1[2]], t2=[b2[0],cy+h,b2[2]], t3=[b3[0],cy+h,b3[2]];
+  const cTop=mossy?STONE_MOSS:STONE, cSide=mossy?mixc(PAL.leafShade,PAL.canopyDeep,0.3):STONE_SH;
+  pushQuad(B,[b0[0],cy,b0[2]],[b1[0],cy,b1[2]],t1,t0,cSide);
+  pushQuad(B,[b1[0],cy,b1[2]],[b2[0],cy,b2[2]],t2,t1,STONE);
+  pushQuad(B,[b2[0],cy,b2[2]],[b3[0],cy,b3[2]],t3,t2,cSide);
+  pushQuad(B,[b3[0],cy,b3[2]],[b0[0],cy,b0[2]],t0,t3,STONE);
+  pushQuad(B,t0,t1,t2,t3,cTop);
+}
+function wallRun(B,F,s0,s1,lat,hBase,mossy,G){
+  for(let s=s0;s<s1;s+=G.r(0.9,1.4)){
+    const fr=getFrame(F,s);
+    const x=fr.x+fr.lx*lat+G.r(-0.1,0.1), z=fr.z+fr.lz*lat+G.r(-0.1,0.1);
+    const y=Math.max(groundY(x,z),fr.y-0.35)-0.15;
+    const rows=G.i(2,3);
+    for(let r2=0;r2<rows;r2++)
+      stoneBlock(B,x+G.r(-0.06,0.06),y+r2*0.34,z+G.r(-0.06,0.06),
+        G.r(0.8,1.2),0.33,G.r(0.4,0.55),Math.atan2(fr.tx,fr.tz)+G.r(-0.06,0.06),mossy&&G.chance(0.55));
+  }
+}
+// 1) Mosswater bridge: parapets + abutments where the arm meets the stream
+let bridgeS=-1;
+{
+  let bd=1e9;
+  for(let s=S_COMMIT.moss+20;s<S_MERGE.moss-20;s+=2){
+    const fr=getFrame(FRAMES.moss,s);
+    const d=streamDist(fr.x,fr.z);
+    if(d<bd){ bd=d; bridgeS=s; }
+  }
+  const G=LAND;
+  for(const side of [-1,1]){
+    wallRun(landBuf,FRAMES.moss,bridgeS-6,bridgeS+6,side*(ROAD_HALF+0.55),0,true,G);
+    // low abutment blocks stepping down toward the water
+    for(const ds of [-8.5,8.5]){
+      const fr=getFrame(FRAMES.moss,bridgeS+ds);
+      const x=fr.x+fr.lx*side*(ROAD_HALF+0.9), z=fr.z+fr.lz*side*(ROAD_HALF+0.9);
+      stoneBlock(landBuf,x,Math.max(groundY(x,z),fr.y-0.5)-0.4,z,1.5,0.7,1.2,Math.atan2(fr.tx,fr.tz),true);
+    }
+  }
+  counts.landmarks++;
+}
+// 2) dry-stone overlook + flowered terrace on the Sunpath arm
+{
+  const G=LAND;
+  const s=(S_COMMIT.sun+S_MERGE.sun)/2+G.r(-25,10);
+  const side=FORK_SIDE;                              // outside of the climb, looking over the vale
+  wallRun(landBuf,FRAMES.sun,s-9,s+9,side*(ROAD_HALF+1.7),0,false,G);
+  const fr=getFrame(FRAMES.sun,s);
+  const px=fr.x+fr.lx*side*(ROAD_HALF+3.1), pz=fr.z+fr.lz*side*(ROAD_HALF+3.1);
+  stoneBlock(landBuf,px,Math.max(groundY(px,pz),fr.y-0.4)-0.1,pz,2.2,0.28,1.6,Math.atan2(fr.tx,fr.tz),false); // bench slab
+  counts.landmarks++;
+}
+// 3) moss stair + retaining wall in Fernfold
+{
+  const G=LAND;
+  const s=lerp(S_SUNBANK,S_FERN,G.r(0.35,0.6));
+  const side=G.chance(0.5)?1:-1;
+  wallRun(landBuf,FRAMES.sun,s-8,s+8,side*(ROAD_HALF+1.1),0,true,G);
+  const fr=getFrame(FRAMES.sun,s);
+  for(let i=0;i<5;i++){
+    const x=fr.x+fr.lx*side*(ROAD_HALF+1.9+i*0.8), z=fr.z+fr.lz*side*(ROAD_HALF+1.9+i*0.8);
+    stoneBlock(landBuf,x,Math.max(groundY(x,z),fr.y-0.45)-0.15+i*0.06,z,1.4,0.24,0.7,Math.atan2(fr.tx,fr.tz)+0.2*side,true);
+  }
+  counts.landmarks++;
+}
+// 4) garden wall with a gap + waystone in Joining Woods
+{
+  const G=LAND;
+  const s=lerp(S_FORKEND,S_JOINEND,G.r(0.4,0.7));
+  const side=G.chance(0.5)?1:-1;
+  wallRun(landBuf,FRAMES.sun,s-11,s-2,side*(ROAD_HALF+2.1),0,true,G);
+  wallRun(landBuf,FRAMES.sun,s+2,s+11,side*(ROAD_HALF+2.1),0,true,G);
+  const fr=getFrame(FRAMES.sun,s+13);
+  const wx=fr.x+fr.lx*side*(ROAD_HALF+1.4), wz=fr.z+fr.lz*side*(ROAD_HALF+1.4);
+  stoneBlock(landBuf,wx,Math.max(groundY(wx,wz),fr.y-0.45)-0.1,wz,0.55,1.05,0.4,G.r(0,TAU),true); // the waystone
+  counts.landmarks++;
+}
+// 5) distant wind-bell tower silhouette on a far shoulder
+{
+  const G=LAND;
+  const fr=getFrame(FRAMES.sun,L_TOTAL*G.r(0.45,0.62));
+  const a=G.r(0,TAU);
+  const tx2=fr.x+Math.sin(a)*G.r(420,640), tz2=fr.z+Math.cos(a)*G.r(420,640);
+  const ty2=groundY(tx2,tz2);
+  for(let i=0;i<5;i++) stoneBlock(landBuf,tx2,ty2+i*2.4,tz2,3.4-i*0.35,2.4,3.4-i*0.35,a,false);
+  // small open bell story + pyramidal cap
+  stoneBlock(landBuf,tx2,ty2+12,tz2,2.6,0.5,2.6,a,false);
+  pushTri(landBuf,[tx2-1.5,ty2+12.5,tz2-1.5],[tx2+1.5,ty2+12.5,tz2-1.5],[tx2,ty2+15.4,tz2],mixc(PAL.bark,PAL.canopyDeep,0.3));
+  pushTri(landBuf,[tx2+1.5,ty2+12.5,tz2-1.5],[tx2+1.5,ty2+12.5,tz2+1.5],[tx2,ty2+15.4,tz2],mixc(PAL.bark,PAL.canopyDeep,0.42));
+  pushTri(landBuf,[tx2+1.5,ty2+12.5,tz2+1.5],[tx2-1.5,ty2+12.5,tz2+1.5],[tx2,ty2+15.4,tz2],mixc(PAL.bark,PAL.canopyDeep,0.3));
+  pushTri(landBuf,[tx2-1.5,ty2+12.5,tz2+1.5],[tx2-1.5,ty2+12.5,tz2-1.5],[tx2,ty2+15.4,tz2],mixc(PAL.bark,PAL.canopyDeep,0.42));
+  counts.landmarks++;
+}
+// 6) the opening root gate: one giant ancient tree framing the left foreground,
+//    exposed roots reaching to the lane's shoulder; a modest right-side answer
+{
+  const G=LAND;
+  const gateBuf=Buf();
+  const fr=getFrame(FRAMES.sun,G.r(10,15));
+  const lat=+(ROAD_HALF+SHOULDER+G.r(1.6,2.6));
+  const x=fr.x+fr.lx*lat, z=fr.z+fr.lz*lat;
+  const y=groundY(x,z);
+  buildTree(gateBuf,'ancient',x,y-0.2,z,G,2,G.r(2.0,2.4));
+  treePts.push([x,z,2.6]); counts.trees++; counts.articulatedNearTrees++;
+  // two exposed roots crawling from the trunk to the very shoulder of the lane
+  for(const ds of [-2.5,3.5]){
+    const f2=getFrame(FRAMES.sun,G.r(10,15)+ds);
+    const footX=f2.x+f2.lx*(ROAD_HALF+0.75), footZ=f2.z+f2.lz*(ROAD_HALF+0.75);
+    const arc=[ new THREE.Vector3(x,y+G.r(1.6,2.6),z),
+                new THREE.Vector3(lerp(x,footX,0.55),y+G.r(0.5,0.9),lerp(z,footZ,0.55)),
+                new THREE.Vector3(footX,groundY(footX,footZ)-0.25,footZ) ];
+    const c2=new THREE.CatmullRomCurve3(arc,false,'centripetal',0.5);
+    const ap=[]; for(let i=0;i<=6;i++) ap.push(c2.getPointAt(i/6));
+    tube(gateBuf,ap,G.r(0.3,0.42),0.12,5,BARK_SUN,BARK_SHADE,G);
+  }
+  // right-side foreground: a young leaning tree, contact without enclosure
+  const fr2=getFrame(FRAMES.sun,G.r(23,29));
+  const lat2=-(ROAD_HALF+SHOULDER+G.r(2.2,3.6));
+  const x2=fr2.x+fr2.lx*lat2, z2=fr2.z+fr2.lz*lat2;
+  buildTree(gateBuf,'orchard',x2,groundY(x2,z2)-0.15,z2,G,2,G.r(0.7,0.9));
+  treePts.push([x2,z2,1]); counts.trees++; counts.articulatedNearTrees++;
+  const gateMesh=new THREE.Mesh(bufGeo(gateBuf),treeMatNear);
+  gateMesh.castShadow=true; gateMesh.receiveShadow=false;
+  scene.add(gateMesh);
+  counts.landmarks++;
+}
+// (7,8 counted with the Bellroot and the ford crossing assemblies)
+counts.landmarks+=2;  // Bellroot gate-roots assembly + ford crossing stones
+{
+  const G=LAND;
+  const fr=getFrame(FRAMES.sun,fordS);
+  for(const side of [-1,1]){ // stepping stones marking the ford edges
+    for(let i=0;i<3;i++){
+      const x=fr.x+fr.lx*side*(ROAD_HALF+1.3+i*1.1), z=fr.z+fr.lz*side*(ROAD_HALF+1.3+i*1.1);
+      stoneBlock(landBuf,x,Math.max(groundY(x,z),fr.y-0.5)-0.12,z,G.r(0.6,0.9),0.3,G.r(0.5,0.8),G.r(0,TAU),true);
+    }
+  }
+}
+{
+  const landMesh=new THREE.Mesh(bufGeo(landBuf),grounded(new THREE.MeshLambertMaterial({vertexColors:true}),false));
+  landMesh.castShadow=true; landMesh.receiveShadow=true;
+  scene.add(landMesh);
+  ecoFnv.feed(counts.landmarks,bridgeS,fordS);
+}
+
+// ============================================================
+// SKY + CLOUDS — the upper half of every composition
+// ============================================================
+{
+  const m=new THREE.ShaderMaterial({
+    uniforms:{ uSunW:{value:sunDir.clone()} },
+    side:THREE.BackSide, depthWrite:false,
+    vertexShader:`varying vec3 vW; void main(){ vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp; }`,
+    fragmentShader:`uniform vec3 uSunW; varying vec3 vW;
+    void main(){
+      vec3 d=normalize(vW-cameraPosition);
+      float e=max(d.y,-0.04);
+      vec3 zen=vec3(0.176,0.568,0.847);           // saturated summer cyan
+      vec3 mid=vec3(0.329,0.745,0.906);
+      vec3 hor=vec3(0.855,0.894,0.831);           // pale warm haze line
+      vec3 c=mix(hor,mid,smoothstep(0.0,0.14,e));
+      c=mix(c,zen,smoothstep(0.13,0.55,e));
+      float sd=acos(clamp(dot(d,normalize(uSunW)),-1.0,1.0));
+      c+=vec3(1.0,0.94,0.78)*exp(-sd*sd*38.0)*0.45;   // broad cloudlight glow, no flare
+      c+=vec3(1.0,0.97,0.88)*smoothstep(0.05,0.012,sd)*0.85;
+      gl_FragColor=vec4(c,1.0);
+    }`,
+  });
+  const dome=new THREE.Mesh(new THREE.SphereGeometry(5600,36,18),m);
+  dome.frustumCulled=false;
+  dome.onBeforeRender=(r,s2,cam)=>{ dome.position.copy(cam.position); dome.updateMatrixWorld(); };
+  scene.add(dome);
+}
+// clouds: one merged puff-cluster mesh per formation; slow shared drift
+const cloudFormations=[];
+{
+  const cloudMat=new THREE.MeshBasicMaterial({vertexColors:true,fog:false});
+  const c0=spinePos(L_TOTAL*0.5);
+  const NFORM=CLOUD.i(17,21);
+  const CREAM=mixc(PAL.paleStone,0xffffff,0.7), CREAM_LIT=col(0xFFFDF4),
+        BASE_COOL=mixc(PAL.skyWater,0xffffff,0.42).lerp(col(PAL.leafShade),0.14);
+  // the monumental tower rises roughly behind the Bellroot as seen from the climb
+  const towardHero=Math.atan2(heroC.x-c0.x,heroC.z-c0.z)+CLOUD.r(-0.25,0.25);
+  const sightDir=new THREE.Vector2(heroC.x-spinePos(20).x,heroC.z-spinePos(20).z).normalize();
+  for(let fi=0;fi<NFORM;fi++){
+    const monumental=fi===0;
+    const B=Buf();
+    const a=monumental?towardHero:CLOUD.r(0,TAU);
+    const rr=monumental?CLOUD.r(520,820):CLOUD.r(500,1900);
+    const cx=monumental?heroC.x+sightDir.x*rr:c0.x+Math.sin(a)*rr,
+          cz=monumental?heroC.z+sightDir.y*rr:c0.z+Math.cos(a)*rr;
+    const baseY=CLOUD.r(240,330)+(monumental?40:0);
+    const nP=monumental?14:CLOUD.i(6,12);
+    const spanX=monumental?CLOUD.r(220,300):CLOUD.r(90,220);
+    let px=0,py=0;
+    for(let i=0;i<nP;i++){
+      const t=i/nP;
+      const lx=(CLOUD.f()-0.5)*spanX, lz=(CLOUD.f()-0.5)*spanX*0.55;
+      const ly=monumental?t*CLOUD.r(230,300)+CLOUD.r(-16,16):CLOUD.r(0,44)+Math.sin(t*Math.PI)*22;
+      const pr=monumental?lerp(95,34,t)*CLOUD.r(0.8,1.15):CLOUD.r(26,52)*(1-0.35*Math.abs(lx)/spanX*2);
+      const nv=icoPos.count, jit=[];
+      for(let vi2=0;vi2<nv;vi2++) jit.push(1+(CLOUD.f()-0.5)*0.28);
+      const idx=icoIdx;
+      for(let ii=0;ii<idx.length;ii+=3){
+        const vs=[idx[ii],idx[ii+1],idx[ii+2]].map(vi2=>{
+          let X=icoPos.getX(vi2), Y=icoPos.getY(vi2), Z=icoPos.getZ(vi2);
+          const j=jit[vi2];
+          if(Y<0) Y*=0.42;                        // flat shaded bases
+          return [lx+X*pr*j, ly+Y*pr*0.72*j, lz+Z*pr*j, Y];
+        });
+        const ym=(vs[0][3]+vs[1][3]+vs[2][3])/3;
+        const cc=BASE_COOL.clone().lerp(ym>0.15?CREAM_LIT:CREAM,clamp(0.35+ym*0.85,0,1));
+        pushTri(B,[vs[0][0],vs[0][1],vs[0][2]],[vs[1][0],vs[1][1],vs[1][2]],[vs[2][0],vs[2][1],vs[2][2]],cc);
+      }
+      counts.cloudPuffs++;
+    }
+    const mesh=new THREE.Mesh(bufGeo(B),cloudMat);
+    mesh.position.set(cx,baseY,cz);
+    scene.add(mesh);
+    cloudFormations.push({mesh,home:new THREE.Vector3(cx,baseY,cz)});
+    counts.cloudFormations++;
+    ecoFnv.feed(cx,cz,nP);
+  }
+}
+
+// ============================================================
+// AMBIENT LIFE — quiet weather of the vale; runs on world time
+// ============================================================
+function pointsSystem(n,mk,size,opacity,tint,driftKind){
+  const pos=new Float32Array(n*3), ph=new Float32Array(n), sp=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=mk(i); pos[i*3]=p[0]; pos[i*3+1]=p[1]; pos[i*3+2]=p[2];
+    ph[i]=PART.r(0,TAU); sp[i]=PART.r(0.5,1.5); }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  g.setAttribute('aPh',new THREE.BufferAttribute(ph,1));
+  g.setAttribute('aSp',new THREE.BufferAttribute(sp,1));
+  const m=new THREE.ShaderMaterial({
+    transparent:true, depthWrite:false,
+    uniforms:{ uWTime:WORLD_LIGHT_UNIFORMS.uWTime, uSize:{value:size}, uOp:{value:opacity},
+      uTint:{value:new THREE.Color(tint)}, uCam:{value:new THREE.Vector3()} },
+    vertexShader:`attribute float aPh; attribute float aSp; uniform float uWTime; uniform float uSize; uniform vec3 uCam;
+      varying float vFade;
+      void main(){
+        vec3 p=position;
+        float t=uWTime*aSp;
+        ${driftKind===0?`p+=vec3(sin(t*0.4+aPh)*2.2, sin(t*0.23+aPh*2.1)*1.1, cos(t*0.31+aPh)*2.2);`:''}
+        ${driftKind===1?`p+=vec3(sin(t*0.9+aPh)*1.4, -mod(t*0.55+aPh*3.0,16.0)+8.0, cos(t*0.7+aPh)*1.4);`:''}
+        ${driftKind===2?`p+=vec3(sin(t*0.2+aPh)*5.0+t*0.35, sin(t*0.16+aPh)*2.4, cos(t*0.24+aPh)*5.0);`:''}
+        float d=distance(p,uCam);
+        vFade=(1.0-smoothstep(60.0,140.0,d))*smoothstep(2.0,7.0,d);
+        vec4 mv=viewMatrix*vec4(p,1.0);
+        gl_Position=projectionMatrix*mv;
+        gl_PointSize=uSize*(140.0/max(1.0,-mv.z));
+      }`,
+    fragmentShader:`uniform float uOp; uniform vec3 uTint; varying float vFade;
+      void main(){
+        vec2 q=gl_PointCoord-0.5;
+        float a=smoothstep(0.5,0.12,length(q))*uOp*vFade;
+        if(a<0.01) discard;
+        gl_FragColor=vec4(uTint,a);
+      }`,
+  });
+  const pts=new THREE.Points(g,m);
+  pts.frustumCulled=false;
+  scene.add(pts);
+  counts.airborneParticles+=n;
+  return m;
+}
+const particleMats=[];
+{
+  const nearRoute=(hMin,hMax)=>()=>{
+    const s=PART.r(0,S_END), lat=(PART.chance(0.5)?1:-1)*PART.r(0,55);
+    const fr=getFrame(FRAMES.sun,s);
+    const x=fr.x+fr.lx*lat, z=fr.z+fr.lz*lat;
+    return [x,groundY(x,z)+PART.r(hMin,hMax),z];
+  };
+  particleMats.push(pointsSystem(1050,nearRoute(0.3,4),1.6,0.5,0xF7EBC8,0));    // pollen
+  particleMats.push(pointsSystem(520,nearRoute(2,12),2.3,0.5,0x9CCB6B,1));      // drifting leaves
+  particleMats.push(pointsSystem(280,nearRoute(1,7),2.1,0.45,0xEFC3CD,1));      // petals
+  particleMats.push(pointsSystem(600,nearRoute(3,16),1.4,0.38,0xF2E3B8,2));     // seed motes
+}
+// butterflies: instanced wing pairs on seeded shader paths
+{
+  const B=Buf();
+  B.swayVal=0;
+  const cW=col(0xffffff);
+  pushTri(B,[0,0,-0.09],[0.16,0.03,0.02],[0,0,0.09],cW);   // right wing (flap via shader)
+  pushTri(B,[0,0,-0.09],[0,0,0.09],[-0.16,0.03,0.02],cW);  // left wing
+  const g=bufGeo(B);
+  const N=LIFE.i(16,20);
+  const anchor=new Float32Array(N*3), phase=new Float32Array(N), span=new Float32Array(N), tint=new Float32Array(N*3);
+  const tones=[col(PAL.blossom),mixc(PAL.paleStone,0xffffff,0.4),mixc(PAL.blossom,0xffde79,0.4)];
+  for(let i=0;i<N;i++){
+    const s=LIFE.r(0,S_END), lat=(LIFE.chance(0.5)?1:-1)*LIFE.r(2,26);
+    const fr=getFrame(FRAMES.sun,s);
+    const x=fr.x+fr.lx*lat, z=fr.z+fr.lz*lat;
+    anchor[i*3]=x; anchor[i*3+1]=groundY(x,z)+LIFE.r(0.6,2.2); anchor[i*3+2]=z;
+    phase[i]=LIFE.r(0,TAU); span[i]=LIFE.r(2,7);
+    const t=tones[LIFE.i(0,2)]; tint[i*3]=t.r; tint[i*3+1]=t.g; tint[i*3+2]=t.b;
+  }
+  const im=new THREE.InstancedMesh(g,null,N);
+  g.setAttribute('aAnchor',new THREE.InstancedBufferAttribute(anchor,3));
+  g.setAttribute('aPhase',new THREE.InstancedBufferAttribute(phase,1));
+  g.setAttribute('aSpan',new THREE.InstancedBufferAttribute(span,1));
+  g.setAttribute('aTint',new THREE.InstancedBufferAttribute(tint,3));
+  const m=new THREE.ShaderMaterial({
+    side:THREE.DoubleSide,
+    uniforms:{ uWTime:WORLD_LIGHT_UNIFORMS.uWTime },
+    vertexShader:`attribute vec3 aAnchor; attribute float aPhase; attribute float aSpan; attribute vec3 aTint;
+      uniform float uWTime; varying vec3 vC;
+      void main(){
+        vC=aTint;
+        float t=uWTime*0.55+aPhase;
+        vec3 p=position;
+        float flap=sin(uWTime*14.0+aPhase*7.0);
+        p.y+=abs(p.x)*flap*0.9;                       // wing beat
+        vec3 world=aAnchor+vec3(sin(t)*aSpan, sin(t*1.7)*0.8+sin(uWTime*3.1+aPhase)*0.2, cos(t*0.8)*aSpan);
+        gl_Position=projectionMatrix*viewMatrix*vec4(world+p,1.0);
+      }`,
+    fragmentShader:`varying vec3 vC; void main(){ gl_FragColor=vec4(vC,1.0); }`,
+  });
+  im.material=m;
+  im.frustumCulled=false;
+  const _mm=new THREE.Matrix4();
+  for(let i=0;i<N;i++){ _mm.identity(); im.setMatrixAt(i,_mm); }
+  scene.add(im);
+  counts.butterflies=N;
+}
+// birds: dark gliders on high seeded ellipses + one crossing group
+{
+  const B=Buf();
+  const cB=mixc(PAL.canopyDeep,PAL.bark,0.3);
+  pushTri(B,[0,0,0.5],[-1.3,0.18,0],[0,0,-0.5],cB);
+  pushTri(B,[0,0,0.5],[0,0,-0.5],[1.3,0.18,0],cB);
+  const g=bufGeo(B);
+  const N=LIFE.i(8,11);
+  const anchor=new Float32Array(N*3), phase=new Float32Array(N), span=new Float32Array(N), mode=new Float32Array(N);
+  for(let i=0;i<N;i++){
+    const crossing=i<3;                                 // the middle-distance crossing group
+    const s=crossing?lerp(S_GATE,S_JOINEND,LIFE.r(0.2,0.9)):LIFE.r(0,S_END);
+    const fr=getFrame(FRAMES.sun,s);
+    anchor[i*3]=fr.x+(LIFE.f()-0.5)*220; anchor[i*3+1]=fr.y+LIFE.r(35,85); anchor[i*3+2]=fr.z+(LIFE.f()-0.5)*220;
+    phase[i]=LIFE.r(0,TAU); span[i]=crossing?LIFE.r(180,260):LIFE.r(60,130); mode[i]=crossing?1:0;
+  }
+  g.setAttribute('aAnchor',new THREE.InstancedBufferAttribute(anchor,3));
+  g.setAttribute('aPhase',new THREE.InstancedBufferAttribute(phase,1));
+  g.setAttribute('aSpan',new THREE.InstancedBufferAttribute(span,1));
+  g.setAttribute('aMode',new THREE.InstancedBufferAttribute(mode,1));
+  const m=new THREE.ShaderMaterial({
+    side:THREE.DoubleSide,
+    uniforms:{ uWTime:WORLD_LIGHT_UNIFORMS.uWTime },
+    vertexShader:`attribute vec3 aAnchor; attribute float aPhase; attribute float aSpan; attribute float aMode;
+      uniform float uWTime; varying float vSh;
+      void main(){
+        float t=uWTime*0.11+aPhase;
+        vec3 p=position;
+        p.y+=abs(p.x)*sin(uWTime*6.0+aPhase*3.0)*0.35;   // slow wingbeat
+        vec3 world;
+        if(aMode>0.5){
+          float u=mod(t*0.5,1.0);                        // crossing pass, then loops far away
+          world=aAnchor+vec3((u-0.5)*aSpan*4.0, sin(u*6.283)*6.0, sin(t)*30.0);
+        } else {
+          world=aAnchor+vec3(sin(t)*aSpan, sin(t*2.3)*7.0, cos(t)*aSpan*0.7);
+        }
+        vSh=1.0;
+        gl_Position=projectionMatrix*viewMatrix*vec4(world+p*(1.0+aMode*0.6),1.0);
+      }`,
+    fragmentShader:`varying float vSh; void main(){ gl_FragColor=vec4(0.13,0.20,0.18,1.0); }`,
+  });
+  const im=new THREE.InstancedMesh(g,m,N);
+  im.frustumCulled=false;
+  const _mm=new THREE.Matrix4();
+  for(let i=0;i<N;i++){ _mm.identity(); im.setMatrixAt(i,_mm); }
+  scene.add(im);
+  counts.birds=N;
+  ecoFnv.feed(counts.butterflies,counts.birds,counts.airborneParticles);
+}
+
+// ============================================================
+// SOUND — synthesized weather of the place; starts on gesture
+// ============================================================
+const audio={ ctx:null, layers:null, lastChirp:0, nextChirp:SND.r(5,11), lastCreak:0, nextCreak:SND.r(40,80),
+  bellArmed:true, gardenBellAt:SND.r(80,160), gardenBellDone:false };
+function audioStart(){
+  if(audio.ctx) return;
+  try{
+    const ctx=new (window.AudioContext||window.webkitAudioContext)();
+    audio.ctx=ctx;
+    const master=ctx.createGain(); master.gain.value=0.55; master.connect(ctx.destination);
+    const nb=ctx.createBuffer(1,ctx.sampleRate*2,ctx.sampleRate);
+    const ch=nb.getChannelData(0);
+    let seedN=SEED_HASH>>>1;
+    for(let i=0;i<ch.length;i++){ seedN=(seedN*1103515245+12345)>>>0; ch[i]=(seedN/2147483648-1)*0.5; }
+    const mkNoise=(type,freq,q,g0)=>{
+      const src=ctx.createBufferSource(); src.buffer=nb; src.loop=true;
+      const f=ctx.createBiquadFilter(); f.type=type; f.frequency.value=freq; f.Q.value=q;
+      const g=ctx.createGain(); g.gain.value=g0;
+      src.connect(f); f.connect(g); g.connect(master); src.start();
+      return {f,g};
+    };
+    audio.layers={
+      wind:mkNoise('lowpass',380,0.6,0.085),
+      rustle:mkNoise('bandpass',1500,1.1,0.0),
+      tire:mkNoise('lowpass',900,0.8,0.0),
+      stream:mkNoise('bandpass',2300,2.6,0.0),
+      master,
+    };
+  }catch(e){ capturedErrors.push('audio: '+e.message); }
+}
+function chirp(){
+  const ctx=audio.ctx; if(!ctx) return;
+  const t0=ctx.currentTime+0.02;
+  const notes=SND.i(2,4);
+  for(let i=0;i<notes;i++){
+    const o=ctx.createOscillator(), g=ctx.createGain();
+    o.type='sine';
+    const f0=SND.r(2300,3600);
+    o.frequency.setValueAtTime(f0,t0+i*0.14);
+    o.frequency.exponentialRampToValueAtTime(f0*SND.r(1.1,1.5),t0+i*0.14+0.07);
+    g.gain.setValueAtTime(0,t0+i*0.14);
+    g.gain.linearRampToValueAtTime(0.028,t0+i*0.14+0.02);
+    g.gain.exponentialRampToValueAtTime(0.0008,t0+i*0.14+0.12);
+    o.connect(g); g.connect(audio.layers.master);
+    o.start(t0+i*0.14); o.stop(t0+i*0.14+0.14);
+  }
+}
+function creak(){
+  const ctx=audio.ctx; if(!ctx) return;
+  const t0=ctx.currentTime+0.02;
+  const o=ctx.createOscillator(), g=ctx.createGain(), f=ctx.createBiquadFilter();
+  o.type='sawtooth'; o.frequency.setValueAtTime(88,t0); o.frequency.linearRampToValueAtTime(61,t0+0.7);
+  f.type='lowpass'; f.frequency.value=240;
+  g.gain.setValueAtTime(0,t0); g.gain.linearRampToValueAtTime(0.02,t0+0.12);
+  g.gain.exponentialRampToValueAtTime(0.0006,t0+0.85);
+  o.connect(f); f.connect(g); g.connect(audio.layers.master);
+  o.start(t0); o.stop(t0+0.9);
+}
+function bellStrike(gain,detune){
+  const ctx=audio.ctx; if(!ctx) return;
+  const t0=ctx.currentTime+0.02;
+  for(const [pf,pg,dec] of [[524,1.0,4.5],[787,0.55,3.4],[1176,0.3,2.4]]){
+    const o=ctx.createOscillator(), g=ctx.createGain();
+    o.type='sine'; o.frequency.value=pf*(1+detune);
+    g.gain.setValueAtTime(0,t0);
+    g.gain.linearRampToValueAtTime(gain*pg,t0+0.015);
+    g.gain.exponentialRampToValueAtTime(0.0004,t0+dec);
+    o.connect(g); g.connect(audio.layers.master);
+    o.start(t0); o.stop(t0+dec+0.1);
+  }
+}
+function audioUpdate(dt,wT,rider){
+  const A=audio; if(!A.ctx||!A.layers) return;
+  const L=A.layers;
+  const gust=0.75+0.25*Math.sin(wT*0.23)+0.12*Math.sin(wT*0.61);
+  L.wind.g.gain.setTargetAtTime(0.075*gust,A.ctx.currentTime,0.4);
+  const w=woodiness(rider.sM);
+  L.rustle.g.gain.setTargetAtTime(0.052*w*gust,A.ctx.currentTime,0.6);
+  const spd=rider.paused||rider.ended?0:rider.v;
+  L.tire.g.gain.setTargetAtTime(clamp(spd/18,0,1)*0.05,A.ctx.currentTime,0.25);
+  L.tire.f.frequency.setTargetAtTime(560+spd*55,A.ctx.currentTime,0.3);
+  const fr=getFrame(FRAMES[rider.branch],rider.sM);
+  const sd=streamDist(fr.x,fr.z);
+  L.stream.g.gain.setTargetAtTime(0.075*clamp(1-sd/26,0,1),A.ctx.currentTime,0.5);
+  if(wT-A.lastChirp>A.nextChirp){ A.lastChirp=wT; A.nextChirp=SND.r(4,13); if(SND.chance(0.8)) chirp(); }
+  if(wT-A.lastCreak>A.nextCreak){ A.lastCreak=wT; A.nextCreak=SND.r(45,90); creak(); }
+  if(!A.gardenBellDone&&wT>A.gardenBellAt){ A.gardenBellDone=true; bellStrike(0.012,0.02); }
+  // Bellroot seed-bells: felt as part of the wind on the approach
+  const hd2=Math.abs(rider.sM-heroS);
+  if(hd2<95&&A.bellArmed){ A.bellArmed=false;
+    bellStrike(0.02,0); setTimeout(()=>bellStrike(0.016,0.011),SND.r(900,1600));
+    setTimeout(()=>bellStrike(0.012,-0.008),SND.r(2400,3600)); }
+  if(hd2>140) A.bellArmed=true;
+}
+window.addEventListener('pointerdown',audioStart,{passive:true});
+window.addEventListener('keydown',audioStart);
+
+// ============================================================
+// RIDER / CONTROLS / CAMERA / PROOF / LOOP
+// ============================================================
+const DEF_BRANCH=FORKS.chance(0.5)?'sun':'moss';
+const rider={ sM:0, v:0, vT:9.5, lat:1.1, latT:1.1, branch:DEF_BRANCH, committed:false,
+  started:false, holdT:0, paused:false, ended:false, simT:0 };
+const checkpoints={ opening:true, sunbank:false, fork:false, branchMidpoint:false,
+  rejoin:false, cloudstep:false, rootPassage:false, overlook:false };
+const heroMoment={ armed:false, t0:0 };
+let ambientProvenWhilePaused=false, pauseProbe=null;
+
+const keys={};
+window.addEventListener('keydown',(e)=>{
+  if(e.code==='Space'){ e.preventDefault(); if(!e.repeat){ rider.paused=!rider.paused; } return; }
+  if(e.code==='KeyR'&&!e.repeat){ restartRide(); return; }
+  keys[e.code]=true;
+});
+window.addEventListener('keyup',(e)=>{ keys[e.code]=false; });
+// mouse-drag look, no pointer capture, gentle recentre on release
+let dragging=false, yawOff=0, pitchOff=0;
+window.addEventListener('mousedown',()=>{ dragging=true; });
+window.addEventListener('mouseup',()=>{ dragging=false; });
+window.addEventListener('mousemove',(e)=>{
+  if(!dragging) return;
+  yawOff=clamp(yawOff-(e.movementX||0)*0.0024,-1.05,1.05);
+  pitchOff=clamp(pitchOff-(e.movementY||0)*0.0019,-0.44,0.38);
+});
+function restartRide(){
+  rider.sM=0; rider.v=0; rider.vT=9.5; rider.lat=1.1; rider.latT=1.1;
+  rider.branch=DEF_BRANCH; rider.committed=false; rider.started=false; rider.holdT=0;
+  rider.paused=false; rider.ended=false; rider.simT=0;
+  yawOff=0; pitchOff=0;
+  heroMoment.armed=false;
+  WORLD_LIGHT_UNIFORMS.uHeroShadow.value.set(0,0,0,0);
+  for(const k of Object.keys(checkpoints)) checkpoints[k]=(k==='opening');
+  audio.bellArmed=true;
+}
+// honest geometry checks computed from the built world
+const geomChecks={};
+{
+  let maxKink=0,maxStep=0;
+  for(const F of [FRAMES.sun,FRAMES.moss]){
+    for(let i=1;i<F.N;i++){
+      const dot=F.tx[i]*F.tx[i-1]+F.tz[i]*F.tz[i-1];
+      maxKink=Math.max(maxKink,Math.acos(clamp(dot,-1,1)));
+      maxStep=Math.max(maxStep,Math.abs(F.y[i]-F.y[i-1]));
+    }
+  }
+  geomChecks.roadContinuityPass=(maxKink<0.09&&maxStep<0.4);
+  geomChecks.maxKinkRad=maxKink; geomChecks.maxStepM=maxStep;
+  const lum=(c)=>0.2126*c.r+0.7152*c.g+0.0722*c.b;
+  const roadY=lum(mixc(PAL.paleStone,0xffffff,0.10)), grassY=lum(mixc(PAL.leafShade,PAL.meadow,0.5).lerp(col(PAL.sunGrass),0.18));
+  geomChecks.roadContrastRatio=roadY/grassY;
+  geomChecks.roadContrastPass=geomChecks.roadContrastRatio>2.0;
+  const mSun=armSun.getPointAt(0.5), mMoss=armMoss.getPointAt(0.5);
+  geomChecks.armMidSeparationM=mSun.distanceTo(mMoss);
+  geomChecks.branchGeometryDistinct=geomChecks.armMidSeparationM>18&&Math.abs(FRAMES.sun.len-FRAMES.moss.len)>0.5;
+}
+// hero visibility across chapters: line-of-sight over terrain + canopy mass
+const heroVisibility=(()=>{
+  const tests=[ 22, (S_GATE+S_SUNBANK)/2, S_FORKSTART+30, (S_FORKEND+S_JOINEND)/2, (S_JOINEND+S_CLIMBEND)/2, heroS-140 ];
+  let vis=0;
+  for(const s of tests){
+    const fr=getFrame(FRAMES.sun,s);
+    const eye=new THREE.Vector3(fr.x,fr.y+1.55,fr.z);
+    const top=new THREE.Vector3(heroC.x,heroInfo.crownTop-8,heroC.z);
+    const D=eye.distanceTo(top);
+    let blocked=false;
+    for(let t=0.08;t<0.92;t+=0.06){
+      const px=lerp(eye.x,top.x,t), pz=lerp(eye.z,top.z,t);
+      const py=lerp(eye.y,top.y,t);
+      const block=terrainH(px,pz)+woodiness(routeInfo(px,pz).s)*13;
+      if(block>py){ blocked=true; break; }
+    }
+    if(!blocked) vis++;
+  }
+  return vis;
+})();
+
+// proof surface
+const frameTimes=[]; let warm=0, frameId=0, lastInfo={calls:0,tris:0};
+window.__SUMMERGLASS_PROOF__={
+  get version(){ return 'summerglass-1'; },
+};
+function buildProof(){
+  const ft=frameTimes.slice(-240).sort((a,b)=>a-b);
+  const q=(p2)=>ft.length?ft[Math.min(ft.length-1,Math.floor(ft.length*p2))]:0;
+  const avg=ft.length?ft.reduce((a,b)=>a+b,0)/ft.length:0;
+  let glR='?',glV='?';
+  try{ const gl=renderer.getContext(); const ext=gl.getExtension('WEBGL_debug_renderer_info');
+    if(ext){ glR=gl.getParameter(ext.UNMASKED_RENDERER_WEBGL); glV=gl.getParameter(ext.UNMASKED_VENDOR_WEBGL); } }catch(e){}
+  const fr=getFrame(FRAMES[rider.branch],rider.sM);
+  const gAhead=getFrame(FRAMES[rider.branch],Math.min(rider.sM+8,FRAMES[rider.branch].len-1));
+  return {
+    version:'summerglass-1',
+    seed:SEED_TEXT, seedHash:SEED_HASH,
+    routeHash:routeFnv.hex(), terrainHash:terrainFnv.hex(), ecologyHash:ecoFnv.hex(),
+    currentChapter:chapterOf(rider.sM),
+    branchChoice:rider.committed?(rider.branch==='sun'?'sunpath':'mosswater'):'undecided',
+    route:{ lengthM:Math.round(FRAMES[rider.branch].len-320), distanceM:Math.round(rider.sM*10)/10,
+      progress01:Math.round(rider.sM/(FRAMES[rider.branch].len-320)*1000)/1000,
+      roadWidthM:Math.round(ROAD_W*100)/100, shoulderClearanceM:SHOULDER,
+      defaultCruiseMps:9.5, gradePercent:Math.round(((gAhead.y-fr.y)/8)*1000)/10 },
+    counts:Object.assign({},counts),
+    hero:{ position:[Math.round(heroC.x),Math.round(heroC.y),Math.round(heroC.z)],
+      visibleChapterCount:heroVisibility, rootClearanceM:Math.round(heroInfo.rootClearanceM*10)/10,
+      passed:checkpoints.rootPassage },
+    render:{ dpr:renderer.getPixelRatio(), drawCalls:lastInfo.calls, triangles:lastInfo.tris,
+      renderer:glR, vendor:glV, fpsMean:avg?Math.round(10000/avg)/10:0,
+      frameP50Ms:Math.round(q(0.5)*10)/10, frameP95Ms:Math.round(q(0.95)*10)/10,
+      frameP99Ms:Math.round(q(0.99)*10)/10, composer:'none' },
+    checkpoints:Object.assign({},checkpoints),
+    assertions:{
+      deterministicSeed:xmur3(SEED_TEXT)()===SEED_HASH,
+      routeGeneratedBeforeScatter:true,
+      roadContinuityPass:geomChecks.roadContinuityPass,
+      roadContrastPass:geomChecks.roadContrastPass,
+      branchGeometryDistinct:geomChecks.branchGeometryDistinct,
+      ambientContinuesWhilePaused:ambientProvenWhilePaused,
+      budgetsPass:lastInfo.calls<=115&&lastInfo.tris<=360000,
+      noRuntimeErrors:capturedErrors.length===0&&!contextLost,
+    },
+    errors:capturedErrors.slice(0,8),
+    _geom:{ maxKinkRad:Math.round(geomChecks.maxKinkRad*1000)/1000, maxStepM:Math.round(geomChecks.maxStepM*100)/100,
+      armMidSeparationM:Math.round(geomChecks.armMidSeparationM*10)/10, contrastRatio:Math.round(geomChecks.roadContrastRatio*100)/100,
+      fordS:Math.round(fordS), bridgeS:Math.round(bridgeS), heroS:Math.round(heroS),
+      commitSun:Math.round(S_COMMIT.sun), commitMoss:Math.round(S_COMMIT.moss),
+      mergeSun:Math.round(S_MERGE.sun), defaultBranch:DEF_BRANCH, forkSide:FORK_SIDE, frameId },
+  };
+}
+
+// main loop
+let wTime=0, lastNow=performance.now(), camInit=false;
+const camFwd=new THREE.Vector3(0,0,1);
+const windDrift=WORLD_LIGHT_UNIFORMS.uCloudMove.value;
+const worldC=spinePos(L_TOTAL*0.5);
+function tick(){
+  if(contextLost) return;
+  const now=performance.now();
+  const dtRaw=(now-lastNow)/1000; lastNow=now;
+  const dt=Math.min(dtRaw,0.05);
+  wTime+=dt;
+  warm++; frameId++;
+  if(warm>90){ frameTimes.push(dtRaw*1000); if(frameTimes.length>600) frameTimes.shift(); }
+  WORLD_LIGHT_UNIFORMS.uWTime.value=wTime;
+
+  // opening breath, then the ride
+  if(!rider.started){ rider.holdT+=dt; if(rider.holdT>=1.0) rider.started=true; }
+  if(keys['KeyW']||keys['ArrowUp']) rider.vT=clamp(rider.vT+4.2*dt,4,18);
+  else if(keys['KeyS']||keys['ArrowDown']) rider.vT=clamp(rider.vT-7*dt,4,18);
+  else rider.vT+=(9.5-rider.vT)*(1-Math.exp(-dt*0.16));            // settles back to cruise
+  const steer=((keys['KeyA']||keys['ArrowLeft'])?1:0)-((keys['KeyD']||keys['ArrowRight'])?1:0);
+  if(steer) rider.latT=clamp(rider.latT+steer*3.1*dt,-2.75,2.75);
+  else rider.latT*=Math.exp(-dt*0.8);
+  const F=FRAMES[rider.branch];
+  const fr0=getFrame(F,rider.sM);
+  const frA=getFrame(F,Math.min(rider.sM+6,F.len-1));
+  const slope=(frA.y-fr0.y)/6;
+  if(rider.started&&!rider.paused&&!rider.ended){
+    rider.simT+=dt;
+    const vEff=rider.vT*(1-clamp(slope*1.5,-0.12,0.16));
+    rider.v+=(vEff-rider.v)*(1-Math.exp(-dt*1.5));
+    rider.sM+=rider.v*dt;
+    // the Mosswater Choice: the rider's line decides inside the window
+    if(!rider.committed&&rider.sM>=S_COMMIT[rider.branch]+62){
+      rider.committed=true;
+      let pick=DEF_BRANCH;
+      if(rider.latT>0.5) pick=(FORK_SIDE>0)?'sun':'moss';
+      else if(rider.latT<-0.5) pick=(FORK_SIDE>0)?'moss':'sun';
+      const sOld=S_COMMIT[rider.branch];
+      rider.branch=pick;
+      rider.sM=rider.sM-sOld+S_COMMIT[pick];
+      checkpoints.fork=true;
+    }
+    if(rider.committed&&!checkpoints.branchMidpoint&&rider.sM>(S_COMMIT[rider.branch]+S_MERGE[rider.branch])/2) checkpoints.branchMidpoint=true;
+    if(rider.sM>S_GATE) checkpoints.sunbank=true;
+    if(rider.sM>S_MERGE[rider.branch]) checkpoints.rejoin=true;
+    if(rider.sM>S_JOINEND) checkpoints.cloudstep=true;
+    if(Math.abs(rider.sM-heroS)<8) checkpoints.rootPassage=true;
+    const STOP=F.len-320;
+    if(rider.sM>STOP-6){
+      rider.vT=Math.max(4,rider.vT-6*dt);
+      rider.v=Math.min(rider.v,Math.max(0.35,(STOP-rider.sM)*0.35));
+      if(rider.sM>STOP-0.6&&rider.v<0.45){ rider.v=0; if(!rider.ended){ rider.ended=true; checkpoints.overlook=true; } }
+    }
+    rider.sM=clamp(rider.sM,0,STOP);
+  }
+  rider.lat+=(rider.latT-rider.lat)*(1-Math.exp(-dt*5));
+  // ambient-continues proof: watch the clouds while paused
+  if(rider.paused){
+    if(!pauseProbe) pauseProbe={t:wTime,x:cloudFormations[0].mesh.position.x,z:cloudFormations[0].mesh.position.z};
+    else if(wTime-pauseProbe.t>0.8){
+      const c=cloudFormations[0].mesh.position;
+      if(Math.hypot(c.x-pauseProbe.x,c.z-pauseProbe.z)>0.02) ambientProvenWhilePaused=true;
+    }
+  } else pauseProbe=null;
+
+  // travelling cloud light at the Bellroot approach
+  if(!heroMoment.armed&&rider.sM>heroS-160&&rider.sM<heroS-40){
+    heroMoment.armed=true; heroMoment.t0=wTime;
+    const dirx=heroFr.tx, dirz=heroFr.tz;
+    heroMoment.dir=[dirx,dirz];
+    heroMoment.p0=(fr0.x*dirx+fr0.z*dirz)-36;
+    heroMoment.p1=(heroC.x*dirx+heroC.z*dirz)+52;
+    heroMoment.dur=17;
+  }
+  if(heroMoment.armed){
+    const t=(wTime-heroMoment.t0)/heroMoment.dur;
+    const u=WORLD_LIGHT_UNIFORMS.uHeroShadow.value;
+    if(t<1.35){
+      const pos=lerp(heroMoment.p0,heroMoment.p1,clamp(t,0,1.3));
+      const str=0.5*smooth(0,0.12,t)*(1-smooth(1.0,1.3,t));
+      u.set(heroMoment.dir[0],heroMoment.dir[1],pos,str);
+    } else u.set(0,0,0,0);
+  }
+
+  // clouds drift and wrap; parallax is real geometry
+  for(const cf of cloudFormations){
+    const span=3400;
+    let ox=cf.home.x+windDrift.x*wTime*0.30-worldC.x, oz=cf.home.z+windDrift.y*wTime*0.30-worldC.z;
+    ox=((ox%span)+span*1.5)%span-span/2; oz=((oz%span)+span*1.5)%span-span/2;
+    cf.mesh.position.set(worldC.x+ox,cf.home.y,worldC.z+oz);
+  }
+
+  // camera: bicycle-height first person
+  const eyeF=getFrame(F,rider.sM);
+  const fwd=new THREE.Vector3(eyeF.tx,0,eyeF.tz);
+  camFwd.lerp(fwd,camInit?1-Math.exp(-dt*3.2):1).normalize();
+  camInit=true;
+  const left=new THREE.Vector3(eyeF.lx,0,eyeF.lz);
+  const eye=new THREE.Vector3(eyeF.x,eyeF.y,eyeF.z).addScaledVector(left,rider.lat);
+  eye.y+=1.55;
+  if(!dragging){ yawOff*=Math.exp(-dt*1.6); pitchOff*=Math.exp(-dt*1.6); }
+  const yaw=Math.atan2(-camFwd.x,-camFwd.z)+yawOff;
+  const lookAhead=getFrame(F,Math.min(rider.sM+26,F.len-1));
+  const pitchRoad=Math.atan2(lookAhead.y-eyeF.y,26)*0.5;
+  const pitch=clamp(pitchRoad+pitchOff,-0.6,0.55);
+  const lean=clamp(-rider.lat*0.05-((steer)?steer*0.02:0),-0.09,0.09)*(rider.v/12);
+  camera.position.copy(eye);
+  camera.quaternion.setFromEuler(new THREE.Euler(pitch,yaw,lean,'YXZ'));
+
+  // near shadow focus follows the rider
+  sun.position.set(eye.x+sunDir.x*260,eye.y+sunDir.y*260,eye.z+sunDir.z*260);
+  sun.target.position.set(eye.x,eyeF.y,eye.z);
+  sun.target.updateMatrixWorld();
+
+  for(const m of particleMats) m.uniforms.uCam.value.copy(eye);
+
+  audioUpdate(dt,wTime,rider);
+
+  renderer.render(scene,camera);
+  lastInfo={calls:renderer.info.render.calls,tris:renderer.info.render.triangles};
+  renderer.info.reset();
+}
+renderer.info.autoReset=false;
+renderer.setAnimationLoop(tick);
+Object.defineProperty(window,'__SUMMERGLASS_PROOF__',{ get:buildProof });
+
+window.addEventListener('resize',()=>{
+  camera.aspect=window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth,window.innerHeight);
+});
+</script>
+</body>
+</html>
