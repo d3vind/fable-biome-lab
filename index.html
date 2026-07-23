@@ -2088,7 +2088,7 @@ const skyMesh=(()=> {
 // POST — restrained bloom crowning construction, vignette, grain
 // ============================================================
 const composer=new EffectComposer(renderer,
-  new THREE.WebGLRenderTarget(2,2,{type:THREE.HalfFloatType,samples:4}));
+  new THREE.WebGLRenderTarget(2,2,{type:THREE.HalfFloatType}));
 composer.addPass(new RenderPass(scene,camera));
 const bloom=new UnrealBloomPass(new THREE.Vector2(window.innerWidth,window.innerHeight),0.5,0.55,0.82);
 composer.addPass(bloom);
