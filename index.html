@@ -713,6 +713,14 @@ function getFrame(F,d){
   return _fr;
 }
 
+// build-time frame snapshot: getFrame reuses one shared object, so any
+// builder that holds two stations at once must copy them
+function frameCopy(F,d){
+  getFrame(F,d);
+  return { x:_fr.x, y:_fr.y, z:_fr.z, tx:_fr.tx, ty:_fr.ty, tz:_fr.tz,
+           lx:_fr.lx, lz:_fr.lz, k:_fr.k, ch:_fr.ch, shel:_fr.shel, off:_fr.off };
+}
+
 // ---- corridor protection (both branches share one spatial hash) ------
 const RHASH=new Map(); const RCELL=18;
 for(const key of BRANCH_KEYS){
@@ -775,6 +783,12 @@ function face(B,pts,nrm,colr,uvfn,kind,tint,inf){
   B.idx.push(B.vc,B.vc+1,B.vc+2, B.vc,B.vc+2,B.vc+3); B.vc+=4;
 }
 const INF0=[3,3,0,0];
+// two-sided quad for hand-wound ribbons that are genuinely seen from both
+// sides (hall walls, roof undersides) — everything else stays back-culled
+function face2(B,pts,nrm,colr,uvfn,kind,tint,inf){
+  face(B,pts,nrm,colr,uvfn,kind,tint,inf);
+  face(B,[pts[3],pts[2],pts[1],pts[0]],[-nrm[0],-nrm[1],-nrm[2]],colr,uvfn,kind,tint,inf);
+}
 // kinds: 0 solid · 1 windows · 2 glowing storefront · 3 panel · 4 roll door · 5 roof
 //        6 brick courses · 7 grating · 8 louvre bank
 function box(B,x0,y0,z0,x1,y1,z1,o){
@@ -935,7 +949,6 @@ const facadeMat = shaderMat({
     c=mix(c,uFogColor,fogF(vZ));
     gl_FragColor=vec4(c,1.0);
   }`,
-  side:THREE.DoubleSide,
 });
 const furnMat = new THREE.MeshLambertMaterial({vertexColors:true, side:THREE.DoubleSide});
 
@@ -1965,7 +1978,7 @@ function groundKit(C,F,d0,d1){
     C.water.push({ x:mid.x-mid.lx*side*230, z:mid.z-mid.lz*side*230, w:640, h:d1-d0+240, y:-1.5, glows:[] });
     CENSUS.waterFeatures++;
     for(let d=d0;d<d1;d+=6){
-      const f=getFrame(F,d), f2=getFrame(F,Math.min(F.LEN-1,d+6));
+      const f=frameCopy(F,d), f2=frameCopy(F,Math.min(F.LEN-1,d+6));
       const wc=varyR(walkC,0.12,rv);
       for(const ss of [side,-side]){
         face(C.furn,[[f.x+f.lx*ss*4.85,f.y+0.13,f.z+f.lz*ss*4.85],[f2.x+f2.lx*ss*4.85,f2.y+0.13,f2.z+f2.lz*ss*4.85],
@@ -2006,9 +2019,9 @@ function groundKit(C,F,d0,d1){
   // land: sidewalks hugging the road + coarse block slabs behind
   // (short chords so corner curvature never lets a walk cut the asphalt)
   for(let d=d0;d<d1;d+=6){
-    const f=getFrame(F,d);
+    const f=frameCopy(F,d);
     if(f.y>2.9) continue;                        // under the ropewalk the yards handle ground
-    const f2=getFrame(F,Math.min(F.LEN-1,d+6));
+    const f2=frameCopy(F,Math.min(F.LEN-1,d+6));
     for(const s of [-1,1]){
       const wc=varyR(walkC,0.12,rv);
       const off=4.85;
@@ -2035,7 +2048,7 @@ function canalKit(C,F,d0,d1){
   const st=F.STEP;
   let lastWeir=-999;
   for(let d=d0;d<d1;d+=12){
-    const f=getFrame(F,d), f2=getFrame(F,Math.min(F.LEN-1,d+12));
+    const f=frameCopy(F,d), f2=frameCopy(F,Math.min(F.LEN-1,d+12));
     const o0=8.6, o1=14.2;
     // near wall, far wall, water between at -1.15
     for(const o of [o0,o1]){
@@ -2066,7 +2079,7 @@ function canalKit(C,F,d0,d1){
   }
   // railings between road and canal
   for(let d=d0;d<d1;d+=8){
-    const f=getFrame(F,d), f2=getFrame(F,Math.min(F.LEN-1,d+8));
+    const f=frameCopy(F,d), f2=frameCopy(F,Math.min(F.LEN-1,d+8));
     pRailRun(C,f.x+f.lx*side*8.35,f.y+0.14,f.z+f.lz*side*8.35,f2.x+f2.lx*side*8.35,f2.y+0.14,f2.z+f2.lz*side*8.35,col(0x342647));
   }
 }
@@ -2764,18 +2777,18 @@ function lmGullet(C){
   const d0=gd-40, d1=gd+44;
   const wallC=col(0x1E1830);
   for(let d=d0; d<d1; d+=4){
-    const f=getFrame(F,d), f2=getFrame(F,Math.min(F.LEN-1,d+4));
+    const f=frameCopy(F,d), f2=frameCopy(F,Math.min(F.LEN-1,d+4));
     for(const s of [-1,1]){
       // hall walls with pipe banks and louvres — kept deep in value
-      face(C.fac,[[f.x+f.lx*s*5.8,f.y,f.z+f.lz*s*5.8],[f2.x+f2.lx*s*5.8,f2.y,f2.z+f2.lz*s*5.8],
+      face2(C.fac,[[f.x+f.lx*s*5.8,f.y,f.z+f.lz*s*5.8],[f2.x+f2.lx*s*5.8,f2.y,f2.z+f2.lz*s*5.8],
                  [f2.x+f2.lx*s*5.8,f2.y+8.6,f2.z+f2.lz*s*5.8],[f.x+f.lx*s*5.8,f.y+8.6,f.z+f.lz*s*5.8]],
                  [-f.lx*s,0,-f.lz*s],scale(varyR(wallC,0.08,rv),0.55),p=>[p[0]+p[2],p[1]],K_PANEL,BLACK,[2.6,2.2,0,rv.f()*100]);
     }
     // roof: the sky goes away
-    face(C.fac,[[f.x-f.lx*7.0,f.y+8.6,f.z-f.lz*7.0],[f2.x-f2.lx*7.0,f2.y+8.6,f2.z-f2.lz*7.0],
+    face2(C.fac,[[f.x-f.lx*7.0,f.y+8.6,f.z-f.lz*7.0],[f2.x-f2.lx*7.0,f2.y+8.6,f2.z-f2.lz*7.0],
                [f2.x+f2.lx*7.0,f2.y+8.6,f2.z+f2.lz*7.0],[f.x+f.lx*7.0,f.y+8.6,f.z+f.lz*7.0]],
                [0,1,0],scale(wallC,0.9),p=>[p[0],p[2]],K_ROOF,BLACK,INF0);
-    face(C.fac,[[f.x-f.lx*7.0,f.y+7.6,f.z-f.lz*7.0],[f2.x-f2.lx*7.0,f2.y+7.6,f2.z-f2.lz*7.0],
+    face2(C.fac,[[f.x-f.lx*7.0,f.y+7.6,f.z-f.lz*7.0],[f2.x-f2.lx*7.0,f2.y+7.6,f2.z-f2.lz*7.0],
                [f2.x+f2.lx*7.0,f2.y+7.6,f2.z+f2.lz*7.0],[f.x+f.lx*7.0,f.y+7.6,f.z+f.lz*7.0]],
                [0,-1,0],scale(wallC,0.55),p=>[p[0],p[2]],0,BLACK,INF0);
   }
@@ -2790,7 +2803,7 @@ function lmGullet(C){
   }
   // the channel: water runs with the rider, under grating, going the same way
   for(let d=d0+4; d<d1-4; d+=6){
-    const f=getFrame(F,d), f2=getFrame(F,Math.min(F.LEN-1,d+6));
+    const f=frameCopy(F,d), f2=frameCopy(F,Math.min(F.LEN-1,d+6));
     const s=PLAN.canalSide;
     face(C.furn,[[f.x+f.lx*s*3.9,f.y+0.075,f.z+f.lz*s*3.9],[f2.x+f2.lx*s*3.9,f2.y+0.075,f2.z+f2.lz*s*3.9],
                [f2.x+f2.lx*s*4.62,f2.y+0.075,f2.z+f2.lz*s*4.62],[f.x+f.lx*s*4.62,f.y+0.075,f.z+f.lz*s*4.62]],
@@ -2836,21 +2849,21 @@ function lmNineGates(C){
   const F=BR.arcade, rv=C.rv, rs=C.rs;
   const nSpan=spanOf('arcade','ninegates');
   const crestD=nSpan.start+nSpan.length*0.62;
-  const f=getFrame(F,crestD);
+  const f=frameCopy(F,crestD);
   const yaw=Math.atan2(f.tx,f.tz);
   const perp={x:f.lx, z:f.lz};
   const N=PLAN.weir.gates, BAY=14;
   const total=N*BAY;
   const brickC=col(0x241636), steelC=col(0x1B1230), concC=col(0x1E1830);
-  const openBays=[Math.floor(N*0.28), Math.floor(N*0.62)];
+  const openBays=[Math.floor(N*0.22), Math.floor(N*0.5), Math.floor(N*0.78)];
   const moveBay=Math.floor(N*0.62);
   for(let k=0;k<=N;k++){
     const off=(k-N/2)*BAY;
     const px=f.x+perp.x*off, pz=f.z+perp.z*off;
-    // pier: from the black water to above the gallery
-    obox(C.fac,px,-2.2,pz,4.6,17.6,7.4,yaw,varyR(brickC,0.08,rv),{kind:K_BRICK,inf:[3.0,2.6,0.06,rv.f()*100],tint:scale(col(HEX.amb),0.5)});
-    obox(C.fac,px,15.4,pz,5.4,1.2,8.2,yaw,scale(concC,0.9),{kind:K_PANEL,inf:[2.6,2.2,0,0],tint:BLACK});
-    glowC(C,px,16.9,pz,0.9,scale(col(HEX.teal),0.55),0,rv.f(),1);
+    // pier: a full tower of masonry from the black water to above the wall
+    obox(C.fac,px,-2.2,pz,6.4,24.2,9.0,yaw,varyR(brickC,0.08,rv),{kind:K_BRICK,inf:[3.0,2.6,0.06,rv.f()*100],tint:scale(col(HEX.amb),0.5)});
+    obox(C.fac,px,22.0,pz,7.4,1.6,10.0,yaw,scale(concC,0.9),{kind:K_PANEL,inf:[2.6,2.2,0,0],tint:BLACK});
+    glowC(C,px,23.9,pz,1.1,scale(col(HEX.teal),0.6),0,rv.f(),1);
     if(k<N){
       const gx=f.x+perp.x*(off+BAY/2), gz=f.z+perp.z*(off+BAY/2);
       const isOpen=openBays.indexOf(k)>=0;
@@ -2859,13 +2872,32 @@ function lmNineGates(C){
         obox(C.fac,gx,isOpen?2.8:-1.6,gz,BAY-4.8,isOpen?4.2:7.2,1.1,yaw,varyR(steelC,0.1,rv),{kind:K_PANEL,inf:[1.8,1.6,0,rv.f()*100],tint:BLACK});
       }
       glowC(C,gx,-0.4,gz,0.7,scale(col(HEX.teal),0.5),1,rv.f(),0.3);
-      if(isOpen){
+      if(isOpen&&!isMove){
         // the spill: a working curtain of water under the raised leaf
-        flowC(C,gx+f.tx*0.9,0.6,gz+f.tz*0.9,0,yaw+Math.PI,0,BAY-6.2,5.4,scale(col(HEX.teal),0.85),2.8,14,0.65,rv.f());
-        steamC(C,gx+f.tx*2,-1.4,gz+f.tz*2,4.6,3.2,rv.f()*10,0.5);
-        streakC(C,gx+f.tx*5,-1.5,gz+f.tz*5,yaw+Math.PI,18,4.2,scale(col(HEX.teal),0.6),1,rv.f(),0.7);
+        flowC(C,gx+f.tx*0.9,0.6,gz+f.tz*0.9,0,yaw+Math.PI,0,BAY-5.0,6.4,scale(col(HEX.teal),0.85),2.8,14,0.75,rv.f());
+        steamC(C,gx+f.tx*2,-1.4,gz+f.tz*2,6.0,3.8,rv.f()*10,0.55);
+        streakC(C,gx+f.tx*6,-1.5,gz+f.tz*6,yaw+Math.PI,26,4.6,scale(col(HEX.teal),0.6),1,rv.f(),0.7);
       }
     }
+  }
+  // the wall: one continuous superstructure spanning every bay, so the
+  // weir reads as a mass across the water, not a row of sticks
+  {
+    obox(C.fac,f.x,15.5,f.z,total+8,3.5,5.0,yaw+Math.PI/2,varyR(concC,0.06,rv),{kind:K_PANEL,inf:[3.2,2.8,0,rv.f()*100],tint:BLACK});
+    obox(C.fac,f.x,16.2,f.z,total+8.4,1.6,5.2,yaw+Math.PI/2,scale(concC,0.8),{kind:K_LOUVRE,inf:[2,2,0,0],tint:BLACK});
+    for(const tSlot of [-0.3,0.05,0.34]){
+      const sx2=f.x+perp.x*total*tSlot, sz2=f.z+perp.z*total*tSlot;
+      obox(C.fac,sx2,17.4,sz2,3.2,1.2,5.4,yaw+Math.PI/2,scale(concC,0.9),{kind:K_WIN,inf:[1.5,1.1,0.8,rv.f()*100],tint:scale(col(HEX.amb),0.7)});
+    }
+  }
+  // control towers anchor both ends of the row
+  for(const sgn of [-1,1]){
+    const off=sgn*(N/2*BAY+7);
+    const px=f.x+perp.x*off, pz=f.z+perp.z*off;
+    obox(C.fac,px,-2.2,pz,5.4,29.4,6.0,yaw,varyR(brickC,0.06,rv),{kind:K_BRICK,inf:[2.8,2.5,0.05,rv.f()*100],tint:scale(col(HEX.amb),0.5)});
+    obox(C.fac,px,23.4,pz,5.8,3.2,6.4,yaw,varyR(concC,0.1,rv),{kind:K_WIN,inf:[1.7,2.1,0.7,rv.f()*100],tint:scale(col(HEX.amb),0.8)});
+    pAntenna(C,px,27.2,pz,4.6,steelC);
+    glowC(C,px,28.6,pz,0.5,scale(col(HEX.rose),0.9),3,rv.f(),1);
   }
   // the moving leaf: one bay breathes on the ambient clock
   {
@@ -2881,47 +2913,55 @@ function lmNineGates(C){
       WEIR_GATE_STATE=g;
     }});
   }
-  // service gallery over the crest deck: the rain shadow
+  // service gallery over the crest deck: a heavy ceiling — the rain shadow
   {
     const g0=nSpan.start+nSpan.length*0.545, g1=nSpan.start+nSpan.length*0.755;
     for(let d=g0; d<g1; d+=6){
-      const fd=getFrame(F,d), fd2=getFrame(F,Math.min(F.LEN-1,d+6));
-      face(C.furn,[[fd.x-fd.lx*5.4,fd.y+6.4,fd.z-fd.lz*5.4],[fd2.x-fd2.lx*5.4,fd2.y+6.4,fd2.z-fd2.lz*5.4],
-                 [fd2.x+fd2.lx*5.4,fd2.y+6.4,fd2.z+fd2.lz*5.4],[fd.x+fd.lx*5.4,fd.y+6.4,fd.z+fd.lz*5.4]],
+      const fd=frameCopy(F,d), fd2=frameCopy(F,Math.min(F.LEN-1,d+6));
+      face(C.furn,[[fd.x-fd.lx*5.6,fd.y+6.4,fd.z-fd.lz*5.6],[fd2.x-fd2.lx*5.6,fd2.y+6.4,fd2.z-fd2.lz*5.6],
+                 [fd2.x+fd2.lx*5.6,fd2.y+6.4,fd2.z+fd2.lz*5.6],[fd.x+fd.lx*5.6,fd.y+6.4,fd.z+fd.lz*5.6]],
                  [0,-1,0],scale(concC,0.6),null,0,null,null);
-      face(C.furn,[[fd.x-fd.lx*5.4,fd.y+7.5,fd.z-fd.lz*5.4],[fd2.x-fd2.lx*5.4,fd2.y+7.5,fd2.z-fd2.lz*5.4],
-                 [fd2.x+fd2.lx*5.4,fd2.y+7.5,fd2.z+fd2.lz*5.4],[fd.x+fd.lx*5.4,fd.y+7.5,fd.z+fd.lz*5.4]],
+      face(C.furn,[[fd.x-fd.lx*5.6,fd.y+8.2,fd.z-fd.lz*5.6],[fd2.x-fd2.lx*5.6,fd2.y+8.2,fd2.z-fd2.lz*5.6],
+                 [fd2.x+fd2.lx*5.6,fd2.y+8.2,fd2.z+fd2.lz*5.6],[fd.x+fd.lx*5.6,fd.y+8.2,fd.z+fd.lz*5.6]],
                  [0,1,0],concC,null,0,null,null);
-      for(const s of [-1,1]) strutB(C.furn,fd.x+fd.lx*s*5.1,fd.y+0.3,fd.z+fd.lz*s*5.1,fd.x+fd.lx*s*5.1,fd.y+6.4,fd.z+fd.lz*s*5.1,0.3,steelC);
+      // hanging fascias make the beam read deep from outside and low from inside
+      for(const s of [-1,1]){
+        face(C.furn,[[fd.x+fd.lx*s*5.6,fd.y+5.6,fd.z+fd.lz*s*5.6],[fd2.x+fd2.lx*s*5.6,fd2.y+5.6,fd2.z+fd2.lz*s*5.6],
+                   [fd2.x+fd2.lx*s*5.6,fd2.y+8.2,fd2.z+fd2.lz*s*5.6],[fd.x+fd.lx*s*5.6,fd.y+8.2,fd.z+fd.lz*s*5.6]],
+                   [fd.lx*s,0,fd.lz*s],scale(concC,0.72),null,0,null,null);
+      }
     }
-    // under the gallery: caged amber, and the drips the rider hears
-    for(let d=g0+4; d<g1; d+=11){
+    for(let d=g0; d<g1; d+=4.5){
       const fd=getFrame(F,d);
-      glowC(C,fd.x,fd.y+5.9,fd.z,0.5,scale(col(HEX.amb),0.7),0,rv.f(),0);
+      for(const s of [-1,1]) strutB(C.furn,fd.x+fd.lx*s*5.1,fd.y+0.3,fd.z+fd.lz*s*5.1,fd.x+fd.lx*s*5.1,fd.y+6.4,fd.z+fd.lz*s*5.1,0.32,steelC);
+    }
+    // under the ceiling: caged amber, close together, and the drips
+    for(let d=g0+3; d<g1; d+=5.5){
+      const fd=getFrame(F,d);
+      glowC(C,fd.x,fd.y+5.4,fd.z,0.48,scale(col(HEX.amb),0.7),0,rv.f(),0);
       streakC(C,fd.x,fd.y+0.09,fd.z,Math.atan2(-fd.tx,-fd.tz),9,2.4,scale(col(HEX.amb),0.5),0,rv.f(),0.55);
-      if(rs.chance(0.6)) flowC(C,fd.x+fd.lx*rs.r(-3.4,3.4),fd.y+4.6,fd.z+fd.lz*rs.r(-3.4,3.4),0,0,0,0.09,2.8,scale(col(HEX.teal),0.30),rs.r(2.6,3.4),1,0.22,rv.f());
+      if(rs.chance(0.5)) flowC(C,fd.x+fd.lx*rs.r(-3.4,3.4),fd.y+4.4,fd.z+fd.lz*rs.r(-3.4,3.4),0,0,0,0.09,2.6,scale(col(HEX.teal),0.30),rs.r(2.6,3.4),1,0.22,rv.f());
+    }
+    // portal frames: entering the shadow is a threshold, not a fade
+    for(const dd of [g0,g1]){
+      const fd=getFrame(F,dd);
+      const pyaw=Math.atan2(fd.tx,fd.tz);
+      for(const s of [-1,1]) obox(C.furn,fd.x+fd.lx*s*5.2,fd.y+0.1,fd.z+fd.lz*s*5.2,1.5,6.3,1.7,pyaw,scale(concC,0.8));
+      obox(C.furn,fd.x,fd.y+4.9,fd.z,12.2,1.5,2.0,pyaw,scale(concC,0.7));
+      glowC(C,fd.x+fd.lx*4.4,fd.y+4.5,fd.z+fd.lz*4.4,0.4,scale(col(HEX.amb),0.7),2,rv.f(),0.2);
     }
     // crane trolley on the gallery roof
     const trolley=new THREE.Mesh(new THREE.BoxGeometry(2.6,1.4,2.0),new THREE.MeshLambertMaterial({color:col(0x2C1F42)}));
     C.group.add(trolley);
-    const span=nSpan.length*0.1;
     DYN_LM.push({ update:(dt,ambT)=>{
       const u=Math.sin(ambT*0.05)*0.5+0.5;
       const fd=getFrame(F,g0+(g1-g0)*u);
-      trolley.position.set(fd.x,fd.y+8.3,fd.z);
+      trolley.position.set(fd.x,fd.y+9.0,fd.z);
     }});
-    glowC(C,getFrame(F,(g0+g1)/2).x,getFrame(F,(g0+g1)/2).y+9.4,getFrame(F,(g0+g1)/2).z,0.5,scale(col(HEX.ora),0.9),3,rv.f(),0.8);
+    glowC(C,getFrame(F,(g0+g1)/2).x,getFrame(F,(g0+g1)/2).y+10.1,getFrame(F,(g0+g1)/2).z,0.5,scale(col(HEX.ora),0.9),3,rv.f(),0.8);
   }
-  // control cabin on the western pier
-  {
-    const off=(0-N/2)*BAY;
-    const px=f.x+perp.x*off, pz=f.z+perp.z*off;
-    obox(C.fac,px,16.6,pz,5.6,3.4,4.2,yaw,varyR(concC,0.1,rv),{kind:K_WIN,inf:[1.8,2.2,0.7,rv.f()*100],tint:scale(col(HEX.amb),0.8)});
-    pAntenna(C,px+1.4,20.0,pz,4.2,steelC);
-    glowC(C,px,21.2,pz,0.4,scale(col(HEX.rose),0.9),3,rv.f(),0.9);
-  }
-  // the gate glyph reads across the whole Longwater
-  C.sign.push({x:f.x-perp.x*2,y:12.4,z:f.z-perp.z*2,yaw:Math.atan2(-f.tx,-f.tz),sx:4.2,sy:4.2,cell:CELL_GATES,c:scale(col(HEX.teal),0.85),mode:0,phase:rv.f()});
+  // the gate glyph reads across the whole Longwater, mounted on the wall
+  C.sign.push({x:f.x-f.tx*2.8,y:13.2,z:f.z-f.tz*2.8,yaw:Math.atan2(-f.tx,-f.tz),sx:4.2,sy:4.2,cell:CELL_GATES,c:scale(col(HEX.teal),0.85),mode:0,phase:rv.f()});
   CENSUS.signs++;
   C.hash.s('ninegates').n(crestD).n(N);
 }
@@ -2929,37 +2969,73 @@ function lmNineGates(C){
 function lmHarbor(C){
   const F=BR.arcade, rv=C.rv;
   const endD=F.LEN-4;
-  const f=getFrame(F,endD);
+  const f=frameCopy(F,endD);
   const dir={x:f.tx, z:f.tz};
   const side=-PLAN.canalSide;
   const timberC=col(0x241A30), strC=col(0x241A38);
   // quay edge along the last stretch, water on the open side
   for(let d=F.LEN-260; d<F.LEN-6; d+=10){
-    const fq=getFrame(F,d), fq2=getFrame(F,Math.min(F.LEN-1,d+10));
+    const fq=frameCopy(F,d), fq2=frameCopy(F,Math.min(F.LEN-1,d+10));
     const s=-side;   // water side
     face(C.furn,[[fq.x+fq.lx*s*6.4,fq.y-2.4,fq.z+fq.lz*s*6.4],[fq2.x+fq2.lx*s*6.4,fq2.y-2.4,fq2.z+fq2.lz*s*6.4],
                [fq2.x+fq2.lx*s*6.4,fq2.y+0.16,fq2.z+fq2.lz*s*6.4],[fq.x+fq.lx*s*6.4,fq.y+0.16,fq.z+fq.lz*s*6.4]],
                [fq.lx*s,0,fq.lz*s],varyR(col(0x1C1532),0.08,rv),null,0,null,null);
     if(Math.floor(d/10)%3===0) pBollard(C,fq.x+fq.lx*s*5.9,fq.y+0.16,fq.z+fq.lz*s*5.9,col(0x241A28),false);
   }
+  // the working quay: sheds, a crane, boats — a place, not a prop
+  {
+    for(const [td,tw] of [[F.LEN-138,8.5],[F.LEN-92,7]]){
+      const fq=getFrame(F,clamp(td,0,F.LEN-1));
+      const bx2=fq.x+fq.lx*side*rv.r(11,14), bz2=fq.z+fq.lz*side*rv.r(11,14);
+      const byaw=Math.atan2(fq.tx,fq.tz);
+      obox(C.fac,bx2,fq.y,bz2,tw,4.6,6.2,byaw,varyR(col(0x1B1030),0.12,rv),{kind:K_PANEL,inf:[2.4,2.2,0,rv.f()*100],tint:BLACK});
+      obox(C.fac,bx2+Math.cos(byaw)*(-side)*(tw/2-0.05),fq.y,bz2-Math.sin(byaw)*(-side)*(tw/2-0.05),0.3,3.6,3.6,byaw,scale(col(0x1B1030),0.85),{kind:K_DOOR,inf:[2,2,0,0],tint:BLACK});
+      obox(C.fac,bx2,fq.y+2.4,bz2+Math.cos(byaw)*2.9,1.6,1.2,0.25,byaw,scale(col(0x1B1030),0.9),{kind:K_WIN,inf:[1.4,1.1,0.9,rv.f()*100],tint:scale(col(HEX.amb),0.7)});
+      glowC(C,bx2,fq.y+4.9,bz2,0.35,scale(col(HEX.amb),0.55),2,rv.f(),0);
+      parcelCellsTake(bx2-5,bz2-5,bx2+5,bz2+5);
+    }
+    // dockside crane, still for the night, hook swaying just barely
+    const fq=getFrame(F,F.LEN-70);
+    const cx2=fq.x-fq.lx*side*6.9, cz2=fq.z-fq.lz*side*6.9;
+    strutB(C.furn,cx2,f.y,cz2,cx2,f.y+9.4,cz2,0.5,col(0x1B1230));
+    strutB(C.furn,cx2,f.y+9.4,cz2,cx2-fq.lx*side*6.4,f.y+7.6,cz2-fq.lz*side*6.4,0.34,col(0x1B1230));
+    strutB(C.furn,cx2,f.y+9.4,cz2,cx2+fq.lx*side*2.6,f.y+8.2,cz2+fq.lz*side*2.6,0.3,col(0x1B1230));
+    strutB(C.furn,cx2-fq.lx*side*5.6,f.y+7.75,cz2-fq.lz*side*5.6,cx2-fq.lx*side*5.6,f.y+3.2,cz2-fq.lz*side*5.6,0.06,col(0x120D20));
+    glowC(C,cx2,f.y+9.7,cz2,0.4,scale(col(HEX.ora),0.8),3,rv.f(),0.6);
+  }
   // the pier: the road becomes timber and walks out over the water
   const px0=f.x+dir.x*10, pz0=f.z+dir.z*10;
-  for(let t=0;t<42;t+=3){
+  for(let t=0;t<58;t+=3){
     const px=px0+dir.x*t, pz=pz0+dir.z*t;
     box(C.furn,px-2.1,f.y-0.25,pz-1.6,px+2.1,f.y+0.02,pz+1.6,{c:varyR(timberC,0.12,rv)});
     if(t%6===0){
       for(const s of [-1,1]) strutB(C.furn,px+f.lx*s*1.7,-2.2,pz+f.lz*s*1.7,px+f.lx*s*1.7,f.y-0.2,pz+f.lz*s*1.7,0.34,col(0x1A1428));
     }
-    if(t%9===0&&t>0){
-      const lp=pLamp(C,px+f.lx*1.85,f.y+0.02,pz+f.lz*1.85,Math.atan2(-f.lx,-f.lz),col(HEX.amb),true);
+    if(t%8===0&&t>0){
+      pLamp(C,px+f.lx*1.85,f.y+0.02,pz+f.lz*1.85,Math.atan2(-f.lx,-f.lz),col(HEX.amb),true);
       streakC(C,px,f.y+0.05,pz,Math.atan2(-dir.x,-dir.z),7,1.8,scale(col(HEX.amb),0.7),0,rv.f(),0.7);
     }
+  }
+  // the breakwater arm: a dark line across the basin, ending in a beacon —
+  // somewhere beyond the pier for the eye to go
+  {
+    const bx0=f.x-f.lx*side*10, bz0=f.z-f.lz*side*10;
+    const bx1=px0+dir.x*130+f.lx*(-side)*175, bz1=pz0+dir.z*130+f.lz*(-side)*175;
+    for(let k=0;k<=9;k++){
+      const t=k/9;
+      const wx=lerp(bx0,bx1,t)+Math.sin(t*2.6)*14, wz=lerp(bz0,bz1,t)+Math.cos(t*1.9)*10;
+      box(C.furn,wx-4.4,-1.8,wz-2.2,wx+4.4,-0.35,wz+2.2,{c:varyR(col(0x141026),0.15,rv)});
+    }
+    obox(C.furn,bx1,-1.2,bz1,2.2,9.2,2.2,0.3,col(0x1B1230));
+    obox(C.furn,bx1,8.0,bz1,1.4,1.2,1.4,0.3,col(0x241A30));
+    glowC(C,bx1,8.9,bz1,1.0,scale(col(HEX.amb),1.1),3,rv.f(),1);
+    glowC(C,bx1,7.4,bz1,0.5,scale(col(HEX.rose),0.6),0,rv.f(),0.9);
   }
   // the kiosk: one warm room at the end of the whole ride
   {
     const kx=px0+dir.x*18+f.lx*side*2.9, kz=pz0+dir.z*18+f.lz*side*2.9;
     const yaw=Math.atan2(dir.x,dir.z);
-    obox(C.fac,kx,f.y,kz,3.6,3.2,2.8,yaw,varyR(col(0x1F1526),0.1,rv),{kind:K_WIN,inf:[1.6,1.9,0.85,rv.f()*100],tint:scale(col(HEX.pap),0.62)});
+    obox(C.fac,kx,f.y,kz,3.6,3.2,2.8,yaw,varyR(col(0x1F1526),0.1,rv),{kind:K_WIN,inf:[1.6,1.9,0.85,rv.f()*100],tint:scale(col(HEX.pap),0.75)});
     obox(C.furn,kx,f.y+3.2,kz,4.2,0.3,3.4,yaw,scale(timberC,0.8));
     glowC(C,kx+f.lx*(-side)*1.9,f.y+2.4,kz+f.lz*(-side)*1.9,0.5,scale(col(HEX.amb),0.8),0,rv.f(),0.3);
     C.sign.push({x:kx+f.lx*(-side)*1.86,y:f.y+2.6,z:kz+f.lz*(-side)*1.86,yaw:Math.atan2(-dir.x,-dir.z),sx:1.7,sy:1.7,cell:CELL_FERRY,c:scale(col(HEX.amb),1.1),mode:0,phase:rv.f()});
@@ -2969,15 +3045,15 @@ function lmHarbor(C){
   }
   // pier-end perch: the still heron that does not leave
   {
-    const hx=px0+dir.x*44, hz=pz0+dir.z*44;
+    const hx=px0+dir.x*60, hz=pz0+dir.z*60;
     strutB(C.furn,hx,-2.2,hz,hx,f.y+0.5,hz,0.34,col(0x1A1428));
     C.heronPts.push({x:hx,y:f.y+0.5,z:hz,side:0,tame:true});
     CENSUS.heronPerches++;
     glowC(C,hx,f.y+0.2,hz,0.35,scale(col(HEX.amb),0.5),0,rv.f(),0.4);
   }
   // moored skiffs knocking against the quay
-  for(let k=0;k<2;k++){
-    const md=F.LEN-40-k*36;
+  for(let k=0;k<4;k++){
+    const md=F.LEN-34-k*30;
     const fm=getFrame(F,md);
     const s=-side;
     const mx=fm.x+fm.lx*s*rv.r(9,12), mz=fm.z+fm.lz*s*rv.r(9,12);
@@ -2989,9 +3065,9 @@ function lmHarbor(C){
   {
     const wx=px0+dir.x*80, wz=pz0+dir.z*80;
     C.water.push({ x:wx, z:wz, w:420, h:420, y:-1.5, glows:[
-      {x:px0+dir.x*30, z:pz0+dir.z*30, w:5, c:scale(col(HEX.amb),0.9)},
-      {x:px0+dir.x*75, z:pz0+dir.z*75, w:9, c:scale(col(HEX.amb),0.6)},
-      {x:px0+dir.x*140, z:pz0+dir.z*140, w:15, c:scale(col(HEX.amb),0.34)},
+      {x:px0+dir.x*32, z:pz0+dir.z*32, w:6, c:scale(col(HEX.amb),1.1)},
+      {x:px0+dir.x*80, z:pz0+dir.z*80, w:10, c:scale(col(HEX.amb),0.75)},
+      {x:px0+dir.x*150, z:pz0+dir.z*150, w:16, c:scale(col(HEX.amb),0.4)},
       {x:px0+dir.x*60+f.lx*40, z:pz0+dir.z*60+f.lz*40, w:9, c:scale(col(HEX.teal),0.2)},
     ]});
     CENSUS.waterFeatures++;
@@ -3029,12 +3105,13 @@ function ensureChunks(sA, buildAll){
     const i0=Math.max(0,Math.floor((sA-170)/CH_LEN)), i1=Math.min(Math.floor((F.LEN-1)/CH_LEN),Math.floor((sA+Q.aheadNear)/CH_LEN));
     for(let i=i0;i<=i1;i++) push('arcade:'+i, Math.abs(i*CH_LEN-sA), 'near', {branch:'arcade',idx:i});
   }
-  // near, the other line through the split (visible from the gate and beyond)
+  // near, the other line through the split (visible from the gate and beyond;
+  // shorter look-ahead than the ridden line — same in every quality tier)
   if(sA>FORKGEO.D_FORK-760 && sA<FORKGEO.RJ.arcade+300){
     const F=BR.ropewalk;
     const sB=toRopewalkD(sA);
     const lo=Math.floor((FORKGEO.D_FORK-FORKGEO.RAMP-60)/CH_LEN), hi=Math.floor((FORKGEO.RJ.ropewalk+120)/CH_LEN);
-    const i0=Math.max(lo,Math.floor((sB-170)/CH_LEN)), i1=Math.min(hi,Math.floor((sB+Q.aheadNear)/CH_LEN));
+    const i0=Math.max(lo,Math.floor((sB-170)/CH_LEN)), i1=Math.min(hi,Math.floor((sB+420)/CH_LEN));
     for(let i=i0;i<=i1;i++) push('ropewalk:'+i, Math.abs(i*CH_LEN-sB)+8, 'near', {branch:'ropewalk',idx:i});
   }
   // far silhouettes
@@ -3102,25 +3179,25 @@ const skyMesh=(()=>{
       vec4 mv=viewMatrix*vec4(position+cameraPosition,1.0);
       gl_Position=projectionMatrix*mv; gl_Position.z=gl_Position.w*0.99999; }`,
     fs:`${GLSL_H}
-    uniform float uTime; uniform float uLmAz;
+    uniform float uTime; uniform float uLmAz; uniform float uSkyDim;
     varying vec3 vD;
     void main(){
       vec3 d=normalize(vD);
       float h=clamp(d.y,-0.08,1.0);
       vec3 zen=vec3(0.004,0.003,0.010);
-      vec3 hor=vec3(0.030,0.016,0.048);
+      vec3 hor=vec3(0.030,0.016,0.048)*mix(0.6,1.0,uSkyDim);
       vec3 c=mix(hor,zen,smoothstep(0.0,0.5,h));
       float az=atan(d.z,d.x);
       float g=n2(vec2(az*2.2,1.7));
       vec3 gl2=mix(vec3(0.10,0.16,0.19),vec3(0.20,0.09,0.13),n2(vec2(az*1.3,7.7)));
-      c+=gl2*0.16*pow(1.0-h,3.5)*(0.5+g);
+      c+=gl2*0.16*pow(1.0-h,3.5)*(0.5+g)*uSkyDim;
       float ad=abs(atan(sin(az-uLmAz),cos(az-uLmAz)));
-      c+=vec3(0.09,0.15,0.17)*exp(-ad*ad*4.5)*pow(1.0-h,2.2)*0.42;
+      c+=vec3(0.09,0.15,0.17)*exp(-ad*ad*4.5)*pow(1.0-h,2.2)*0.42*uSkyDim;
       float cl=n2(vec2(az*3.0+uTime*0.008,d.y*6.0))*n2(vec2(az*7.0-uTime*0.005,d.y*13.0));
       c=mix(c,vec3(0.016,0.010,0.024),smoothstep(0.42,0.8,cl)*smoothstep(0.04,0.35,h)*0.75);
       gl_FragColor=vec4(c,1.0);
     }`,
-    uniforms:{uLmAz:{value:0}},
+    uniforms:{uLmAz:{value:0},uSkyDim:{value:1}},
     side:THREE.BackSide, depthWrite:false,
   });
   const mesh=new THREE.Mesh(new THREE.SphereGeometry(1250,24,12),m);
@@ -3636,6 +3713,9 @@ const gradePass=new ShaderPass({
 composer.addPass(gradePass);
 composer.addPass(new OutputPass());
 composer.setSize(window.innerWidth,window.innerHeight);
+// bloom is soft by design: run its pyramid at half resolution — the look
+// is preserved and the fill cost at high DPR drops sharply
+bloom.setSize(window.innerWidth/2,window.innerHeight/2);
 // ================================================================
 // RIDER — Circuit's exact ride feel; the fork obeys the line you hold
 // ================================================================
@@ -3658,7 +3738,9 @@ function restart(){
   eventsFired=0; ratEncounters=0; heronLifts=0;
   for(const p of ACTIVE_RATPTS) p.state=0;
   for(const h of ACTIVE_HERONS){ if(h.unit){ h.unit.perch=null; h.unit=undefined; } h.state=0; }
-  tram.express=-1; droneSweep.idx=-1; brownT=-99;
+  tram.express=-1; droneSweep.idx=-1; brownT=-99; signFailT=-99;
+  maxRollSeen=0; arrivalPlayed=false; dripAcc=0; bellAcc=0;
+  U.uBrown.value=1; U.uShelter.value=0;
 }
 window.addEventListener('keydown',(e)=>{
   if(e.code==='Space'){ e.preventDefault(); if(!e.repeat) paused=!paused; audioStart(); return; }
@@ -3682,15 +3764,16 @@ const wrapPi=a=>{ while(a>Math.PI)a-=2*Math.PI; while(a<-Math.PI)a+=2*Math.PI; r
 // chapter fog: Circuit's family, keyed to each branch's real spans
 function buildFogK(brKey){
   const FK=[];
-  const T={ vigil:[26,960,0x140B20], marrow:[22,760,0x150C23], sluice:[28,940,0x170D26],
-            split: brKey==='ropewalk'? [30,1020,0x180E27] : [23,840,0x150C23],
-            stacks:[22,780,0x131024], longwater:[34,1150,0x0F1220],
-            ninegates:[26,900,0x111022], slack:[22,760,0x0F1220] };
-  for(const c of SPANS[brKey]) FK.push([c.start, T[c.key][0], T[c.key][1], col(T[c.key][2])]);
-  FK.push([1e9, 22,760, col(0x0F1220)]);
+  const T={ vigil:[26,960,0x140B20,1.0], marrow:[22,760,0x150C23,1.0], sluice:[28,940,0x170D26,1.0],
+            split: brKey==='ropewalk'? [30,1020,0x180E27,0.9] : [23,840,0x150C23,1.0],
+            stacks:[22,780,0x131024,0.95], longwater:[34,1150,0x0F1220,0.8],
+            ninegates:[24,780,0x0E0A18,0.55], slack:[22,700,0x0D0F1C,0.6] };
+  for(const c of SPANS[brKey]) FK.push([c.start, T[c.key][0], T[c.key][1], col(T[c.key][2]), T[c.key][3]]);
+  FK.push([1e9, 22,700, col(0x0D0F1C), 0.6]);
   return FK;
 }
 const FOGK_BR={ arcade:buildFogK('arcade'), ropewalk:buildFogK('ropewalk') };
+let SKY_DIM=1;
 function updateFog(d){
   const FOGK=FOGK_BR[F.key];
   let a=FOGK[0], b=FOGK[1];
@@ -3699,6 +3782,7 @@ function updateFog(d){
   U.uFogNear.value=a[1]+(b[1]-a[1])*tt;
   U.uFogFar.value=a[2]+(b[2]-a[2])*tt;
   U.uFogColor.value.copy(a[3]).lerp(b[3],tt);
+  SKY_DIM=a[4]+(b[4]-a[4])*tt;
   scene.fog.color.copy(U.uFogColor.value);
   scene.fog.near=U.uFogNear.value; scene.fog.far=U.uFogFar.value;
 }
@@ -3823,7 +3907,6 @@ function rideSkip(dm){
   ensureChunks(toArcadeD(F.key,s), true);
 }
 window.__ride={ skip:(dm)=>{ rideSkip(dm||100); return s; } };
-window.__scene=scene;              // debug handle, read-only by convention
 window.__debugSkipTo=(t)=>{ const targ=clamp(startD+t*7.5,0,F.LEN-26);
   if(targ>s) rideSkip(targ-s); started=true; if(speed<6) speed=7.5;
   return true; };
@@ -3855,10 +3938,10 @@ renderer.setAnimationLoop(()=>{
     const gradeMul=clamp(1-f.ty*3.2,0.55,1.28);
     let tgt=ended?0:targetSpeed*gradeMul;
     const remain=F.LEN-s;
-    if(remain<130) tgt=Math.min(tgt,Math.max(0,(remain-8)*0.16));  // the measured arrival
+    if(remain<130) tgt=Math.min(tgt,Math.max(0,(remain-7)*0.28));  // the measured arrival
     speed+=(tgt-speed)*(1-Math.exp(-dt*0.85));
     s=Math.min(s+speed*dt, F.LEN-8);
-    if(!ended&&((remain<16&&speed<0.7)||s>=F.LEN-8.5)){ ended=true; endT=0; }
+    if(!ended&&((remain<18&&speed<1.2)||s>=F.LEN-8.6)){ ended=true; endT=0; }
   }
   if(ended) endT+=dt;
   const nl=lat+(latT-lat)*(1-Math.exp(-dt*5));
@@ -3878,9 +3961,10 @@ renderer.setAnimationLoop(()=>{
   if(firstFrame){ baseYaw=yawTgt; firstFrame=false; }
   baseYaw+=wrapPi(yawTgt-baseYaw)*(1-Math.exp(-dt*7));
   ant+=(clamp(f.k*speed*0.9,-0.15,0.15)-ant)*(1-Math.exp(-dt*3));
-  const rollTgt=clamp(Math.atan(f.k*speed*speed/9.81)*0.5,-0.2,0.2)+clamp(latV*0.028,-0.08,0.08);
-  roll+=(rollTgt-roll)*(1-Math.exp(-dt*4));
-  roll=clamp(roll,-0.24,0.24);
+  // banking is a hint, never a tilt: the horizon must stay believable
+  const rollTgt=clamp(Math.atan(f.k*speed*speed/9.81)*0.5,-0.07,0.07)+clamp(latV*0.018,-0.02,0.02);
+  roll+=(rollTgt-roll)*(1-Math.exp(-dt*3.2));
+  roll=clamp(roll,-0.09,0.09);
   if(Math.abs(roll)>maxRollSeen) maxRollSeen=Math.abs(roll);
   const idle=ambT-lastLook>1.6;
   const dec=Math.exp(-dt*(idle?1.0:0.22));
@@ -3892,8 +3976,8 @@ renderer.setAnimationLoop(()=>{
   camera.rotation.z=-roll;
   if(ended){
     const t=smooth01(clamp((endT-1.0)/8,0,1));       // arrival: the eye lifts to the amber path
-    camera.rotation.x+=t*0.05;
-    camera.rotation.y+=Math.sin(t*Math.PI)*0.0;
+    camera.rotation.x+=t*0.022;
+    camera.rotation.y+=Math.sin(ambT*0.22)*0.02*t;   // and breathes, gently
   }
   camera.position.set(f.x+f.lx*lat, f.y+1.55, f.z+f.lz*lat);
   U.uCam.value.copy(camera.position);
@@ -3904,6 +3988,7 @@ renderer.setAnimationLoop(()=>{
   const prom = s<marrowEnd ? PLAN.standpipe : PLAN.weir;
   skyMesh.material.uniforms.uLmAz.value=Math.atan2(prom.z-camera.position.z,prom.x-camera.position.x);
   updateFog(s);
+  skyMesh.material.uniforms.uSkyDim.value=SKY_DIM;
   U.uShelter.value+=(f.shel-U.uShelter.value)*(1-Math.exp(-dt*4));
   updateRoadUniform();
   // gusts breathe, gently — the veil sways, it never lashes
@@ -4041,7 +4126,23 @@ function updateProofSlow(){
   PROOF.rideClock=+rideT.toFixed(1);
   PROOF.ambientClock=+ambT.toFixed(1);
 }
-window.__proof=PROOF;
+// read-only view: internals keep writing PROOF; the window sees a surface
+// that silently ignores writes, so the proof is evidence, not an input
+const _roCache=new WeakMap();
+function roView(obj){
+  if(obj===null||typeof obj!=='object') return obj;
+  let p=_roCache.get(obj);
+  if(!p){
+    p=new Proxy(obj,{
+      get:(t,k)=>roView(t[k]),
+      set:()=>true, deleteProperty:()=>true,
+      defineProperty:()=>true, setPrototypeOf:()=>true,
+    });
+    _roCache.set(obj,p);
+  }
+  return p;
+}
+window.__proof=roView(PROOF);
 
 // resize
 window.addEventListener('resize',()=>{
@@ -4049,6 +4150,7 @@ window.addEventListener('resize',()=>{
   camera.aspect=w/h; camera.updateProjectionMatrix();
   renderer.setSize(w,h);
   composer.setSize(w,h);
+  bloom.setSize(w/2,h/2);
 });
 
 // initial build: the opening exists before the first frame
