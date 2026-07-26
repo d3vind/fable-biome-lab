@@ -3141,7 +3141,7 @@ function lmHarbor(C){
     if(t%6===0){
       for(const s of [-1,1]) strutB(C.furn,px+f.lx*s*1.7,-2.2,pz+f.lz*s*1.7,px+f.lx*s*1.7,f.y-0.2,pz+f.lz*s*1.7,0.34,col(0x1A1428));
     }
-    if(t%8===0&&t>0){
+    if(t%9===0&&t>0){
       pLamp(C,px+f.lx*1.85,f.y+0.02,pz+f.lz*1.85,Math.atan2(-f.lx,-f.lz),col(HEX.amb),true);
       streakC(C,px,f.y+0.05,pz,Math.atan2(-dir.x,-dir.z),7,1.8,scale(col(HEX.amb),0.7),0,rv.f(),0.7);
     }
@@ -3196,7 +3196,7 @@ function lmHarbor(C){
   {
     const wx=px0+dir.x*80, wz=pz0+dir.z*80;
     C.water.push({ x:wx, z:wz, w:420, h:420, y:-1.5, glows:[
-      {x:px0+dir.x*7, z:pz0+dir.z*7, w:5, c:scale(col(HEX.amb),1.3)},
+      {x:px0+dir.x*9-f.lx*side*7, z:pz0+dir.z*9-f.lz*side*7, w:6, c:scale(col(HEX.amb),1.3)},
       {x:px0+dir.x*32, z:pz0+dir.z*32, w:7, c:scale(col(HEX.amb),1.1)},
       {x:px0+dir.x*80, z:pz0+dir.z*80, w:10, c:scale(col(HEX.amb),0.75)},
       {x:px0+dir.x*150, z:pz0+dir.z*150, w:16, c:scale(col(HEX.amb),0.4)},
@@ -4172,14 +4172,19 @@ renderer.setAnimationLoop(()=>{
   updateAudio(dt,f);
 
   // ---- fog-distance culling of chunk meshes ----
+  // chunk geometry is baked in world space, but the shared water plane is
+  // positioned/scaled per mesh — transform its sphere, or the whole basin
+  // silently vanishes once the ride is far from the world origin
   {
     const far=U.uFogFar.value*1.06;
     const cp=camera.position;
     for(let i=0;i<staticMeshes.length;i++){
       const m=staticMeshes[i], bs=m.geometry.boundingSphere;
       if(!bs){ m.visible=true; continue; }
-      const dx=bs.center.x-cp.x, dy=bs.center.y-cp.y, dz=bs.center.z-cp.z;
-      m.visible=(Math.sqrt(dx*dx+dy*dy+dz*dz)-bs.radius)<far;
+      const p=m.position;
+      const dx=bs.center.x+p.x-cp.x, dy=bs.center.y+p.y-cp.y, dz=bs.center.z+p.z-cp.z;
+      const sr=bs.radius*Math.max(m.scale.x,Math.max(m.scale.y,m.scale.z));
+      m.visible=(Math.sqrt(dx*dx+dy*dy+dz*dz)-sr)<far;
     }
   }
 
