@@ -570,6 +570,7 @@ function terrainH(x,z){
   const idx=rg.i;
   let h=rg.y;
   h+=fbm2(x/210,z/210)*13-6.5;
+  h+=fbm2(x/118+53,z/118+71)*6-3;
   h+=fbm2(x/58+31,z/58+9)*3.4-1.7;
   const side=rg.side>0?0:1;
   const wA=wallAmp[side][idx]*(0.65+0.7*fbm2(x/96+7,z/96+3));
@@ -731,12 +732,15 @@ const bandFor=(t,mute)=>{
         : t<0.55? col(PAL.rust)
         : t<0.8? col(PAL.sandstone)
         : mixc(PAL.sandstone,PAL.cream,0.28);
+  if(TINT) c.lerp(TINT.c,TINT.a);
   return c.lerp(col(PAL.rose),clamp(mute,0,0.5));
 };
-function ringPts(cx,cz,yaw,r,sides,jit,R){
+// lobed organic outlines — coherent low-frequency bulges, never machine jitter
+function ringPts(cx,cz,yaw,r,sides,jit,R,ph){
   const pts=[];
+  const p1=ph!==undefined?ph:R.r(0,TAU), p2=(ph!==undefined?ph*1.7:R.r(0,TAU));
   for(let i=0;i<sides;i++){ const a=yaw+i/sides*TAU;
-    const rr=r*(1+R.r(-jit,jit));
+    const rr=r*(1+jit*(0.62*Math.sin(a*2+p1)+0.38*Math.sin(a*3+p2)));
     pts.push([cx+Math.cos(a)*rr,0,cz+Math.sin(a)*rr]); }
   return pts;
 }
@@ -744,22 +748,25 @@ const setY=(pts,y)=>pts.map(p=>[p[0],y,p[2]]);
 function strataForm(B,x,z,y0,opt,R){
   const {levels,w,hTot,taper,lean,jit,mute}=opt;
   // wide forms earn more facets — a 200 m mesa must not show 40 m flat faces
-  const sides=Math.min(14,Math.max(opt.sides,Math.floor(w/16)));
+  const sides=Math.min(16,Math.max(opt.sides,Math.floor(w/14)));
+  // one lobed silhouette per formation: rings stay aligned, so the stack
+  // reads as eroded strata of one rock, not a pile of unrelated blocks
+  const basePh=R.r(0,TAU), baseYaw=R.r(0,6.28);
   let r=w/2, y=y0, prev=null;
   for(let l=0;l<levels;l++){
     const t=l/Math.max(1,levels-1);
     const hL=(hTot/levels)*R.r(0.75,1.3);
     const rTop=r*lerp(1,taper,1/levels)*R.r(0.9,1.02);
     const leanX=Math.cos(lean.az)*Math.tan(lean.a), leanZ=Math.sin(lean.az)*Math.tan(lean.a);
-    const bot=prev||setY(ringPts(x,z,R.r(0,6.28),r,sides,jit,R),y);
-    let top=setY(ringPts(x,z,R.r(0,6.28),rTop*R.r(0.82,0.98),sides,jit,R),y+hL);
+    const bot=prev||setY(ringPts(x,z,baseYaw,r,sides,jit,R,basePh),y);
+    let top=setY(ringPts(x,z,baseYaw+l*0.07,rTop*R.r(0.86,0.98),sides,jit,R,basePh+l*0.35),y+hL);
     top=top.map(p=>[p[0]+leanX*(y+hL-y0),p[1],p[2]+leanZ*(y+hL-y0)]);
     const c=bandFor(t,mute);
     const cT=c.clone().lerp(col(PAL.sandstone),0.25);
     for(let i=0;i<bot.length;i++){
       const j=(i+1)%bot.length;
       pushQuad(B,bot[i],bot[j],top[j%top.length],top[i%top.length],
-        R.chance(0.16)?c.clone().lerp(col(PAL.wine),0.4):c);
+        R.chance(0.13)?c.clone().lerp(col(PAL.wine),0.35):c);
     }
     const ctr=[x+leanX*(y+hL-y0),y+hL,z+leanZ*(y+hL-y0)];
     for(let i=0;i<top.length;i++) pushTri(B,top[i],top[(i+1)%top.length],ctr,cT);
@@ -768,39 +775,114 @@ function strataForm(B,x,z,y0,opt,R){
   return y;
 }
 // true worst-case half-extents per archetype — centre-point tests are forbidden
-const FOOT_R={ steppedMesa:68,faultFin:44,flutedCliff:42,undercutShelf:26,fracturedSlab:12,
-  talusApron:24,washTerrace:38,layeredButtress:36,brokenCaprock:42,hoodoo:6,strataRib:48 };
+const FOOT_R={ steppedMesa:68,faultFin:44,flutedCliff:46,undercutShelf:26,fracturedSlab:12,
+  talusApron:24,washTerrace:38,layeredButtress:36,brokenCaprock:42,hoodoo:6,strataRib:40,
+  dome:34,spire:10,slump:26 };
 function footRadius(type,sc){ return (FOOT_R[type]||20)*sc; }
 const ARCH={
   steppedMesa(B,x,z,sc,mute,R){ strataForm(B,x,z,terrainH(x,z)-3,
     {levels:R.i(3,6),w:R.r(60,120)*sc,hTot:R.r(28,64)*sc,taper:R.r(0.5,0.75),
      lean:{a:R.r(0,0.03),az:0},sides:R.i(6,8),jit:0.16,mute},R); },
   faultFin(B,x,z,sc,mute,R){
-    const h=R.r(20,44)*sc,w=R.r(18,40)*sc,th=R.r(4,8)*sc;
+    // a run of three thinning blades, tapered and leaning together — a fin, not a wall
+    const h=R.r(20,44)*sc,w=R.r(18,36)*sc;
     const yaw=Math.atan2(gateFwd.x,-gateFwd.z)+R.r(-0.3,0.3);
-    const y0=terrainH(x,z)-2, lean=R.r(0.08,0.22)*(R.chance(0.5)?1:-1);
+    const y0=terrainH(x,z)-2, lean=R.r(0.08,0.2)*(R.chance(0.5)?1:-1);
     const ca=Math.cos(yaw),sa=Math.sin(yaw);
-    const c=bandFor(0.6,mute), cD=c.clone().lerp(col(PAL.wine),0.4);
-    for(let seg=0;seg<2;seg++){
-      const w2=w*(seg?0.55:1), h2=h*(seg?0.72:1), off=seg?w*0.42:0;
+    for(let seg=0;seg<3;seg++){
+      const k=seg/2;
+      const w2=w*lerp(1,0.42,k), h2=h*lerp(1,0.55,k)*R.r(0.85,1.1), th=R.r(3.5,6.5)*sc*lerp(1,0.6,k);
+      const off=(seg-1)*w*0.5;
       const bx=x+sa*off, bz=z-ca*off;
+      const c=bandFor(0.5+k*0.25,mute).lerp(col(PAL.wine),seg===1?0:0.18);
       const bot=[[bx-sa*w2/2-ca*th/2,y0,bz+ca*w2/2-sa*th/2],[bx+sa*w2/2-ca*th/2,y0,bz-ca*w2/2-sa*th/2],
                  [bx+sa*w2/2+ca*th/2,y0,bz-ca*w2/2+sa*th/2],[bx-sa*w2/2+ca*th/2,y0,bz+ca*w2/2+sa*th/2]];
-      const top=bot.map(p=>[p[0]+lean*h2*ca,y0+h2*R.r(0.8,1.1),p[2]+lean*h2*sa]);
-      pushBlock(B,bot,top,seg?cD:c,c.clone().lerp(col(PAL.cream),0.2));
+      // crest narrows to a blade and rises to an off-centre peak
+      const pk=R.r(-0.3,0.3);
+      const top=bot.map((p,i)=>{
+        const u=(i===0||i===3)?-1:1;
+        return [lerp(p[0],bx+lean*h2*ca+sa*u*w2*0.32,0.8),
+          y0+h2*(0.75+0.35*Math.cos(u*0.9-pk)),
+          lerp(p[2],bz+lean*h2*sa-ca*u*w2*0.32,0.8)];
+      });
+      pushBlock(B,bot,top,c,c.clone().lerp(col(PAL.cream),0.25));
     }
   },
+  dome(B,x,z,sc,mute,R){
+    // slickrock: smooth cosine-profiled whaleback in warm cream bands
+    const rBase=R.r(14,30)*sc, hTot=R.r(9,20)*sc;
+    const y0=terrainH(x,z)-1.5;
+    const rings=5, sides=Math.min(16,Math.max(10,Math.floor(rBase/2.4)));
+    const basePh=R.r(0,TAU), yaw=R.r(0,6.28);
+    let prev=null;
+    for(let l=0;l<=rings;l++){
+      const t=l/rings;
+      const rr=rBase*Math.cos(t*Math.PI/2)*R.r(0.97,1.03);
+      const y=y0+hTot*Math.sin(t*Math.PI/2);
+      const ring=l<rings? setY(ringPts(x,z,yaw,Math.max(rr,0.5),sides,0.10,R,basePh),y) : null;
+      const c=mixc(PAL.sandstone,PAL.cream,0.15+t*0.4).lerp(col(PAL.rose),clamp(mute,0,0.4));
+      if(prev&&ring)
+        for(let i=0;i<sides;i++){ const j=(i+1)%sides;
+          pushQuad(B,prev[i],prev[j],ring[j],ring[i],c); }
+      if(!ring){ const ctr=[x,y0+hTot,z];
+        for(let i=0;i<sides;i++) pushTri(B,prev[i],prev[(i+1)%sides],ctr,mixc(PAL.cream,PAL.sandstone,0.3)); }
+      prev=ring;
+    }
+  },
+  spire(B,x,z,sc,mute,R){
+    // a lone tapering needle with a caprock knuckle
+    const h=R.r(16,34)*sc, r0=R.r(2.6,4.4)*sc;
+    let y=terrainH(x,z)-1.5, r=r0;
+    const basePh=R.r(0,TAU), yaw=R.r(0,6.28);
+    const n=R.i(4,6);
+    let prev=null;
+    for(let l=0;l<n;l++){
+      const t=l/(n-1);
+      const hL=(h/n)*R.r(0.8,1.25);
+      const rT=r0*lerp(1,0.22,Math.pow((l+1)/n,0.8));
+      const bot=prev||setY(ringPts(x,z,yaw,r,7,0.12,R,basePh),y);
+      const top=setY(ringPts(x+R.r(-0.4,0.4)*sc,z+R.r(-0.4,0.4)*sc,yaw+l*0.1,rT,7,0.12,R,basePh+l*0.3),y+hL);
+      const c=bandFor(0.35+t*0.5,mute);
+      for(let i=0;i<7;i++){ const j=(i+1)%7; pushQuad(B,bot[i],bot[j],top[j],top[i],c); }
+      prev=top; r=rT; y+=hL;
+    }
+    prismStriped(B,x,y-0.5,z,r0*0.34,r0*0.2,R.r(1.5,3)*sc,6,
+      bandFor(0.85,mute),bandFor(0.7,mute),bandFor(0.92,mute));
+  },
+  slump(B,x,z,sc,mute,R){
+    // a fallen slab half-buried at an angle — the canyon sheds itself
+    const s2=Math.min(sc,1.2);
+    const w=R.r(9,16)*s2, dep=R.r(6,12)*s2, th=R.r(2.5,4.5)*s2;
+    const yaw=R.r(0,6.28), tilt=R.r(0.18,0.32);
+    const y0=terrainH(x,z)-th*0.9;
+    const ca=Math.cos(yaw),sa=Math.sin(yaw);
+    const c=bandFor(0.55,mute);
+    const bot=[[x-ca*w/2-sa*dep/2,y0,z-sa*w/2+ca*dep/2],[x+ca*w/2-sa*dep/2,y0+tilt*w*0.55,z+sa*w/2+ca*dep/2],
+               [x+ca*w/2+sa*dep/2,y0+tilt*w*0.55,z+sa*w/2-ca*dep/2],[x-ca*w/2+sa*dep/2,y0,z-sa*w/2-ca*dep/2]];
+    const top=bot.map((p,i)=>[p[0]+sa*th*0.5,p[1]+th+(i<2?tilt*w*0.45:0),p[2]-ca*th*0.5]);
+    pushBlock(B,bot,top,c.clone().lerp(col(PAL.wine),0.15),c.clone().lerp(col(PAL.cream),0.2));
+    stoneSmall(B,x+ca*w*0.6,z+sa*w*0.6,s2*0.8,R,c.clone().lerp(col(PAL.wine),0.25));
+    stoneSmall(B,x-ca*w*0.55,z-sa*w*0.55,s2*0.6,R,col(PAL.rust));
+  },
   flutedCliff(B,x,z,sc,mute,R){
+    // fluting attached to one cliff mass — organ pipes in a wall, not towers
     const n=R.i(4,7), yaw=R.r(0,6.28), h=R.r(22,46)*sc;
     const ca=Math.cos(yaw),sa=Math.sin(yaw);
     const y0=terrainH(x,z)-2;
+    const span=n*9*sc;
+    // the parent mass behind the flutes
+    strataForm(B,x+sa*7*sc,z-ca*7*sc,y0,{levels:3,w:span*1.15,hTot:h*0.8,taper:0.72,
+      lean:{a:R.r(0,0.03),az:0},sides:8,jit:0.12,mute},R);
     for(let i=0;i<n;i++){
-      const off=(i-n/2)*R.r(7,10)*sc, dep=R.r(0,6)*sc, w=R.r(6,9)*sc, hh=h*R.r(0.75,1.05);
+      const off=(i-n/2)*R.r(7,9)*sc, dep=R.r(0,4)*sc, w=R.r(6,9)*sc;
+      const hh=h*(0.7+0.35*Math.sin(i/(n-1)*Math.PI))*R.r(0.9,1.05);   // arched crown line
       const bx=x+ca*off+sa*dep, bz=z+sa*off-ca*dep;
       const bot=[[bx-ca*w/2-sa*3,y0,bz-sa*w/2+ca*3],[bx+ca*w/2-sa*3,y0,bz+sa*w/2+ca*3],
                  [bx+ca*w/2+sa*3,y0,bz+sa*w/2-ca*3],[bx-ca*w/2+sa*3,y0,bz-sa*w/2-ca*3]];
-      const top=bot.map(p=>[p[0],y0+hh,p[2]]);
-      pushBlock(B,bot,top,bandFor(i%2?0.5:0.68,mute),bandFor(0.85,mute));
+      // flute crowns taper and lean back into the parent
+      const top=bot.map((p,pi)=>[lerp(p[0],bx+sa*2.5,0.45),y0+hh+(pi<2?0:R.r(-1.5,0)),
+        lerp(p[2],bz-ca*2.5,0.45)]);
+      pushBlock(B,bot,top,bandFor(i%2?0.5:0.66,mute),bandFor(0.85,mute));
     }
   },
   undercutShelf(B,x,z,sc,mute,R){
@@ -848,14 +930,19 @@ const ARCH={
       taper:0.6,lean:{a:0.03,az:0},sides:5,jit:0.18,mute},R);
   },
   brokenCaprock(B,x,z,sc,mute,R){
-    const yTop=strataForm(B,x,z,terrainH(x,z)-3,{levels:R.i(3,4),w:R.r(36,66)*sc,
+    // caprock chips sit ON the summit, snug and small — never cantilevered planks
+    const w0=R.r(36,66)*sc;
+    const yTop=strataForm(B,x,z,terrainH(x,z)-3,{levels:R.i(3,4),w:w0,
       hTot:R.r(22,40)*sc,taper:0.7,lean:{a:R.r(0,0.03),az:0},sides:7,jit:0.15,mute},R);
+    const topR=w0*0.5*0.7*0.55;   // stay well inside the tapered summit
     for(let k=0;k<R.i(2,3);k++){
-      const w=R.r(7,15)*sc, th=R.r(2,4)*sc, tilt=R.r(0.1,0.4);
-      const bx=x+R.r(-13,13)*sc, bz=z+R.r(-13,13)*sc, yaw=R.r(0,6.28);
+      const w=Math.min(R.r(5,10)*sc,topR*0.9), th=R.r(2,3.5)*sc, tilt=R.r(0.08,0.2);
+      const a2=R.r(0,TAU), rr2=R.r(0,Math.max(1,topR-w/2));
+      const bx=x+Math.cos(a2)*rr2, bz=z+Math.sin(a2)*rr2;
+      const yaw=R.r(0,6.28);
       const ca=Math.cos(yaw),sa=Math.sin(yaw);
       const bot=[[bx-ca*w/2,yTop-2,bz-sa*w/2],[bx+ca*w/2,yTop-2,bz+sa*w/2],
-                 [bx+ca*w/2+sa*6,yTop-2,bz+sa*w/2-ca*6],[bx-ca*w/2+sa*6,yTop-2,bz-sa*w/2-ca*6]];
+                 [bx+ca*w/2+sa*5,yTop-2,bz+sa*w/2-ca*5],[bx-ca*w/2+sa*5,yTop-2,bz-sa*w/2-ca*5]];
       const top=bot.map((p,i)=>[p[0],yTop-2+th+(i<2?tilt*w:0),p[2]]);
       pushBlock(B,bot,top,bandFor(0.5,mute).lerp(col(PAL.wine),0.25),bandFor(0.8,mute));
     }
@@ -872,14 +959,18 @@ const ARCH={
     }
   },
   strataRib(B,x,z,sc,mute,R){
+    // a tilted stratum breaking the surface — a wedge in the ground, never a beam
     const yaw=Math.atan2(gateFwd.x,-gateFwd.z)+0.3*SUN_SIDE+R.r(-0.08,0.08);
-    const len=R.r(45,90)*sc, ca=Math.cos(yaw),sa=Math.sin(yaw);
-    const y0=terrainH(x,z)-1.5, hh=R.r(3,8)*sc, th=R.r(3,6);
-    const bot=[[x-ca*len/2-sa*th,y0,z-sa*len/2+ca*th],[x+ca*len/2-sa*th,y0,z+sa*len/2+ca*th],
-               [x+ca*len/2+sa*th,y0,z+sa*len/2-ca*th],[x-ca*len/2+sa*th,y0,z-sa*len/2-ca*th]];
-    const lift=Math.tan(0.10)*len*0.5;
-    const top=bot.map((p,i)=>[p[0],y0+hh+((i===1||i===2)?lift:0),p[2]]);
+    const len=R.r(34,62)*sc, ca=Math.cos(yaw),sa=Math.sin(yaw);
+    const y0=terrainH(x,z)-1.5, hh=R.r(3,7)*sc, th=R.r(3,6);
+    const lift=Math.tan(0.06)*len*0.5;
+    const bot=[[x-ca*len/2-sa*th,y0,z-sa*len/2+ca*th],[x+ca*len/2-sa*th,y0+lift*0.7,z+sa*len/2+ca*th],
+               [x+ca*len/2+sa*th,y0+lift*0.7,z+sa*len/2-ca*th],[x-ca*len/2+sa*th,y0,z-sa*len/2-ca*th]];
+    const top=bot.map((p,i)=>[p[0],p[1]+hh+((i===1||i===2)?lift*0.3:0),p[2]]);
     pushBlock(B,bot,top,bandFor(0.5,mute).lerp(col(PAL.wine),0.15),bandFor(0.72,mute));
+    // the buried heel — half a second rib sunk beside it
+    strataForm(B,x-ca*len*0.3,z-sa*len*0.3,y0-1,{levels:1,w:R.r(8,14)*sc,hTot:R.r(1.5,3)*sc,
+      taper:0.7,lean:{a:0,az:0},sides:6,jit:0.14,mute},R);
   },
 };
 
@@ -1052,6 +1143,77 @@ function rootSnag(B,x,z,sc,R){
     const a=R.r(0,TAU), len=R.r(0.4,1.1)*sc;
     strut(B,x,y0,z,x+Math.cos(a)*len,y0+R.r(0.05,0.35)*sc,z+Math.sin(a)*len,0.06,0.06,bone);
   }
+}
+
+// ---------- the canyon wall facade: strata bands, varnish, jagged rim ----------
+function buildWall(B,rec,R){
+  const sgn=rec.side===0?1:-1;
+  const N=Math.max(4,Math.round((rec.sB-rec.sA)/11));
+  const nOff=R.r(0,90);
+  const rows=[0,0.16,0.42,0.72,1.0];        // band fractions of local height
+  const lean=[0,0.9,2.2,3.6,4.6];           // each band steps back into the cliff
+  const cols=[];
+  const P=[];                                // P[i] = {x,z,y0,top,varnish,conc}
+  for(let i=0;i<=N;i++){
+    const s=lerp(rec.sA,rec.sB,i/N);
+    const f=frameAtPrimary(clamp(s,0,SP_LEN-1),0);
+    const bulge=(fbm2(s/41+nOff,nOff*2.7)-0.5)*10;      // buttress out, alcove in
+    const d=rec.dist+bulge;
+    const x=f.x+f.lx*sgn*d, z=f.z+f.lz*sgn*d;
+    const endT=smooth(0,1.8,i)*smooth(N,N-1.8,i);       // ends sink into the ground
+    const rim=0.82+0.36*fbm2(s/23+nOff*3,nOff);          // jagged crest
+    P.push({x,z,f,y0:terrainH(x,z)-2,top:rec.h*rim*endT+2.5,
+      varnish:R.chance(0.13),conc:clamp(-bulge/8,0,1),lx:f.lx*sgn,lz:f.lz*sgn});
+  }
+  const rowCol=(k,conc)=>{
+    const c= k===0? mixc(PAL.wine,PAL.rust,0.5)
+          : k===1? col(PAL.rust)
+          : k===2? mixc(PAL.rust,PAL.sandstone,0.6)
+          : mixc(PAL.sandstone,PAL.cream,0.3);
+    if(TINT) c.lerp(TINT.c,TINT.a*1.4);
+    return c.lerp(col(PAL.wine),conc*0.3);   // alcoves keep their shadow
+  };
+  const at=(p,k,rowT)=>[p.x+p.lx*lean[k],p.y0+p.top*rowT,p.z+p.lz*lean[k]];
+  for(let i=0;i<N;i++){
+    const a=P[i], b=P[i+1];
+    for(let k=0;k<4;k++){
+      let cA=rowCol(k,(a.conc+b.conc)/2);
+      if(a.varnish) cA=cA.clone().lerp(col(PAL.wine),0.42);   // desert varnish streak
+      pushQuad(B,at(a,k,rows[k]),at(b,k,rows[k]),at(b,k+1,rows[k+1]),at(a,k+1,rows[k+1]),cA);
+      // thin ledge line between bands
+      if(k<3) pushQuad(B,at(a,k+1,rows[k+1]),at(b,k+1,rows[k+1]),
+        [b.x+b.lx*(lean[k+1]+0.7),b.y0+b.top*rows[k+1],b.z+b.lz*(lean[k+1]+0.7)],
+        [a.x+a.lx*(lean[k+1]+0.7),a.y0+a.top*rows[k+1],a.z+a.lz*(lean[k+1]+0.7)],
+        rowCol(k,0).lerp(col(PAL.cream),0.18));
+    }
+    // cap sloping back into the country
+    const capC=mixc(PAL.sandstone,PAL.rose,0.35); if(TINT) capC.lerp(TINT.c,TINT.a);
+    pushQuad(B,at(a,4,1),at(b,4,1),
+      [b.x+b.lx*14,b.y0+b.top*0.9,b.z+b.lz*14],
+      [a.x+a.lx*14,a.y0+a.top*0.9,a.z+a.lz*14],capC);
+  }
+  // seat the wall: talus boulders at the foot of the shadow band
+  for(let i=1;i<N;i+=2){
+    const p=P[i];
+    if(R.chance(0.6)) stoneSmall(B,p.x-p.lx*R.r(2,5),p.z-p.lz*R.r(2,5),R.r(0.7,1.6),R,
+      mixc(PAL.rust,PAL.wine,R.r(0.2,0.5)));
+  }
+}
+// a big static yucca rosette with a bloom stalk — the sentinel's cousin
+function rosetteStatic(B,x,z,sc,R){
+  const y0=terrainH(x,z)-0.05;
+  const c1=mixc(PAL.sage,PAL.cyan,R.r(0.2,0.5));
+  const c2=c1.clone().lerp(col(PAL.wine),0.3);
+  const n=R.i(10,14);
+  for(let i=0;i<n;i++){ const a=i/n*TAU+R.r(-0.2,0.2);
+    const len=R.r(0.8,1.4)*sc, ca=Math.cos(a),sa=Math.sin(a);
+    const tip=[x+ca*len*0.8,y0+len*0.9,z+sa*len*0.8];
+    pushTri(B,[x-sa*0.09*sc,y0,z+ca*0.09*sc],[x+sa*0.09*sc,y0,z-ca*0.09*sc],tip,R.chance(0.3)?c2:c1);
+  }
+  strut(B,x,y0+0.5*sc,z,x,y0+2.3*sc,z,0.05,0.05,mixc(PAL.wine,PAL.rust,0.4));
+  prismStriped(B,x,y0+2.3*sc,z,0.16*sc,0.05,0.5*sc,6,
+    mixc(PAL.cream,PAL.gold,0.4),mixc(PAL.cream,PAL.rose,0.4),null);
+  apron(B,x,z,0.7*sc,0,1,mixc(PAL.rust,PAL.wine,0.5));
 }
 
 // ---------- built-trace kits: the Relay Works vocabulary ----------
@@ -1508,6 +1670,23 @@ const GAUGES=[];
     GAUGES.push({x,z,seed:PLACE.i(0,1e9)});
   }
 }
+// roadside pipe spurs — the Relay Works' plumbing keeps the rider company
+const PIPE_RUNS=[];
+{
+  for(const chIdx of [1,4]){
+    const c=CHAPS[chIdx];
+    const sR0=SP(c.f0+PLACE.r(0.25,0.55)*(c.f1-c.f0));
+    const len=PLACE.r(80,140), side=PLACE.chance(0.5)?1:-1;
+    const rec={s0:sR0,len,side,lat:PLACE.r(9.6,11),seed:PLACE.i(0,1e9)};
+    let ok=true;
+    for(let s=rec.s0;s<=rec.s0+len;s+=14){
+      const f=frameAtPrimary(clamp(s,0,SP_LEN-1),0);
+      const x=f.x+f.lx*side*rec.lat, z=f.z+f.lz*side*rec.lat;
+      if(!corridorClear(x,z,0.5)||inPlaceZone(x,z,0.5)||inSlotZone(x,z,0.5)){ ok=false; break; }
+    }
+    if(ok) PIPE_RUNS.push(rec);
+  }
+}
 // the designed opening: a composed foreground relationship at the first pedal stroke
 const OPENING=[];
 {
@@ -1581,17 +1760,37 @@ const N_CHUNKS=Math.ceil((SP_LEN+220)/CHUNK_LEN);
 const chapterAtP=(sP)=>chapterAt(clamp(sP/SP_LEN,0,0.9999)*L_TOTAL);
 const TAL={ formations:{}, ground:{}, plants:{}, propKinds:{} };
 const tally=(m,k)=>{ m[k]=(m[k]||0)+1; };
+// each chapter owns a dominant silhouette family — variety between, unity within
 const ROCKS_NEAR={
-  0:['fracturedSlab','washTerrace','talusApron','faultFin','hoodoo'],
-  1:['washTerrace','talusApron','fracturedSlab','undercutShelf','hoodoo'],
-  2:['undercutShelf','washTerrace','flutedCliff','talusApron'],
-  2.5:['faultFin','fracturedSlab','strataRib','hoodoo'],          // Sunshelf arm
-  3:['flutedCliff','undercutShelf','layeredButtress','faultFin'],
-  4:['strataRib','strataRib','faultFin','fracturedSlab','talusApron','hoodoo'],
-  5:['fracturedSlab','faultFin','talusApron'],
-  6:['washTerrace','fracturedSlab','hoodoo','talusApron'],
+  0:['dome','slump','talusApron','dome','hoodoo','slump'],
+  1:['hoodoo','hoodoo','talusApron','undercutShelf','dome','slump'],
+  2:['undercutShelf','slump','flutedCliff','talusApron','undercutShelf'],
+  2.5:['dome','faultFin','strataRib','dome','spire'],              // Sunshelf arm
+  3:['flutedCliff','undercutShelf','layeredButtress','flutedCliff','slump'],
+  4:['strataRib','strataRib','faultFin','slump','talusApron','spire'],
+  5:['fracturedSlab','slump','talusApron'],
+  6:['dome','spire','hoodoo','talusApron','washTerrace'],
 };
-const ROCKS_MID=['steppedMesa','layeredButtress','brokenCaprock','faultFin','flutedCliff','washTerrace','hoodoo','steppedMesa'];
+const ROCKS_MID={
+  0:['steppedMesa','dome','brokenCaprock','dome','washTerrace','steppedMesa'],
+  1:['brokenCaprock','hoodoo','steppedMesa','layeredButtress','spire','dome'],
+  2:['steppedMesa','layeredButtress','flutedCliff','brokenCaprock','dome'],
+  3:['layeredButtress','flutedCliff','steppedMesa','brokenCaprock'],
+  4:['steppedMesa','faultFin','brokenCaprock','strataRib','steppedMesa','spire'],
+  5:['brokenCaprock','faultFin','steppedMesa'],
+  6:['spire','dome','steppedMesa','hoodoo','brokenCaprock','dome'],
+};
+// chapter tint — a quiet hue shift that keeps each act in its own key
+const CHAP_TINTS=[
+  {c:col(PAL.gold),a:0.06},        // first light: warm
+  {c:col(PAL.sage),a:0.05},        // the gardens: a green breath
+  {c:col(PAL.rose),a:0.05},        // the fork: dusty
+  {c:col(PAL.wine),a:0.09},        // the narrows: deep
+  {c:col(PAL.rust),a:0.07},        // the climb: iron
+  {c:col(PAL.gold),a:0.09},        // the shear: struck gold
+  {c:col(PAL.rose),a:0.08},        // the exhale: afterglow
+];
+let TINT=null;
 const chunkPlans=[];
 function planChunk(id){
   const s0=id*CHUNK_LEN, s1=Math.min(SP_LEN+219,(id+1)*CHUNK_LEN);
@@ -1620,14 +1819,27 @@ function planChunk(id){
     let table;
     if(near){
       table=(chap.idx===2&&p.arm===1)?ROCKS_NEAR[2.5]:ROCKS_NEAR[chap.idx];
-    } else table=ROCKS_MID;
+    } else table=ROCKS_MID[chap.idx];
     const type=g.pick(table);
     const sc=near? g.r(0.7,1.25) : g.r(0.9,2.0);
     const fr=footRadius(type,sc);
-    const hEst=(type==='steppedMesa'||type==='layeredButtress'||type==='brokenCaprock'||type==='flutedCliff')?38*sc:14*sc;
+    const hEst=(type==='steppedMesa'||type==='layeredButtress'||type==='brokenCaprock'||type==='flutedCliff')?38*sc:
+      (type==='spire'?26*sc:14*sc);
     if(!corridorClear(p.x,p.z,fr)) continue;
     if(inPlaceZone(p.x,p.z,fr)||inSlotZone(p.x,p.z,fr)||nearPool(p.x,p.z,fr)) continue;
     if(blocksVista(p.x,p.z,hEst)) continue;
+    // forward-sightline guard: no near mass may sit inside the road's own
+    // view corridor as seen from the approach — the way ahead stays readable
+    if(near&&fr>9){
+      let blocks=false;
+      for(const db of [45,85,130]){
+        const fb=frameAtPrimary(clamp(p.sP-db,0,SP_LEN),p.arm);
+        const latB=(p.x-fb.x)*fb.lx+(p.z-fb.z)*fb.lz;
+        const alongB=(p.x-fb.x)*fb.tx+(p.z-fb.z)*fb.tz;
+        if(alongB>15&&Math.abs(latB)<fr*0.7+8){ blocks=true; break; }
+      }
+      if(blocks) continue;
+    }
     recs.rocks.push({type,x:p.x,z:p.z,sc,seed:g.i(0,1e9),
       mute:clamp(Math.abs(p.lat)/2400,0,0.5)});
     tally(TAL.formations,type);
@@ -1637,8 +1849,8 @@ function planChunk(id){
       perchPts.push({x:p.x,y:ly,z:p.z,kind:'ledge'});
       ledges++;
     }
-    // the compression chapter builds its opposite wall
-    if(near&&chap.idx===3&&g.chance(0.7)){
+    // the compression chapter still gets an occasional accent opposite
+    if(near&&chap.idx===3&&g.chance(0.35)){
       const f=frameAtPrimary(p.sP,p.arm);
       const lat2=-p.side*g.r(19,30);
       const x2=f.x+f.lx*lat2, z2=f.z+f.lz*lat2;
@@ -1648,6 +1860,31 @@ function planChunk(id){
         recs.rocks.push({type:type2,x:x2,z:z2,sc:sc2,seed:g.i(0,1e9),mute:0});
         tally(TAL.formations,type2);
       }
+    }
+  }
+  // — the canyon walls themselves: continuous strata bands with designed gaps —
+  recs.walls=[];
+  for(const side of [0,1]){
+    let s=s0+g.r(0,36);
+    let guard2=0;
+    while(s<s1-46&&guard2++<12){
+      const fW=frameAtPrimary(clamp(s,0,SP_LEN-1),0);
+      const rgW=regionalInfo(fW.x,fW.z);
+      const amp=wallAmp[side][rgW.i], dist=wallDist[side][rgW.i];
+      if(amp<13||dist>72){ s+=g.r(50,90); continue; }
+      const segLen=Math.min(s1-14-s,g.r(70,150));
+      if(segLen<44){ s+=60; continue; }
+      const rec={t:'wall',side,sA:s,sB:s+segLen,h:clamp(amp*g.r(1.25,1.7),16,64),
+        dist:Math.max(22,dist+g.r(-4,8)),seed:g.i(0,1e9)};
+      let ok=true;
+      for(const ts of [0,0.5,1]){
+        const fs=frameAtPrimary(clamp(rec.sA+segLen*ts,0,SP_LEN-1),0);
+        const sg2=side===0?1:-1;
+        const wx=fs.x+fs.lx*sg2*rec.dist, wz=fs.z+fs.lz*sg2*rec.dist;
+        if(!corridorClear(wx,wz,7)||inPlaceZone(wx,wz,6)||inSlotZone(wx,wz,6)||blocksVista(wx,wz,rec.h)){ ok=false; break; }
+      }
+      if(ok){ recs.walls.push(rec); tally(TAL.formations,'canyonWall'); }
+      s+=segLen+g.r(26,72);   // the gap is composed too — light and sightline vent
     }
   }
   // — ground contact: talus, slabs, shale, roots —
@@ -1717,11 +1954,31 @@ function planChunk(id){
       perchPts.push({x:p.x,y:terrainH(p.x,p.z)+4.5*sc,z:p.z,kind:'cactus'});
     if(fam==='shrub'&&coverPts.length<340) coverPts.push({x:p.x,z:p.z});
   }
-  // spare cactus stream keeps chunk identity even when veg quota shifts
-  cc.f();
+  // — sentinel cadence: the near band must speak at riding speed —
+  { let s=s0+cc.r(20,70), sideT=(id%2===0)?1:-1;
+    let guard3=0;
+    while(s<s1-10&&guard3++<6){
+      const arm=inFork? (cc.chance(0.5)?0:1):0;
+      const f=frameAtPrimary(clamp(s,0,SP_LEN+200),arm);
+      const lat=sideT*cc.r(9.2,13);
+      const x=f.x+f.lx*lat, z=f.z+f.lz*lat;
+      const kind=cc.pick(['sentinelLantern','sentinelLantern','yuccaGrove','deadTall','hoodooSmall']);
+      const sc=kind==='sentinelLantern'?cc.r(1.4,1.8):cc.r(1.3,1.9);
+      let ex=!corridorClear(x,z,1.5)||inPlaceZone(x,z,1)||inSlotZone(x,z,1)||nearPool(x,z,1);
+      if(!ex) for(const e2 of vegExclude) if(Math.hypot(x-e2.x,z-e2.z)<e2.r){ex=true;break;}
+      if(!ex){
+        recs.plants.push({t:kind,x,z,sc,seed:cc.i(0,1e9),pr:0});
+        tally(TAL.plants,kind);
+        if(kind==='sentinelLantern'&&perchPts.length<400)
+          perchPts.push({x,y:terrainH(x,z)+5.5*sc,z,kind:'cactus'});
+      }
+      sideT=-sideT; s+=cc.r(75,140);
+    }
+  }
   let h=fnvInit();
   h=fnvStr(h,'c'+id);
   for(const r of recs.rocks){ h=fnvStr(h,r.type); h=fnvAdd(h,r.x); h=fnvAdd(h,r.z); h=fnvAdd(h,r.sc); }
+  for(const r of recs.walls){ h=fnvStr(h,'w'+r.side); h=fnvAdd(h,r.sA); h=fnvAdd(h,r.sB); h=fnvAdd(h,r.h); h=fnvAdd(h,r.dist); }
   for(const r of recs.ground){ h=fnvStr(h,r.t); h=fnvAdd(h,r.x); h=fnvAdd(h,r.z); }
   for(const r of recs.plants){ h=fnvStr(h,r.t); h=fnvAdd(h,r.x); h=fnvAdd(h,r.z); }
   for(const r of recs.inst){ h=fnvStr(h,r.t); h=fnvAdd(h,r.x); h=fnvAdd(h,r.z); }
@@ -1929,11 +2186,19 @@ const MEASURE={ minTerrainClear:1e9, terrainIntrusions:0, propIntrusions:0,
   checkRibbon(FRAMES.right,S_JOIN_R,S_FORK_R);
   // every planned object against the corridor
   const FOOT_KIND={stone:0.6,slab:0.9,shale:0.5,root:0.7,lantern:0.6,pads:0.8,barrel:0.5,
-    cholla:0.8,dead:0.7,shrub:0.7,whip:0.9,yucca:0.7,bunch:0.4};
+    cholla:0.8,dead:0.7,shrub:0.7,whip:0.9,yucca:0.7,bunch:0.4,
+    sentinelLantern:0.9,yuccaGrove:1.7,deadTall:1.0,hoodooSmall:2.6};
   const checkP=(x,z,fr)=>{ const ri=routeInfo(x,z);
     if(ri.d<ROAD_HW+fr-0.05) MEASURE.propIntrusions++; };
   for(const cp of chunkPlans){
     for(const r of cp.recs.rocks) checkP(r.x,r.z,footRadius(r.type,r.sc)*0.5);
+    for(const r of (cp.recs.walls||[])){
+      const sg2=r.side===0?1:-1;
+      for(const ts of [0,0.25,0.5,0.75,1]){
+        const fs=frameAtPrimary(clamp(lerp(r.sA,r.sB,ts),0,SP_LEN-1),0);
+        checkP(fs.x+fs.lx*sg2*r.dist,fs.z+fs.lz*sg2*r.dist,7);
+      }
+    }
     for(const r of cp.recs.ground) checkP(r.x,r.z,(FOOT_KIND[r.t]||0.6)*r.sc);
     for(const r of cp.recs.plants) checkP(r.x,r.z,(FOOT_KIND[r.t]||0.6)*r.sc);
     for(const r of cp.recs.inst) checkP(r.x,r.z,(FOOT_KIND[r.t]||0.5)*r.sc);
@@ -2593,6 +2858,23 @@ const furnB=Buf();
     apron(furnB,gr.x,gr.z,0.5,0,1,K.shadow());
     tally(TAL.propKinds,'flowGauge');
   }
+  // roadside pipe spurs
+  for(const pr2 of PIPE_RUNS){
+    const R=makeStream('pipes:'+pr2.seed);
+    const pts=[];
+    for(let s=pr2.s0;s<=pr2.s0+pr2.len;s+=7){
+      const f=frameAtPrimary(clamp(s,0,SP_LEN-1),0);
+      const x=f.x+f.lx*pr2.side*pr2.lat, z=f.z+f.lz*pr2.side*pr2.lat;
+      pts.push([x,terrainH(x,z)+0.55+0.1*Math.sin(s*0.3),z]);
+      tally(TAL.propKinds,'pipeSpur');
+    }
+    kitPipe(furnB,pts,0.08,R);
+    // valve stand at each end
+    for(const e2 of [pts[0],pts[pts.length-1]]){
+      strut(furnB,e2[0],e2[1]-0.55,e2[2],e2[0],e2[1]+0.3,e2[2],0.06,0.06,K.paintCyan());
+      prismStriped(furnB,e2[0],e2[1]+0.3,e2[2],0.13,0.13,0.08,6,K.paintCream(),K.paintCream(),K.paintCream());
+    }
+  }
   // the opening kit — first-frame foreground truth
   for(const o of OPENING){
     const R=makeStream('open:'+o.seed);
@@ -2828,12 +3110,18 @@ function buildChunkMeshes(cp){
       meshes.push(mesh);
     }
   }
-  // — static merge: geology, ground contact, cacti, shrubs —
+  // — static merge: geology, walls, ground contact, cacti, shrubs —
   {
     const B=Buf();
+    TINT=CHAP_TINTS[chapterAtP(clamp((cp.s0+cp.s1)/2,0,SP_LEN-1)).idx];
     for(const r of cp.recs.rocks){
       const R=makeStream('rock:'+r.seed);
       ARCH[r.type](B,r.x,r.z,r.sc,r.mute,R);
+      realized.rocks++;
+    }
+    for(const r of (cp.recs.walls||[])){
+      const R=makeStream('wall:'+r.seed);
+      buildWall(B,r,R);
       realized.rocks++;
     }
     for(const r of cp.recs.ground){
@@ -2851,15 +3139,24 @@ function buildChunkMeshes(cp){
       const R=makeStream('pl:'+r.seed);
       switch(r.t){
         case 'lantern': cactusLantern(B,r.x,r.z,r.sc,R); break;
+        case 'sentinelLantern': cactusLantern(B,r.x,r.z,r.sc,R,{scar:R.chance(0.2)}); break;
         case 'pads': cactusPads(B,r.x,r.z,r.sc,R); break;
         case 'barrel': cactusBarrel(B,r.x,r.z,r.sc,R); break;
         case 'cholla': cactusCholla(B,r.x,r.z,r.sc,R); break;
         case 'dead': cactusDead(B,r.x,r.z,r.sc,R); break;
+        case 'deadTall': cactusDead(B,r.x,r.z,r.sc*1.4,R); break;
         case 'shrub': shrubDome(B,r.x,r.z,r.sc,R); break;
         case 'whip': whipbrush(B,r.x,r.z,r.sc,R); break;
+        case 'yuccaGrove':
+          rosetteStatic(B,r.x,r.z,r.sc,R);
+          rosetteStatic(B,r.x+R.r(1.2,2.2),r.z+R.r(-1,1),r.sc*0.75,R);
+          rosetteStatic(B,r.x+R.r(-2,-1),r.z+R.r(0.8,1.8),r.sc*0.6,R);
+          break;
+        case 'hoodooSmall': ARCH.hoodoo(B,r.x,r.z,r.sc*0.4,0,R); break;
       }
       realized.plants++;
     }
+    TINT=null;
     if(B.p.length){
       const mesh=new THREE.Mesh(bufGeo(B),rockMatShadow);
       mesh.castShadow=true; mesh.receiveShadow=true;
@@ -3252,46 +3549,46 @@ function resetLife(){
     const st=makeStream('liz:'+l.seed);
     ACTORS.small.push({i:si++,kind:'lizard',home:l,st,x:l.x,z:l.z,tx:l.x,tz:l.z,
       mode:'rest',t:st.r(0,4),dur:st.r(2,8),yaw:st.r(0,TAU),
-      col:mixc(PAL.rust,PAL.wine,st.r(0.2,0.6)),sc:st.r(0.7,1.05)});
+      col:mixc(PAL.rust,PAL.wine,st.r(0.2,0.6)),sc:st.r(0.95,1.4)});
   }
   for(const p of ANIMALS.packrats){
     const st=makeStream('rat:'+p.seed);
     ACTORS.small.push({i:si++,kind:'packrat',home:p,st,x:p.x,z:p.z,tx:p.x,tz:p.z,
       mode:'rest',t:0,dur:st.r(4,10),yaw:st.r(0,TAU),
-      col:mixc(PAL.wine,PAL.rose,st.r(0.2,0.4)),sc:st.r(0.85,1.1)});
+      col:mixc(PAL.wine,PAL.rose,st.r(0.2,0.4)),sc:st.r(1.1,1.35)});
   }
   { const q=ANIMALS.quail, st=makeStream('quail:'+q.seed);
     for(let k=0;k<q.n;k++){
       ACTORS.small.push({i:si++,kind:'quail',home:q,st:makeStream('quail:'+q.seed+':'+k),
         x:q.x+st.r(-3,3),z:q.z+st.r(-3,3),tx:q.x,tz:q.z,cx:q.x,cz:q.z,
         mode:'peck',t:st.r(0,3),dur:st.r(2,5),yaw:st.r(0,TAU),flying:false,fh:0,
-        col:mixc(PAL.sage,PAL.wine,0.55),sc:0.95}); } }
+        col:mixc(PAL.sage,PAL.wine,0.55),sc:1.3}); } }
   // ravens perch-hop; vultures ride the high line
   for(let i=0;i<ANIMALS.ravens.length;i++){
     const r=ANIMALS.ravens[i], st=makeStream('raven:'+r.seed);
     const p0=perchPts.length?perchPts[st.i(0,perchPts.length-1)]:{x:gateC.x,y:gateC.y+40,z:gateC.z};
     ACTORS.birds.push({i,kind:'raven',st,perch:p0,mode:'perched',t:st.r(0,r.dwell),
-      dwell:r.dwell,from:null,to:null,dur:1,x:p0.x,y:p0.y,z:p0.z,yaw:st.r(0,TAU),sc:1.05});
+      dwell:r.dwell,from:null,to:null,dur:1,x:p0.x,y:p0.y,z:p0.z,yaw:st.r(0,TAU),sc:0.85});
   }
   for(let i=0;i<ANIMALS.vultures.length;i++){
     const v=ANIMALS.vultures[i];
     ACTORS.birds.push({i:ANIMALS.ravens.length+i,kind:'vulture',v,rMul:1,rTgt:1,
-      x:v.x,y:v.y,z:v.z,yaw:0,sc:1.7});
+      x:v.x,y:v.y,z:v.z,yaw:0,sc:1.4});
   }
   for(let i=0;i<ANIMALS.bighorn.length;i++){
     const b=ANIMALS.bighorn[i], st=makeStream('horn:'+b.seed);
     ACTORS.horns.push({i,b,st,u:b.off,dir:1,mode:'walk',t:0,dur:st.r(6,14),
-      col:mixc(PAL.sandstone,PAL.rose,st.r(0.2,0.5)),sc:st.r(0.9,1.15)});
+      col:mixc(PAL.sandstone,PAL.rose,st.r(0.2,0.5)),sc:st.r(1.15,1.45)});
   }
   for(let i=0;i<ANIMALS.rabbits.length;i++){
     const r=ANIMALS.rabbits[i], c2=CROSSINGS[r.cross];
     ACTORS.hops.push({i,kind:'rabbit',cross:c2,dur:r.dur,mode:'wait',t:0,
-      x:c2.x0,z:c2.z0,yaw:0,col:mixc(PAL.rose,PAL.sandstone,0.5),sc:1});
+      x:c2.x0,z:c2.z0,yaw:0,col:mixc(PAL.rose,PAL.sandstone,0.5),sc:1.4});
   }
   if(ANIMALS.fox){
     const st=makeStream('fox:'+ANIMALS.fox.seed);
     ACTORS.hops.push({i:ACTORS.hops.length,kind:'fox',fox:ANIMALS.fox,st,mode:'hidden',t:0,
-      x:0,z:0,yaw:0,col:mixc(PAL.rust,PAL.rose,0.4),sc:1.35});
+      x:0,z:0,yaw:0,col:mixc(PAL.rust,PAL.rose,0.4),sc:1.7});
   }
   for(const a of ACTORS.small) smallMesh.setColorAt(a.i,a.col);
   for(const a of ACTORS.horns) hornMesh.setColorAt(a.i,a.col);
