@@ -3226,7 +3226,7 @@ function safeSpot(cx,cz,r,st){
     const x=cx+Math.cos(a)*d, z=cz+Math.sin(a)*d;
     if(routeInfo(x,z).d>=CLEAR_D+0.3) return {x,z};
   }
-  return {x:cx,z:cz};
+  return pushOut({x:cx,z:cz},0.7);   // the fallback must be corridor-safe too
 }
 const ACTORS={ small:[], birds:[], horns:[], hops:[] };
 let LIFE_RT=null;
@@ -3413,12 +3413,15 @@ function updateAnimals(wT,dt,riderS,riderPos){
     }
   }
   hopMesh.instanceMatrix.needsUpdate=true;
-  // measured life-path sovereignty — rotating sample of live actors
+  // measured life-path sovereignty — rotating sample of live GROUND actors
+  // (a flushed covey crossing in the air is flight, not a ground path)
   const pool=ACTORS.small;
   if(pool.length){
     const a=pool[lifeCheckCursor%pool.length]; lifeCheckCursor++;
-    const ri=routeInfo(a.x,a.z);
-    if(ri.d<CLEAR_D-0.4) MEASURE.lifePathIntrusions++;
+    if(!(a.kind==='quail'&&a.flying)){
+      const ri=routeInfo(a.x,a.z);
+      if(ri.d<CLEAR_D-0.4) MEASURE.lifePathIntrusions++;
+    }
   }
 }
 
