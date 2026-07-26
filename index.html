@@ -3036,20 +3036,26 @@ function makePointsSystem(name,count,color,size,alphaMax,init,step){
   dustTotal+=count;
   return sys;
 }
-// spawn helper: clamp a particle's straight run so it never crosses the corridor
+// spawn helper: clamp a particle's straight run so it never crosses the corridor.
+// Samples every ~5 m of the path — the corridor is 10.8 m wide, so no straight
+// segment can slip through between consecutive clear samples.
 function clampSpan(x,y,z,dx,dz,span){
   let ok=span;
-  for(let t=0.2;t<=1.001;t+=0.2){
+  const n=Math.max(5,Math.ceil(span/5));
+  for(let i=1;i<=n;i++){
+    const t=i/n;
     const px=x+dx*span*t, pz=z+dz*span*t;
     const ri=routeInfo(px,pz);
-    if(ri.d<ROAD_HW+0.6&&y<ri.h+4.5){ ok=span*(t-0.2); break; }
+    if(ri.d<ROAD_HW+1.3&&y<ri.h+4.5){ ok=span*((i-1)/n); break; }
   }
   return Math.max(ok,4);
 }
 function spawnFromPlan(sys,i,rec,vScale,vertical){
   const st=sys.st;
   const jx=DUST_RT.r(-3,3), jz=DUST_RT.r(-3,3);
-  const x=rec.x+jx, y=rec.y+DUST_RT.r(-0.5,1.5), z=rec.z+jz;
+  let x=rec.x+jx, z=rec.z+jz;
+  const y=rec.y+DUST_RT.r(-0.5,1.5);
+  if(routeInfo(x,z).d<ROAD_HW+1.3){ x=rec.x; z=rec.z; }   // jitter never enters the corridor
   const spd=rec.spd*vScale;
   const span=clampSpan(x,y,z,windDir.x,windDir.z,rec.span);
   st.p[i*3]=x; st.p[i*3+1]=y; st.p[i*3+2]=z;
