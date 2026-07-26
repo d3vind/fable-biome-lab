@@ -3892,10 +3892,11 @@ renderer.setAnimationLoop(()=>{
       rideState.branch=pick;
     }
     const L_end=FRAMES[rideState.branch].len;
-    if(rideState.s>L_end-44){
+    if(rideState.s>L_end-44&&!rideState.ended){
+      // ease down but always crawl the last metres — the overlook must be reached
       rideState.vTarget=Math.max(0,rideState.vTarget-7*dt);
-      rideState.v=Math.min(rideState.v,Math.max(0.4,(L_end-40-rideState.s)*0.4));
-      if(rideState.s>L_end-40.5&&rideState.v<0.5){ rideState.v=0; rideState.ended=true; }
+      rideState.v=clamp(Math.max(rideState.v,0.45),0,Math.max(0.3,(L_end-40-rideState.s)*0.5+0.05));
+      if(rideState.s>=L_end-40.6){ rideState.v=0; rideState.ended=true; }
     }
     rideState.s=clamp(rideState.s,0,FRAMES[rideState.branch].len-40);
   }
