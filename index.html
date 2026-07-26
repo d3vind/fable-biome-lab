@@ -1853,10 +1853,12 @@ function parcelCellsFree(x0,z0,x1,z1){
       if(PARCEL_GRID.has(cx*100000+cz)) return false;
   return true;
 }
-function parcelCellsTake(x0,z0,x1,z1){
+function parcelCellsTake(C,x0,z0,x1,z1){
   for(let cx=Math.floor(x0/8);cx<=Math.floor(x1/8);cx++)
-    for(let cz=Math.floor(z0/8);cz<=Math.floor(z1/8);cz++)
-      PARCEL_GRID.add(cx*100000+cz);
+    for(let cz=Math.floor(z0/8);cz<=Math.floor(z1/8);cz++){
+      const k=cx*100000+cz;
+      PARCEL_GRID.add(k); C.cells.push(k);       // released again on dispose
+    }
 }
 // road spans owned by the fork assembly (chunks skip road/kerb here)
 const ROAD_EXCL={ arcade:[], ropewalk:[] };
@@ -1869,7 +1871,7 @@ function newChunkCtx(key, chKey, branch){
     glow:[], streak:[], sign:[], flow:[], steam:[], cableSpans:[], water:[],
     signAnchors:[], ratPts:[], heronPts:[],
     rs:chunkStream('struct',key), rv:chunkStream('vis',key), ra:chunkStream('amb',key),
-    hash:Hasher(), group:new THREE.Group(), meshes:[], gy:0, steamN:0 };
+    hash:Hasher(), group:new THREE.Group(), meshes:[], cells:[], gy:0, steamN:0 };
   C.hash.s(key);
   return C;
 }
@@ -1972,10 +1974,18 @@ function groundKit(C,F,d0,d1){
     return;
   }
   if(chK==='slack'){
-    // harbor quay: buildings hold one side; the basin takes the other
+    // harbor quay: buildings hold one side; the basin takes the other —
+    // and the basin carries dim lamplight pools, not a black nothing
     const side=-PLAN.canalSide;
     const mid=getFrame(F,(d0+d1)/2);
-    C.water.push({ x:mid.x-mid.lx*side*230, z:mid.z-mid.lz*side*230, w:640, h:d1-d0+240, y:-1.5, glows:[] });
+    const wGlows=[];
+    for(let d=d0+18; d<d1 && wGlows.length<5; d+=52){
+      const fg=getFrame(F,d);
+      const off=14+rv.r(0,26);
+      wGlows.push({x:fg.x-fg.lx*side*off, z:fg.z-fg.lz*side*off, w:7+rv.r(0,5), c:scale(col(HEX.amb),0.22+rv.r(0,0.1))});
+    }
+    wGlows.push({x:mid.x-mid.lx*side*70, z:mid.z-mid.lz*side*70, w:13, c:scale(col(HEX.teal),0.14)});
+    C.water.push({ x:mid.x-mid.lx*side*230, z:mid.z-mid.lz*side*230, w:640, h:d1-d0+240, y:-1.5, glows:wGlows });
     CENSUS.waterFeatures++;
     for(let d=d0;d<d1;d+=6){
       const f=frameCopy(F,d), f2=frameCopy(F,Math.min(F.LEN-1,d+6));
@@ -2148,7 +2158,7 @@ function realizeNear(C,F,idx){
   if(!water){
     let d=d0+rs.r(4,14);
     while(d<d1-6){
-      if(d>F.LEN-160) break;                     // the arrival keeps its breathing room
+      if(d>F.LEN-60) break;                      // only the landing itself stays open
       const f=getFrame(F,d);
       const diag=Math.min(Math.abs(f.tx),Math.abs(f.tz))>0.42;
       const elevated=f.y>2.9;
@@ -2171,7 +2181,7 @@ function realizeNear(C,F,idx){
         for(const [qx,qz] of [[r.x0,r.z0],[r.x1,r.z0],[r.x0,r.z1],[r.x1,r.z1],[(r.x0+r.x1)/2,(r.z0+r.z1)/2]])
           if(!corridorClear(qx,qz,7.7,0,elevated?2.5:99)){ ok=false; break; }
         if(ok&&parcelCellsFree(r.x0,r.z0,r.x1,r.z1)){
-          parcelCellsTake(r.x0,r.z0,r.x1,r.z1);
+          parcelCellsTake(C,r.x0,r.z0,r.x1,r.z1);
           C.gy = elevated ? 0 : Math.max(0,f.y-0.02);
           const fam=pickFamily(C,rs);
           const st=newStyle(C);
@@ -2187,7 +2197,7 @@ function realizeNear(C,F,idx){
             const r2= alongX? {x0:px2-w2/2,z0:pz2-dep2/2,x1:px2+w2/2,z1:pz2+dep2/2}
                             : {x0:px2-dep2/2,z0:pz2-w2/2,x1:px2+dep2/2,z1:pz2+w2/2};
             if(parcelCellsFree(r2.x0,r2.z0,r2.x1,r2.z1)&&corridorClear((r2.x0+r2.x1)/2,(r2.z0+r2.z1)/2,9.4,0,99)){
-              parcelCellsTake(r2.x0,r2.z0,r2.x1,r2.z1);
+              parcelCellsTake(C,r2.x0,r2.z0,r2.x1,r2.z1);
               C.gy = 0;
               const fam2=pickFamily(C,rs);
               const st2=newStyle(C); st2.hMul*=rs.r(1.0,1.4);
@@ -2240,12 +2250,17 @@ function realizeNear(C,F,idx){
     const f=getFrame(F,dd);
     const side=((Math.floor((dd-16)/21)%2)*2-1);
     if(C.chKey==='longwater'||(C.chKey==='ninegates'&&f.y<6)){
+      // the last stretch before the gates turns teal: a runway of guide
+      // lights converging on the threshold ahead
+      const gatesStart=spanOf(C.branch,'ninegates').start;
+      const guide=dd>gatesStart-340;
+      const gc=guide?scale(col(HEX.teal),0.7):scale(col(HEX.amb),0.8);
       for(const s of [-1,1]){
         obox(C.furn,f.x+f.lx*s*4.05,f.y+0.05,f.z+f.lz*s*4.05,0.2,0.95,0.2,0,col(0x241A28));
-        glowC(C,f.x+f.lx*s*4.05,f.y+1.34,f.z+f.lz*s*4.05,0.4,scale(col(HEX.amb),0.8),0,rv.f(),0);
+        glowC(C,f.x+f.lx*s*4.05,f.y+1.34,f.z+f.lz*s*4.05,0.4,gc,0,rv.f(),guide?0.35:0);
         CENSUS.props.bollard++;
       }
-      streakC(C,f.x,f.y+0.10,f.z,Math.atan2(-f.tx,-f.tz),10,2.6,scale(col(HEX.amb),0.5),0,rv.f(),0.5);
+      streakC(C,f.x,f.y+0.10,f.z,Math.atan2(-f.tx,-f.tz),10,2.6,scale(gc,0.65),0,rv.f(),0.5);
       continue;
     }
     if(f.shel>0.5||Math.abs(dd-gd)<44) continue;          // deck / hall light takes over
@@ -2468,6 +2483,9 @@ function makeCableMesh(spans,sphere){
   return new THREE.LineSegments(g,cableMat);
 }
 const ACTIVE_RATPTS=[], ACTIVE_HERONS=[];
+// each chunk's content hash counts once, ever: a chunk rebuilt after a
+// restart re-produces the identical content and must not toggle the hash
+const CHUNK_HASHES=new Map();
 function finalizeChunk(C){
   const sphere=chunkSphere(C);
   const add=(m)=>{ if(!m) return; C.meshes.push(m); C.group.add(m); staticMeshes.push(m); };
@@ -2496,7 +2514,11 @@ function finalizeChunk(C){
   scene.add(C.group);
   for(const rp2 of C.ratPts) ACTIVE_RATPTS.push({...rp2, state:0, t:0, chunk:C.key});
   for(const hp of C.heronPts) ACTIVE_HERONS.push({...hp, state:0, t:0, chunk:C.key});
-  REALIZED_HASH=(REALIZED_HASH ^ C.hash.raw())>>>0;
+  if(!CHUNK_HASHES.has(C.key)){
+    const h=C.hash.raw();
+    CHUNK_HASHES.set(C.key,h);
+    REALIZED_HASH=(REALIZED_HASH ^ h)>>>0;
+  }
   CENSUS.chunksBuilt++;
   C.finalized=true;
 }
@@ -2510,8 +2532,11 @@ function disposeChunk(key){
        &&m.material!==cableMat) m.material.dispose();
   }
   scene.remove(C.group);
+  for(const k of C.cells) PARCEL_GRID.delete(k);   // a rebuild re-takes them identically
   for(let i=ACTIVE_RATPTS.length-1;i>=0;i--) if(ACTIVE_RATPTS[i].chunk===key) ACTIVE_RATPTS.splice(i,1);
   for(let i=ACTIVE_HERONS.length-1;i>=0;i--) if(ACTIVE_HERONS[i].chunk===key) ACTIVE_HERONS.splice(i,1);
+  for(let i=DYN_LM.length-1;i>=0;i--) if(DYN_LM[i].chunk===key) DYN_LM.splice(i,1);
+  if(key==='lm:marrow') MARROW=null;
   CHUNKS.delete(key);
   CENSUS.chunksDisposed++;
 }
@@ -2838,7 +2863,7 @@ function lmGullet(C){
     wheelG.position.set(gx+f.lx*s*1.4,f.y+3.4,gz+f.lz*s*1.4);
     C.group.add(wheelG);
     glowC(C,gx,f.y+3.4,gz,1.1,scale(col(HEX.ora),0.7),1,rv.f(),0);
-    DYN_LM.push({ update:(dt,ambT)=>{ spokes.rotation.z=ambT*0.9; wm.rotation.y=ambT*0.9; } });
+    DYN_LM.push({ chunk:C.key, update:(dt,ambT)=>{ spokes.rotation.z=ambT*0.9; wm.rotation.y=ambT*0.9; } });
   }
   C.sign.push({x:getFrame(F,d0).x-getFrame(F,d0).lx*5.1,y:getFrame(F,d0).y+6.8,z:getFrame(F,d0).z-getFrame(F,d0).lz*5.1,
                yaw:Math.atan2(-getFrame(F,d0).tx,-getFrame(F,d0).tz),sx:2.2,sy:2.2,cell:CELL_AUTH,c:scale(col(HEX.ora),1.0),mode:0,phase:rv.f()});
@@ -2899,6 +2924,26 @@ function lmNineGates(C){
     pAntenna(C,px,27.2,pz,4.6,steelC);
     glowC(C,px,28.6,pz,0.5,scale(col(HEX.rose),0.9),3,rv.f(),1);
   }
+  // the announcement: signal masts over the wall and a fog-proof aura,
+  // so the threshold declares itself from a kilometre down the causeway
+  // instead of resolving out of the lamps at the last moment
+  {
+    for(const tm of [-0.40,-0.15,0.15,0.40]){
+      const mx=f.x+perp.x*total*tm, mz=f.z+perp.z*total*tm;
+      obox(C.furn,mx,19.0,mz,0.85,13.4,0.85,yaw,steelC);
+      obox(C.furn,mx,29.6,mz,3.0,0.5,0.5,yaw,scale(steelC,1.25));
+      strutB(C.furn,mx+perp.x*1.3,19.4,mz+perp.z*1.3,mx,31.0,mz,0.09,scale(steelC,0.8));
+      strutB(C.furn,mx-perp.x*1.3,19.4,mz-perp.z*1.3,mx,31.0,mz,0.09,scale(steelC,0.8));
+      glowC(C,mx,32.6,mz,0.95,scale(col(HEX.teal),1.0),0,rv.f(),1);
+      glowC(C,mx,29.3,mz,0.45,scale(col(HEX.amb),0.65),2,rv.f(),1);
+    }
+    // the aura: the Raincatcher trick — broad dim glows hung in the air
+    // over the crest, an amber-teal bloom that reads as a destination
+    glowC(C,f.x,17.5,f.z,6.4,scale(col(HEX.teal),0.32),0,rv.f(),1);
+    glowC(C,f.x+perp.x*24,20.5,f.z+perp.z*24,4.6,scale(col(HEX.amb),0.30),0,rv.f(),1);
+    glowC(C,f.x-perp.x*28,15.5,f.z-perp.z*28,3.6,scale(col(HEX.amb),0.26),0,rv.f(),1);
+    glowC(C,f.x+perp.x*6,23.5,f.z+perp.z*6,3.4,scale(col(HEX.vio),0.30),0,rv.f(),1);
+  }
   // the moving leaf: one bay breathes on the ambient clock
   {
     const off=(moveBay-N/2+0.5)*BAY;
@@ -2906,7 +2951,7 @@ function lmNineGates(C){
     const leaf=new THREE.Mesh(new THREE.BoxGeometry(BAY-4.8,7.2,1.1),new THREE.MeshLambertMaterial({color:steelC}));
     leaf.rotation.y=yaw;
     C.group.add(leaf);
-    DYN_LM.push({ update:(dt,ambT)=>{
+    DYN_LM.push({ chunk:C.key, update:(dt,ambT)=>{
       const gc=(ambT/74+0.2)%1;
       const g=gc<0.36?smooth01(gc/0.36):gc<0.55?1:gc<0.86?1-smooth01((gc-0.55)/0.31):0;
       leaf.position.set(gx,1.9+g*5.4,gz);
@@ -2953,7 +2998,7 @@ function lmNineGates(C){
     // crane trolley on the gallery roof
     const trolley=new THREE.Mesh(new THREE.BoxGeometry(2.6,1.4,2.0),new THREE.MeshLambertMaterial({color:col(0x2C1F42)}));
     C.group.add(trolley);
-    DYN_LM.push({ update:(dt,ambT)=>{
+    DYN_LM.push({ chunk:C.key, update:(dt,ambT)=>{
       const u=Math.sin(ambT*0.05)*0.5+0.5;
       const fd=getFrame(F,g0+(g1-g0)*u);
       trolley.position.set(fd.x,fd.y+9.0,fd.z);
@@ -2973,14 +3018,21 @@ function lmHarbor(C){
   const dir={x:f.tx, z:f.tz};
   const side=-PLAN.canalSide;
   const timberC=col(0x241A30), strC=col(0x241A38);
-  // quay edge along the last stretch, water on the open side
+  // quay edge along the last stretch, water on the open side — the wall,
+  // a pale stone lip you can read as a line, and lit bollards walking it
   for(let d=F.LEN-260; d<F.LEN-6; d+=10){
     const fq=frameCopy(F,d), fq2=frameCopy(F,Math.min(F.LEN-1,d+10));
     const s=-side;   // water side
     face(C.furn,[[fq.x+fq.lx*s*6.4,fq.y-2.4,fq.z+fq.lz*s*6.4],[fq2.x+fq2.lx*s*6.4,fq2.y-2.4,fq2.z+fq2.lz*s*6.4],
                [fq2.x+fq2.lx*s*6.4,fq2.y+0.16,fq2.z+fq2.lz*s*6.4],[fq.x+fq.lx*s*6.4,fq.y+0.16,fq.z+fq.lz*s*6.4]],
                [fq.lx*s,0,fq.lz*s],varyR(col(0x1C1532),0.08,rv),null,0,null,null);
-    if(Math.floor(d/10)%3===0) pBollard(C,fq.x+fq.lx*s*5.9,fq.y+0.16,fq.z+fq.lz*s*5.9,col(0x241A28),false);
+    face(C.furn,[[fq.x+fq.lx*s*5.7,fq.y+0.22,fq.z+fq.lz*s*5.7],[fq2.x+fq2.lx*s*5.7,fq2.y+0.22,fq2.z+fq2.lz*s*5.7],
+               [fq2.x+fq2.lx*s*6.44,fq2.y+0.22,fq2.z+fq2.lz*s*6.44],[fq.x+fq.lx*s*6.44,fq.y+0.22,fq.z+fq.lz*s*6.44]],
+               [0,1,0],varyR(col(0x352A48),0.09,rv),null,0,null,null);
+    if(Math.floor(d/10)%3===0){
+      pBollard(C,fq.x+fq.lx*s*5.9,fq.y+0.16,fq.z+fq.lz*s*5.9,col(0x241A28),false);
+      if(Math.floor(d/10)%6===0) glowC(C,fq.x+fq.lx*s*5.9,fq.y+1.02,fq.z+fq.lz*s*5.9,0.24,scale(col(HEX.amb),0.5),0,rv.f(),0.25);
+    }
   }
   // the working quay: sheds, a crane, boats — a place, not a prop
   {
@@ -2992,7 +3044,7 @@ function lmHarbor(C){
       obox(C.fac,bx2+Math.cos(byaw)*(-side)*(tw/2-0.05),fq.y,bz2-Math.sin(byaw)*(-side)*(tw/2-0.05),0.3,3.6,3.6,byaw,scale(col(0x1B1030),0.85),{kind:K_DOOR,inf:[2,2,0,0],tint:BLACK});
       obox(C.fac,bx2,fq.y+2.4,bz2+Math.cos(byaw)*2.9,1.6,1.2,0.25,byaw,scale(col(0x1B1030),0.9),{kind:K_WIN,inf:[1.4,1.1,0.9,rv.f()*100],tint:scale(col(HEX.amb),0.7)});
       glowC(C,bx2,fq.y+4.9,bz2,0.35,scale(col(HEX.amb),0.55),2,rv.f(),0);
-      parcelCellsTake(bx2-5,bz2-5,bx2+5,bz2+5);
+      parcelCellsTake(C,bx2-5,bz2-5,bx2+5,bz2+5);
     }
     // dockside crane, still for the night, hook swaying just barely
     const fq=getFrame(F,F.LEN-70);
@@ -3002,6 +3054,84 @@ function lmHarbor(C){
     strutB(C.furn,cx2,f.y+9.4,cz2,cx2+fq.lx*side*2.6,f.y+8.2,cz2+fq.lz*side*2.6,0.3,col(0x1B1230));
     strutB(C.furn,cx2-fq.lx*side*5.6,f.y+7.75,cz2-fq.lz*side*5.6,cx2-fq.lx*side*5.6,f.y+3.2,cz2-fq.lz*side*5.6,0.06,col(0x120D20));
     glowC(C,cx2,f.y+9.7,cz2,0.4,scale(col(HEX.ora),0.8),3,rv.f(),0.6);
+  }
+  // the landing: the road opens into a paved apron and funnels onto the
+  // pier — the ride ends by rolling into a place, not up against a wall
+  {
+    for(let d=F.LEN-36; d<F.LEN-4; d+=4){
+      const fq=frameCopy(F,d), fq2=frameCopy(F,Math.min(F.LEN-1,d+4));
+      const t0=(d-(F.LEN-36))/32, t1=Math.min(1,(d+4-(F.LEN-36))/32);
+      const w0=lerp(8.6,5.0,t0), w1=lerp(8.6,5.0,t1);
+      face(C.furn,[[fq.x-fq.lx*w0,fq.y+0.05,fq.z-fq.lz*w0],[fq2.x-fq2.lx*w1,fq2.y+0.05,fq2.z-fq2.lz*w1],
+                 [fq2.x+fq2.lx*w1,fq2.y+0.05,fq2.z+fq2.lz*w1],[fq.x+fq.lx*w0,fq.y+0.05,fq.z+fq.lz*w0]],
+                 [0,1,0],varyR(col(0x231B39),0.07,rv),null,0,null,null);
+    }
+    for(const s of [-1,1]){
+      for(let k=0;k<5;k++){
+        const dd=F.LEN-33+k*7;
+        const fq=getFrame(F,Math.min(F.LEN-1,dd));
+        const w=lerp(7.9,4.4,k/4);
+        pBollard(C,fq.x+fq.lx*s*w,fq.y+0.06,fq.z+fq.lz*s*w,col(0x241A28),false);
+        if(k%2===0) glowC(C,fq.x+fq.lx*s*w,fq.y+0.86,fq.z+fq.lz*s*w,0.22,scale(col(HEX.amb),0.55),0,rv.f(),0.2);
+      }
+    }
+    streakC(C,f.x-dir.x*16,f.y+0.07,f.z-dir.z*16,Math.atan2(-dir.x,-dir.z),22,6.2,scale(col(HEX.amb),0.5),0,rv.f(),0.5);
+  }
+  // two warm houses flank the landing, festoon lights strung over the road
+  // between them — the intimate frame the arrival was missing
+  {
+    const posts=[];
+    for(const [hd,hoff,storeys] of [[F.LEN-40,11.0,2],[F.LEN-68,12.2,3]]){
+      const fq=getFrame(F,clamp(hd,0,F.LEN-1));
+      const hx=fq.x+fq.lx*side*hoff, hz=fq.z+fq.lz*side*hoff;
+      const hyaw=Math.atan2(fq.tx,fq.tz);
+      const hw=rv.r(6.4,7.4), hlen=rv.r(8.2,9.4), hh=storeys*3.1+rv.r(0.4,1.1);
+      const warm=storeys===2? scale(col(HEX.pap),0.8) : scale(col(HEX.amb),0.85);
+      obox(C.fac,hx,fq.y,hz,hw,hh,hlen,hyaw,varyR(col(0x2A1838),0.1,rv),{kind:K_WIN,inf:[2.0,2.5,0.95,rv.f()*100],tint:warm});
+      obox(C.furn,hx,fq.y+hh,hz,hw+1.0,0.5,hlen+1.0,hyaw,scale(col(0x1B1230),0.9));
+      const cx3=Math.cos(hyaw), sx3=-Math.sin(hyaw);
+      obox(C.furn,hx+cx3*1.4,fq.y+hh+0.5,hz+sx3*1.4,0.8,1.5,0.8,hyaw,col(0x241636));
+      steamC(C,hx+cx3*1.4,fq.y+hh+2.2,hz+sx3*1.4,1.5,2.4,rv.f()*10,0.45);
+      obox(C.fac,hx+cx3*(-side)*(hw/2-0.05),fq.y,hz+sx3*(-side)*(hw/2-0.05),0.3,3.1,2.6,hyaw,scale(col(0x2A1838),0.85),{kind:K_DOOR,inf:[2,2,0,0],tint:BLACK});
+      glowC(C,hx+cx3*(-side)*(hw/2+0.5),fq.y+3.3,hz+sx3*(-side)*(hw/2+0.5),0.34,scale(col(HEX.amb),0.75),0,rv.f(),0.15);
+      parcelCellsTake(C,Math.min(hx-6,hx+6),Math.min(hz-6,hz+6),Math.max(hx-6,hx+6),Math.max(hz-6,hz+6));
+      // festoon anchor on the house eaves, partner post at the quay edge
+      const fp=getFrame(F,clamp(hd+7,0,F.LEN-1));
+      const pxq=fp.x+fp.lx*(-side)*5.8, pzq=fp.z+fp.lz*(-side)*5.8;
+      strutB(C.furn,pxq,fp.y+0.16,pzq,pxq,fp.y+5.3,pzq,0.14,col(0x241A28));
+      glowC(C,pxq,fp.y+5.5,pzq,0.2,scale(col(HEX.amb),0.5),0,rv.f(),0.2);
+      posts.push({ax:hx+cx3*(-side)*(hw/2),ay:fq.y+hh-0.3,az:hz+sx3*(-side)*(hw/2), bx:pxq,by:fp.y+5.3,bz:pzq});
+    }
+    for(const sp of posts){
+      const sag=1.15;
+      C.cableSpans.push({...sp, sag, amp:0.10, ph:rv.f()*6.28});
+      CENSUS.cables++;
+      for(const t of [0.22,0.42,0.62,0.82]){
+        const bx=lerp(sp.ax,sp.bx,t), bz=lerp(sp.az,sp.bz,t);
+        const by=lerp(sp.ay,sp.by,t)-Math.sin(t*Math.PI)*sag-0.22;
+        glowC(C,bx,by,bz,0.17,scale(col(HEX.amb),0.62),0,rv.f(),0.1);
+      }
+    }
+    pFigure(C,f.x+f.lx*side*7.6-dir.x*38,f.y+0.02,f.z+f.lz*side*7.6-dir.z*38,Math.atan2(-dir.x,-dir.z),{});
+  }
+  // the harbormaster's hut stands on stilts over the water, a plank walk
+  // back to the quay — one more lit room between the rider and the void
+  {
+    const fq=getFrame(F,F.LEN-52);
+    const s=-side;
+    const mx=fq.x+fq.lx*s*11.6, mz=fq.z+fq.lz*s*11.6;
+    const myaw=Math.atan2(fq.tx,fq.tz);
+    for(const su of [-1,1]) for(const sv of [-1,1])
+      strutB(C.furn,mx+fq.lx*s*sv*1.5+fq.tx*su*1.3,-2.2,mz+fq.lz*s*sv*1.5+fq.tz*su*1.3,
+                    mx+fq.lx*s*sv*1.5+fq.tx*su*1.3,fq.y+0.34,mz+fq.lz*s*sv*1.5+fq.tz*su*1.3,0.22,col(0x1A1428));
+    box(C.furn,mx-2.2,fq.y+0.34,mz-2.2,mx+2.2,fq.y+0.5,mz+2.2,{c:varyR(timberC,0.1,rv)});
+    obox(C.fac,mx,fq.y+0.5,mz,3.9,2.9,3.2,myaw,varyR(col(0x1F1630),0.08,rv),{kind:K_WIN,inf:[1.5,1.7,0.92,rv.f()*100],tint:scale(col(HEX.pap),0.8)});
+    obox(C.furn,mx,fq.y+3.4,mz,4.5,0.3,3.8,myaw,scale(timberC,0.85));
+    glowC(C,mx,fq.y+4.1,mz,0.38,scale(col(HEX.rose),0.5),0,rv.f(),0.5);
+    for(let t=0;t<1.01;t+=0.25){
+      const wx=lerp(fq.x+fq.lx*s*6.4,mx,t), wz=lerp(fq.z+fq.lz*s*6.4,mz,t);
+      box(C.furn,wx-0.75,fq.y+0.1,wz-0.75,wx+0.75,fq.y+0.22,wz+0.75,{c:varyR(timberC,0.12,rv)});
+    }
   }
   // the pier: the road becomes timber and walks out over the water
   const px0=f.x+dir.x*10, pz0=f.z+dir.z*10;
@@ -3061,17 +3191,25 @@ function lmHarbor(C){
     box(C.furn,mx-0.8,-0.9,mz-1.8,mx+0.8,-0.55,mz+1.2,{c:col(0x181026)});
     glowC(C,mx,-0.2,mz,0.4,scale(col(HEX.amb),0.6),1,rv.f(),0.3);
   }
-  // the amber path: the road of light continuing where asphalt ends
+  // the amber path: the road of light continuing where asphalt ends —
+  // and a warm pool right at the landing where it begins
   {
     const wx=px0+dir.x*80, wz=pz0+dir.z*80;
     C.water.push({ x:wx, z:wz, w:420, h:420, y:-1.5, glows:[
-      {x:px0+dir.x*32, z:pz0+dir.z*32, w:6, c:scale(col(HEX.amb),1.1)},
+      {x:px0+dir.x*7, z:pz0+dir.z*7, w:5, c:scale(col(HEX.amb),1.3)},
+      {x:px0+dir.x*32, z:pz0+dir.z*32, w:7, c:scale(col(HEX.amb),1.1)},
       {x:px0+dir.x*80, z:pz0+dir.z*80, w:10, c:scale(col(HEX.amb),0.75)},
       {x:px0+dir.x*150, z:pz0+dir.z*150, w:16, c:scale(col(HEX.amb),0.4)},
       {x:px0+dir.x*60+f.lx*40, z:pz0+dir.z*60+f.lz*40, w:9, c:scale(col(HEX.teal),0.2)},
+      {x:f.x-f.lx*side*40-dir.x*46, z:f.z-f.lz*side*40-dir.z*46, w:12, c:scale(col(HEX.teal),0.16)},
     ]});
     CENSUS.waterFeatures++;
     glowC(C,px0+dir.x*150,1.2,pz0+dir.z*150,0.85,scale(col(HEX.amb),1.1),3,rv.f(),0.95); // bell buoy
+    // low mist over the basin: the air of the place, the release after
+    // nine kilometres of rain — wide, faint, drifting
+    steamC(C,px0+dir.x*46-f.lx*side*18,0.4,pz0+dir.z*46-f.lz*side*18,26,4.5,rv.f()*10,0.14);
+    steamC(C,px0+dir.x*96+f.lx*side*10,0.3,pz0+dir.z*96+f.lz*side*10,34,5.0,rv.f()*10,0.11);
+    steamC(C,f.x-f.lx*side*34-dir.x*80,0.4,f.z-f.lz*side*34-dir.z*80,30,4.2,rv.f()*10,0.12);
   }
   C.hash.s('harbor').n(px0).n(pz0);
 }
@@ -3093,75 +3231,85 @@ function toRopewalkD(dA){
   const t=(dA-FORKGEO.D_FORK)/(FORKGEO.RJ.arcade-FORKGEO.D_FORK);
   return FORKGEO.D_FORK + t*(FORKGEO.RJ.ropewalk-FORKGEO.D_FORK);
 }
-const buildQueue=[];
+// reused scheduler state: no per-call allocation in the steady loop
+const _want=new Set(), _queue=[], _drops=[];
+const _keyCache={ arcade:[], ropewalk:[], far:[] };
+function chunkKey(kind,idx){ const a=_keyCache[kind]; let k=a[idx]; if(!k){ k=kind+':'+idx; a[idx]=k; } return k; }
+for(const lm of LANDMARKS) lm.chunkKey='lm:'+lm.key;
+function lmWanted(lm,sA){ return sA>lm.trig0-Q.aheadFar+400 && sA<lm.trig1; }
 function ensureChunks(sA, buildAll){
-  buildQueue.length=0;
-  const wantKeys=new Set();
-  const push=(key,prio,kind,arg)=>{ wantKeys.add(key);
-    if(!CHUNKS.has(key)) buildQueue.push({key,prio,kind,arg}); };
+  _queue.length=0; _want.clear();
+  const push=(key,prio,kind,arg)=>{ _want.add(key);
+    if(!CHUNKS.has(key)) _queue.push({key,prio,kind,arg}); };
   // near, own line
   {
     const F=BR.arcade;
     const i0=Math.max(0,Math.floor((sA-170)/CH_LEN)), i1=Math.min(Math.floor((F.LEN-1)/CH_LEN),Math.floor((sA+Q.aheadNear)/CH_LEN));
-    for(let i=i0;i<=i1;i++) push('arcade:'+i, Math.abs(i*CH_LEN-sA), 'near', {branch:'arcade',idx:i});
+    for(let i=i0;i<=i1;i++) push(chunkKey('arcade',i), Math.abs(i*CH_LEN-sA), 'near', i);
   }
   // near, the other line through the split (visible from the gate and beyond;
   // shorter look-ahead than the ridden line — same in every quality tier)
   if(sA>FORKGEO.D_FORK-760 && sA<FORKGEO.RJ.arcade+300){
-    const F=BR.ropewalk;
     const sB=toRopewalkD(sA);
     const lo=Math.floor((FORKGEO.D_FORK-FORKGEO.RAMP-60)/CH_LEN), hi=Math.floor((FORKGEO.RJ.ropewalk+120)/CH_LEN);
     const i0=Math.max(lo,Math.floor((sB-170)/CH_LEN)), i1=Math.min(hi,Math.floor((sB+420)/CH_LEN));
-    for(let i=i0;i<=i1;i++) push('ropewalk:'+i, Math.abs(i*CH_LEN-sB)+8, 'near', {branch:'ropewalk',idx:i});
+    for(let i=i0;i<=i1;i++) push(chunkKey('ropewalk',i), Math.abs(i*CH_LEN-sB)+8, 'near', i);
   }
   // far silhouettes
   {
     const F=BR.arcade;
     const i0=Math.max(0,Math.floor((sA-320)/FAR_LEN)), i1=Math.min(Math.floor((F.LEN-1)/FAR_LEN),Math.floor((sA+Q.aheadFar)/FAR_LEN));
-    for(let i=i0;i<=i1;i++) push('far:'+i, Math.abs(i*FAR_LEN-sA)+4, 'far', {idx:i});
+    for(let i=i0;i<=i1;i++) push(chunkKey('far',i), Math.abs(i*FAR_LEN-sA)+4, 'far', i);
   }
-  // landmarks
-  for(const lm of LANDMARKS){
-    if(sA>lm.trig0-Q.aheadFar+400 && sA<lm.trig1) push('lm:'+lm.key, 2, 'lm', lm);
-  }
-  buildQueue.sort((a,b)=>a.prio-b.prio);
+  for(const lm of LANDMARKS){ if(lmWanted(lm,sA)) push(lm.chunkKey, 2, 'lm', lm); }
   const budget = buildAll? 1e9 : 1;
-  let built=0;
-  for(const q2 of buildQueue){
-    if(built>=budget) break;
-    buildChunk(q2); built++;
+  for(let built=0; built<budget && _queue.length; built++){
+    let bi=0;
+    for(let i=1;i<_queue.length;i++) if(_queue[i].prio<_queue[bi].prio) bi=i;
+    const q2=_queue[bi]; _queue[bi]=_queue[_queue.length-1]; _queue.pop();
+    buildChunk(q2);
   }
-  // dispose what the ride has left behind (one per call)
+  // dispose whatever the want-set no longer covers, in either direction —
+  // a restart tears the far end down the same way riding tears down the past
+  _drops.length=0;
   for(const [key,C] of CHUNKS){
     if(!C.finalized) continue;
+    if(_want.has(key)) continue;
     let drop=false;
     if(C.kind==='near'){
-      const dEnd=(C.idx+1)*CH_LEN;
+      const d0c=C.idx*CH_LEN, d1c=(C.idx+1)*CH_LEN;
       const ref=C.branchKey==='ropewalk'? toRopewalkD(sA) : sA;
-      drop = dEnd < ref-280;
-      if(C.branchKey==='ropewalk' && sA>FORKGEO.RJ.arcade+340) drop=true;
+      drop = d1c < ref-280 || d0c > ref+Q.aheadNear+CH_LEN;
+      if(C.branchKey==='ropewalk' && (sA>FORKGEO.RJ.arcade+340 || sA<FORKGEO.D_FORK-820)) drop=true;
     } else if(C.kind==='far'){
-      drop = (C.idx+1)*FAR_LEN < sA-560;
+      drop = (C.idx+1)*FAR_LEN < sA-560 || C.idx*FAR_LEN > sA+Q.aheadFar+FAR_LEN;
     } else if(C.kind==='lm'){
-      drop = sA > C.lm.trig1+80;
+      drop = sA > C.lm.trig1+80 || sA < C.lm.trig0-Q.aheadFar+340;
     }
-    if(drop){ disposeChunk(key); break; }
+    if(drop) _drops.push(key);
   }
+  const dropBudget = buildAll? 1e9 : 2;
+  for(let i=0;i<_drops.length && i<dropBudget;i++) disposeChunk(_drops[i]);
 }
 function buildChunk(q2){
   if(CHUNKS.has(q2.key)) return;
+  // a rebuild reproduces identical content: keep the census truthful by
+  // restoring its snapshot instead of counting the same city twice
+  const rebuild=CHUNK_HASHES.has(q2.key);
+  const censusSnap=rebuild? JSON.stringify(CENSUS) : null;
   let C;
   if(q2.kind==='near'){
-    const F=BR[q2.arg.branch];
-    C=newChunkCtx(q2.key, 'vigil', q2.arg.branch);
-    C.kind='near'; C.idx=q2.arg.idx; C.branchKey=q2.arg.branch;
+    const br=q2.key.startsWith('arcade')? 'arcade':'ropewalk';
+    const F=BR[br];
+    C=newChunkCtx(q2.key, 'vigil', br);
+    C.kind='near'; C.idx=q2.arg; C.branchKey=br;
     CHUNKS.set(q2.key,C);
-    realizeNear(C,F,q2.arg.idx);
+    realizeNear(C,F,q2.arg);
   } else if(q2.kind==='far'){
     C=newChunkCtx(q2.key, 'far', 'arcade');
-    C.kind='far'; C.idx=q2.arg.idx;
+    C.kind='far'; C.idx=q2.arg;
     CHUNKS.set(q2.key,C);
-    realizeFar(C,q2.arg.idx);
+    realizeFar(C,q2.arg);
   } else {
     C=newChunkCtx(q2.key, 'lm', 'arcade');
     C.kind='lm'; C.lm=q2.arg;
@@ -3169,6 +3317,11 @@ function buildChunk(q2){
     q2.arg.builder(C);
   }
   finalizeChunk(C);
+  if(rebuild){
+    const snap=JSON.parse(censusSnap);
+    snap.chunksBuilt=CENSUS.chunksBuilt; snap.chunksDisposed=CENSUS.chunksDisposed;
+    Object.assign(CENSUS,snap);
+  }
 }
 // ================================================================
 // SKY DOME — the storm ceiling, lit from beneath by the city
@@ -3192,7 +3345,7 @@ const skyMesh=(()=>{
       vec3 gl2=mix(vec3(0.10,0.16,0.19),vec3(0.20,0.09,0.13),n2(vec2(az*1.3,7.7)));
       c+=gl2*0.16*pow(1.0-h,3.5)*(0.5+g)*uSkyDim;
       float ad=abs(atan(sin(az-uLmAz),cos(az-uLmAz)));
-      c+=vec3(0.09,0.15,0.17)*exp(-ad*ad*4.5)*pow(1.0-h,2.2)*0.42*uSkyDim;
+      c+=vec3(0.09,0.15,0.17)*exp(-ad*ad*4.5)*pow(1.0-h,2.2)*0.42*mix(uSkyDim,1.0,0.55);
       float cl=n2(vec2(az*3.0+uTime*0.008,d.y*6.0))*n2(vec2(az*7.0-uTime*0.005,d.y*13.0));
       c=mix(c,vec3(0.016,0.010,0.024),smoothstep(0.42,0.8,cl)*smoothstep(0.04,0.35,h)*0.75);
       gl_FragColor=vec4(c,1.0);
@@ -3567,7 +3720,7 @@ function updateHerons(dt,camPos){
 // ---- the ambient event schedule, realized to distances and consumed ----
 const EVENTS=PLAN.events.map(e=>({ ...e, d: chD('arcade',e.ch,e.t), fired:false }));
 EVENTS.sort((a,b)=>a.d-b.d);
-let eventsFired=0, brownT=-99, signFailT=-99;
+let eventsFired=0, eventsSkipped=0, brownT=-99, signFailT=-99;
 function fireEvent(e,sA,F,ambT){
   e.fired=true; eventsFired++;
   if(e.kind==='rat-cross'){ spawnRatCross(F,sA); }
@@ -3585,7 +3738,8 @@ function updateEvents(sA,F,ambT){
   for(const e of EVENTS){
     if(e.fired||e.d>sA) continue;
     if(sA-e.d<200) fireEvent(e,sA,F,ambT);
-    else e.fired=true;    // passed while debug-jumping: consumed silently
+    else { e.fired=true; e.skipped=true; eventsSkipped++; }  // passed while debug-jumping
+
   }
   // brown-out envelope on the public light
   if(ambT-brownT<3.2){
@@ -3734,13 +3888,19 @@ function restart(){
   F=BR[branch||PLAN.fork.defaultBranch];
   rideT=0;
   RA=mkR(streamOf(RA_SALT));                       // deterministic restart: ambient jitter re-seeded
-  for(const e of EVENTS) e.fired=false;
-  eventsFired=0; ratEncounters=0; heronLifts=0;
+  for(const e of EVENTS){ e.fired=false; e.skipped=false; }
+  eventsFired=0; eventsSkipped=0; ratEncounters=0; heronLifts=0;
   for(const p of ACTIVE_RATPTS) p.state=0;
   for(const h of ACTIVE_HERONS){ if(h.unit){ h.unit.perch=null; h.unit=undefined; } h.state=0; }
   tram.express=-1; droneSweep.idx=-1; brownT=-99; signFailT=-99;
   maxRollSeen=0; arrivalPlayed=false; dripAcc=0; bellAcc=0;
+  WEIR_GATE_STATE=0;
   U.uBrown.value=1; U.uShelter.value=0;
+  // complete teardown: everything the last ride left standing beyond the
+  // want-set is disposed and the opening rebuilt — the same chunks with
+  // the same content hashes as a fresh load, so realizedContent holds
+  ensureChunks(toArcadeD(F.key,s), true);
+  updateProofSlow();
 }
 window.addEventListener('keydown',(e)=>{
   if(e.code==='Space'){ e.preventDefault(); if(!e.repeat) paused=!paused; audioStart(); return; }
@@ -3799,7 +3959,7 @@ function updateRoadUniform(){
 // ================================================================
 let AC=null, audioNodes=null;
 function audioStart(){
-  if(AC) return;
+  if(AC){ if(AC.state==='suspended') AC.resume(); return; }
   try { AC=new (window.AudioContext||window.webkitAudioContext)(); } catch(e){ return; }
   const master=AC.createGain(); master.gain.value=0.0;
   const comp=AC.createDynamicsCompressor();
@@ -4007,7 +4167,7 @@ renderer.setAnimationLoop(()=>{
   updateSkiffs(ambT,camera.position);
   updateRats(dt,camera.position);
   updateHerons(dt,camera.position);
-  for(const d3 of DYN_LM) d3.update(dt,ambT);
+  for(let i=0;i<DYN_LM.length;i++) DYN_LM[i].update(dt,ambT);
   flushDyn();
   updateAudio(dt,f);
 
@@ -4030,16 +4190,16 @@ renderer.setAnimationLoop(()=>{
   stats.tris=renderer.info.render.triangles;
 
   // ---- proof: live cheap fields every frame, statistics at 1 Hz ----
-  PROOF.distance=+s.toFixed(1);
+  PROOF.distance=Math.round(s*10)/10;
   PROOF.branch=branchLatched?F.key:null;
   PROOF.branchLatched=branchLatched;
   PROOF.chapter=CHAPTERS[f.ch].name;
   PROOF.chapterKey=CHAPTERS[f.ch].key;
-  PROOF.speed=+speed.toFixed(2);
+  PROOF.speed=Math.round(speed*100)/100;
   PROOF.paused=paused; PROOF.ended=ended;
   PROOF.arrived=ended&&endT>0.5;
-  PROOF.shelter=+U.uShelter.value.toFixed(3);
-  PROOF.weirGate=+WEIR_GATE_STATE.toFixed(3);
+  PROOF.shelter=Math.round(U.uShelter.value*1000)/1000;
+  PROOF.weirGate=Math.round(WEIR_GATE_STATE*1000)/1000;
   proofAcc+=dt;
   if(proofAcc>1.0){ proofAcc=0; updateProofSlow(); }
 });
@@ -4086,8 +4246,8 @@ const PROOF={
   animals:{ ratPointsPlanned:0, ratEncounters:0, heronPerches:0, heronLifts:0 },
   actors:{ tram:1, groundVehicles:vehicles.length, drones:PLAN.drones.length, skiffs:skiffs.length,
            figures:0 },
-  events:{ scheduled:EVENTS.length, fired:0,
-           kinds:EVENTS.map(e=>({kind:e.kind,ch:e.ch,d:+e.d.toFixed(1)})) },
+  events:{ scheduled:EVENTS.length, fired:0, skipped:0,
+           kinds:EVENTS.map(e=>({kind:e.kind,ch:e.ch,d:+e.d.toFixed(1),fired:false,skipped:false})) },
   rain:{ streaks:RAIN_N, splashes:SPLASH_N, foregroundQuadLayer:false },
   chunks:{ built:0, disposed:0, live:0, retainedRange:[0,0] },
   controls:'W/S speed · A/D line & fork · drag look · Space pause · R restart',
@@ -4115,6 +4275,9 @@ function updateProofSlow(){
   PROOF.animals.heronLifts=heronLifts;
   PROOF.actors.figures=CENSUS.figures;
   PROOF.events.fired=eventsFired;
+  PROOF.events.skipped=eventsSkipped;
+  for(let i=0;i<EVENTS.length;i++){ const k=PROOF.events.kinds[i];
+    k.fired=!!EVENTS[i].fired&&!EVENTS[i].skipped; k.skipped=!!EVENTS[i].skipped; }
   PROOF.chunks.built=CENSUS.chunksBuilt;
   PROOF.chunks.disposed=CENSUS.chunksDisposed;
   PROOF.chunks.live=CHUNKS.size;
