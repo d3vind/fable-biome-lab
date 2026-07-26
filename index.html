@@ -1863,8 +1863,8 @@ const DUST_PLAN={sheets:[],grit:[],spills:[],thermals:[],veil:[]};
     DUST_PLAN.spills.push({x:sp.x+ATMO.r(-4,4),y:sp.y+ATMO.r(-2,4),z:sp.z+ATMO.r(-4,4),
       ph:ATMO.f(),spd:ATMO.r(1.5,3.5),span:ATMO.r(18,40)});
   }
-  DUST_PLAN.thermals.push({x:gateC.x+gateFwd.x*POOL.along,z:gateC.z+gateFwd.z*POOL.along,
-    y:gateC.y,r:9,h:SHEAR.H*0.8,n:130});
+  // the slot thermal rises from the pool alcove, never from the road itself
+  DUST_PLAN.thermals.push({x:POOL.x,z:POOL.z,y:gateC.y,r:4.6,h:SHEAR.H*0.8,n:130});
   { const f=frameAtPrimary(SP(0.12),0);
     DUST_PLAN.thermals.push({x:f.x+f.lx*SUN_SIDE*60,z:f.z+f.lz*SUN_SIDE*60,
       y:f.y,r:7,h:60,n:80}); }
@@ -1872,8 +1872,11 @@ const DUST_PLAN={sheets:[],grit:[],spills:[],thermals:[],veil:[]};
     DUST_PLAN.thermals.push({x:f.x+f.lx*-SUN_SIDE*90,z:f.z+f.lz*-SUN_SIDE*90,
       y:f.y,r:8,h:70,n:80}); }
   { const f=frameAtPrimary(SP(ATMO.r(0.45,0.6)),0);
-    for(let i=0;i<110;i++){
-      DUST_PLAN.veil.push({x:f.x+ATMO.r(-260,260),y:f.y+ATMO.r(2,26),z:f.z+ATMO.r(-260,260),
+    let tries=0;
+    while(DUST_PLAN.veil.length<110&&tries++<400){
+      const x=f.x+ATMO.r(-260,260), z=f.z+ATMO.r(-260,260);
+      if(routeInfo(x,z).d<14) continue;              // the veil never hangs over the road
+      DUST_PLAN.veil.push({x,y:f.y+ATMO.r(6,26),z,
         ph:ATMO.f(),spd:ATMO.r(0.8,1.6),span:520}); }
   }
 }
@@ -3048,7 +3051,7 @@ function clampSpan(x,y,z,dx,dz,span){
     const ri=routeInfo(px,pz);
     if(ri.d<ROAD_HW+1.3&&y<ri.h+4.5){ ok=span*((i-1)/n); break; }
   }
-  return Math.max(ok,4);
+  return Math.max(ok,0.5);   // a blocked path means hover-and-fade, never push through
 }
 function spawnFromPlan(sys,i,rec,vScale,vertical){
   const st=sys.st;
@@ -3057,10 +3060,17 @@ function spawnFromPlan(sys,i,rec,vScale,vertical){
   const y=rec.y+DUST_RT.r(-0.5,1.5);
   if(routeInfo(x,z).d<ROAD_HW+1.3){ x=rec.x; z=rec.z; }   // jitter never enters the corridor
   const spd=rec.spd*vScale;
-  const span=clampSpan(x,y,z,windDir.x,windDir.z,rec.span);
+  // falling grit is judged at its lowest point, not its spawn height
+  const yTest=vertical<0? y+vertical*(rec.span/Math.max(0.5,spd)) : y;
+  const span=clampSpan(x,yTest,z,windDir.x,windDir.z,rec.span);
   st.p[i*3]=x; st.p[i*3+1]=y; st.p[i*3+2]=z;
-  st.vx[i]=windDir.x*spd; st.vz[i]=windDir.z*spd; st.vy[i]=vertical;
-  st.maxLife[i]=span/Math.max(0.5,spd);
+  if(span<6){ // path blocked at once: brief hover-fade in place, no drift at all
+    st.vx[i]=0; st.vz[i]=0; st.vy[i]=0;
+    st.maxLife[i]=3;
+  } else {
+    st.vx[i]=windDir.x*spd; st.vz[i]=windDir.z*spd; st.vy[i]=vertical;
+    st.maxLife[i]=span/Math.max(0.5,spd);
+  }
   st.life[i]=st.maxLife[i]*DUST_RT.f();   // staggered starts
 }
 {
@@ -3115,8 +3125,11 @@ function spawnFromPlan(sys,i,rec,vScale,vertical){
     (sys,i)=>{ const rec=DUST_PLAN.veil[i%DUST_PLAN.veil.length];
       const st=sys.st;
       st.p[i*3]=rec.x; st.p[i*3+1]=rec.y; st.p[i*3+2]=rec.z;
-      st.vx[i]=windDir.x*rec.spd; st.vz[i]=windDir.z*rec.spd; st.vy[i]=0;
-      st.maxLife[i]=rec.span/rec.spd; st.life[i]=st.maxLife[i]*DUST_RT.f(); },
+      const span=clampSpan(rec.x,rec.y,rec.z,windDir.x,windDir.z,rec.span);
+      if(span<8){ st.vx[i]=0; st.vz[i]=0; st.vy[i]=0; st.maxLife[i]=6; }
+      else { st.vx[i]=windDir.x*rec.spd; st.vz[i]=windDir.z*rec.spd; st.vy[i]=0;
+        st.maxLife[i]=span/rec.spd; }
+      st.life[i]=st.maxLife[i]*DUST_RT.f(); },
     (sys,i,dt)=>{ const st=sys.st;
       st.life[i]-=dt;
       if(st.life[i]<=0){ sys.init(sys,i); st.life[i]=st.maxLife[i]; return; }
@@ -3779,6 +3792,22 @@ if(QA){
   window.__SUNSCAR_PROOF__.pause=()=>{ rideState.paused=true; };
   window.__SUNSCAR_PROOF__.resume=()=>{ rideState.paused=false; };
   window.__SUNSCAR_PROOF__.chapterTruth=()=>CHAPS.map(c=>({idx:c.idx,name:c.name,s0:Math.round(c.s0),s1:Math.round(c.s1)}));
+  window.__SUNSCAR_PROOF__.dustSweep=()=>{ // exhaustive corridor scan of every live particle
+    let bad=0, worst=null;
+    for(const sys of dustSystems){
+      for(let i=0;i<sys.count;i++){
+        if(sys.geoAlp[i]<=0.05) continue;
+        const x=sys.st.p[i*3], y=sys.st.p[i*3+1], z=sys.st.p[i*3+2];
+        const ri=routeInfo(x,z);
+        if(ri.d<ROAD_HW+0.3&&y<ri.h+3.5){ bad++;
+          if(!worst) worst={sys:sys.name,i,d:Math.round(ri.d*10)/10,dy:Math.round((y-ri.h)*10)/10,
+            life:Math.round(sys.st.life[i]*10)/10,maxLife:Math.round(sys.st.maxLife[i]*10)/10,
+            x:Math.round(x),z:Math.round(z),vx:Math.round(sys.st.vx[i]*100)/100,vz:Math.round(sys.st.vz[i]*100)/100,
+            alpha:Math.round(sys.geoAlp[i]*100)/100}; }
+      }
+    }
+    return {bad,worst};
+  };
   window.__SUNSCAR_PROOF__.chunkTruth=(id)=>{ const c=chunkPlans[id]; if(!c) return null;
     return {id,s0:Math.round(c.s0),s1:Math.round(c.s1),hash:c.hash,
       rocks:c.recs.rocks.length,ground:c.recs.ground.length,plants:c.recs.plants.length,inst:c.recs.inst.length}; };
@@ -3922,7 +3951,7 @@ renderer.setAnimationLoop(()=>{
     if(devilSys){
       const on=worldT-devilT<42;
       devilSys.sys.mat.uniforms.uAmp.value+=((on?1:0)-devilSys.sys.mat.uniforms.uAmp.value)*(1-Math.exp(-dt*0.5));
-      if(on){ devilSys.x+=windDir.x*7.5*dt; devilSys.z+=windDir.z*7.5*dt; }
+      if(on&&routeInfo(devilSys.x,devilSys.z).d>40){ devilSys.x+=windDir.x*7.5*dt; devilSys.z+=windDir.z*7.5*dt; }
     }
   }
   // movers
