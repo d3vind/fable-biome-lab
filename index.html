@@ -565,7 +565,10 @@ POOL.z=gateC.z+gateFwd.z*POOL.along+gateLeft.z*POOL.lat;
 POOL.r=GEO.r(3.6,4.6);
 worldFeed(SHEAR.H,SHEAR.depth,SHEAR.halfW,SHEAR.skew,POOL.along,POOL.r);
 // ---------- the height field ----------
-function terrainH(x,z){
+// naturalH is the country as water left it; terrainH is the country after
+// the Relay Works cut its road through — excavation is guaranteed geometry,
+// identical at every quality tier, never a paint job
+function naturalH(x,z){
   const rg=regionalInfo(x,z);
   const idx=rg.i;
   let h=rg.y;
@@ -585,17 +588,28 @@ function terrainH(x,z){
   // hidden pool alcove
   const dP=Math.hypot(x-POOL.x,z-POOL.z);
   if(dP<16){ const pw=1-smooth(6,15,dP); h=lerp(h,gateC.y-1.15,pw); }
-  // the road owns its corridor — every metre of both arms and the run-out
+  return h;
+}
+// cut/fill truth at a point near the road: >0 means the road was carved
+// through a rise, <0 means it rides an embankment over low ground
+function cutFillAt(x,z,ri){ return naturalH(x,z)-((ri.hMin<1e8?ri.hMin:ri.h)-0.34); }
+function terrainH(x,z){
+  let h=naturalH(x,z);
   const ri=routeInfo(x,z);
-  // the Coldwash arm rides a broad wash floor, not a slot trench —
-  // its enclosure comes from walls at distance, never from banks over the bars
+  // the Coldwash arm rides a broad wash floor, not a slot trench
   if(ri.d<46&&ri.arm===0&&ri.s>S_FORK_L+30&&ri.s<S_JOIN_L-30){
     const w2=(1-smooth(14,46,ri.d))*0.75;
     h=lerp(h,ri.h-0.6,w2);
   }
-  if(ri.d<26){
-    const w=1-smooth(10,26,ri.d);
+  if(ri.d<32){
+    const delta=cutFillAt(x,z,ri);
+    // cuts bank steeply; embankments splay their fill wide and gentle
+    const outer=delta>2.5? 17 : delta<-2.5? 32 : 26;
+    const w=1-smooth(10,outer,ri.d);
     h=lerp(h,ri.hMin-0.34,w);
+    // drainage ditch along the toe of every cut bank
+    if(delta>2.5&&ri.d>6.6&&ri.d<10.4)
+      h-=0.32*Math.sin((ri.d-6.6)/3.8*Math.PI)*smooth(2.5,5,delta);
     if(ri.d<ROAD_HW+1.6) h=Math.min(h,ri.hMin-0.30);
   }
   return h;
@@ -647,6 +661,20 @@ function terrainColor(x,z,h,nx,ny,nz){
   if(ri.d<1e8){
     const lip=Math.exp(-Math.pow((ri.d-7.4)/2.2,2));
     _tc.lerp(mixc(PAL.gold,PAL.sandstone,0.55),lip*0.2);
+    // the road's construction shows: cut banks expose strata, fills wear gravel
+    if(ri.d<22){
+      const delta=cutFillAt(x,z,ri);
+      if(delta>2.5){
+        const rel2=clamp(h-(ri.hMin-0.34),0,12);
+        const band=Math.floor(rel2/2.2)%3;
+        const bc=band===0?mixc(PAL.rust,PAL.wine,0.3):band===1?col(PAL.rust):mixc(PAL.rust,PAL.sandstone,0.5);
+        _tc.lerp(bc,smooth(22,12,ri.d)*0.55);
+        _tc.lerp(col(PAL.wine),smooth(9.5,7,ri.d)*0.25);   // damp ditch shadow
+      } else if(delta<-2.5){
+        _tc.lerp(mixc(PAL.sandstone,PAL.rose,0.4),smooth(24,10,ri.d)*0.4);   // built fill
+        if(fbm2(x/6+41,z/6+13)>0.72) _tc.lerp(col(PAL.wine),0.25*smooth(20,10,ri.d)); // erosion rills
+      }
+    }
   }
   return _tc;
 }
@@ -1458,6 +1486,77 @@ function glintChips(B,x,z,n,R){
       R.chance(0.5)?mixc(PAL.cream,PAL.gold,0.4):mixc(PAL.cyan,PAL.cream,0.5));
   }
 }
+function kitCulvert(B,x,z,yaw,R){
+  // a corrugated mouth in the embankment toe, wing walls, old stain
+  const y0=terrainH(x,z);
+  const ca=Math.cos(yaw),sa=Math.sin(yaw);
+  prismStriped(B,x,y0-0.15,z,0.62,0.58,0.5,8,K.steel(),K.steelLight(),null);
+  for(let i=0;i<8;i++){ const a=i/8*TAU;   // dark throat
+    pushTri(B,[x+Math.cos(a)*0.45,y0+0.32+Math.sin(a)*0.28,z+Math.sin(a)*0.45],
+      [x+Math.cos(a+0.79)*0.45,y0+0.32+Math.sin(a+0.79)*0.28,z+Math.sin(a+0.79)*0.45],
+      [x,y0+0.3,z],col(PAL.aubergine)); }
+  strut(B,x-sa*0.9,y0-0.2,z+ca*0.9,x-sa*0.9+ca*0.5,y0+0.75,z+ca*0.9+sa*0.5,0.12,0.5,K.steelLight());
+  strut(B,x+sa*0.9,y0-0.2,z-ca*0.9,x+sa*0.9+ca*0.5,y0+0.75,z-ca*0.9+sa*0.5,0.12,0.5,K.steelLight());
+  stainFan(B,x+ca*0.5,z+sa*0.5,yaw,1.6,0.6,K.stain());
+  apron(B,x,z,0.9,yaw,1.3,K.shadow());
+}
+function kitChair(B,x,z,yaw,R){
+  // one rusted chair, facing a wall nobody can reach
+  const y0=terrainH(x,z);
+  const ca=Math.cos(yaw),sa=Math.sin(yaw);
+  const P=(u,v,y)=>[x+ca*u-sa*v,y,z+sa*u+ca*v];
+  const rust=mixc(PAL.rust,PAL.wine,0.45);
+  for(const [u,v] of [[-0.22,-0.2],[0.22,-0.2],[-0.22,0.2],[0.22,0.2]])
+    strut(B,...P(u,v,y0),...P(u,v,y0+0.42),0.035,0.035,rust);
+  strut(B,...P(-0.26,0,y0+0.42),...P(0.26,0,y0+0.42),0.03,0.44,K.steelLight().lerp(col(PAL.wine),0.3));
+  strut(B,...P(-0.24,-0.24,y0+0.42),...P(-0.24,-0.21,y0+1.0),0.035,0.035,rust);
+  strut(B,...P(0.24,-0.24,y0+0.42),...P(0.24,-0.21,y0+1.0),0.035,0.035,rust);
+  strut(B,...P(-0.26,-0.225,y0+0.94),...P(0.26,-0.225,y0+0.94),0.03,0.16,rust);
+  apron(B,x,z,0.5,yaw,1.2,K.shadow());
+}
+function kitOrphanPipe(B,rec,R){
+  // a Relay pipe emerging from stone, mouth open to the wind,
+  // packrat nest and stolen shine tucked inside its shadow
+  const y0=terrainH(rec.x,rec.z);
+  stoneSmall(B,rec.x,rec.z,1.6,R,mixc(PAL.rust,PAL.wine,0.35));
+  const dx=Math.cos(rec.el)*Math.cos(rec.az), dy=Math.sin(rec.el), dz=Math.cos(rec.el)*Math.sin(rec.az);
+  const L1=rec.len*0.6, L2=rec.len*0.4;
+  strut(B,rec.x,y0+0.3,rec.z,rec.x+dx*L1,y0+0.3+dy*L1,rec.z+dz*L1,0.3,0.3,
+    K.paintCyan().lerp(col(PAL.wine),0.35));
+  const mx=rec.x+dx*L1, my=y0+0.3+dy*L1, mz=rec.z+dz*L1;
+  strut(B,mx,my,mz,mx+dx*L2,my+dy*L2*0.7,mz+dz*L2,0.27,0.27,K.steel());
+  const ex=mx+dx*L2, ey=my+dy*L2*0.7, ez=mz+dz*L2;
+  prismStriped(B,ex,ey-0.16,ez,0.2,0.2,0.1,7,col(PAL.aubergine),col(PAL.aubergine),col(PAL.aubergine));
+  // the nest: sticks, two pale feathers, a little hoard
+  for(let i=0;i<5;i++){ const a=R.r(0,TAU);
+    strut(B,rec.x+Math.cos(a)*0.5,y0+0.15,rec.z+Math.sin(a)*0.5,
+      rec.x+Math.cos(a)*0.15,y0+0.4,rec.z+Math.sin(a)*0.15,0.03,0.03,mixc(PAL.rust,PAL.wine,0.5)); }
+  for(let i=0;i<2;i++){ const a=R.r(0,TAU),d=R.r(0.3,0.8);
+    pushTri(B,[rec.x+Math.cos(a)*d,y0+0.06,rec.z+Math.sin(a)*d],
+      [rec.x+Math.cos(a)*d+0.16,y0+0.08,rec.z+Math.sin(a)*d+0.05],
+      [rec.x+Math.cos(a)*d+0.05,y0+0.14,rec.z+Math.sin(a)*d+0.18],mixc(PAL.cream,PAL.cyan,0.3)); }
+  glintChips(B,rec.x+0.4,rec.z-0.3,3,R);
+  apron(B,rec.x,rec.z,1.4,rec.az,1.3,K.shadow());
+}
+function kitLongTracks(B,rec,R){
+  // three-toed prints, a stride no living thing should own
+  for(let i=0;i<rec.n;i++){
+    const t=i/(rec.n-1);
+    const px=lerp(rec.x0,rec.x1,t)+R.r(-0.4,0.4)+(i%2?rec.px*0.9:-rec.px*0.9);
+    const pz=lerp(rec.z0,rec.z1,t)+R.r(-0.4,0.4)+(i%2?rec.pz*0.9:-rec.pz*0.9);
+    if(routeInfo(px,pz).d<ROAD_HW+0.3) continue;   // the road keeps only the story, not the marks
+    const y=terrainH(px,pz)+0.05;
+    const ka=Math.atan2(rec.x1-rec.x0,rec.z1-rec.z0);
+    const dark=mixc(PAL.wine,PAL.aubergine,0.35);
+    for(const toe of [-0.5,0,0.5]){
+      const ta=ka+toe;
+      pushTri(B,[px-Math.cos(ta)*0.12,y,pz+Math.sin(ta)*0.12],
+        [px+Math.cos(ta)*0.12,y,pz-Math.sin(ta)*0.12],
+        [px+Math.sin(ta)*0.85,y+0.01,pz+Math.cos(ta)*0.85],dark);
+    }
+    apron(B,px,pz,0.42,ka,1.4,dark);
+  }
+}
 function kitTripodFallen(B,x,z,R){
   const y0=terrainH(x,z);
   const yaw=R.r(0,TAU), ca=Math.cos(yaw),sa=Math.sin(yaw);
@@ -1490,6 +1589,7 @@ const perchPts=[];          // {x,y,z,kind}
 const coverPts=[];          // {x,z} small-animal shelter
 const spillPts=[];          // {x,y,z} ledge-spill dust sources
 const vegExclude=[];        // {x,z,r} scour track etc.
+const baskPts=[];           // {x,z} retaining stones where lizards sun themselves
 function corridorClear(x,z,footR){ const ri=routeInfo(x,z); return ri.d>=CLEAR_D+footR; }
 function inPlaceZone(x,z,footR){
   for(const p of placeClearZones) if(Math.hypot(x-p.x,z-p.z)<p.r+footR) return true;
@@ -1687,6 +1787,66 @@ const PIPE_RUNS=[];
     if(ok) PIPE_RUNS.push(rec);
   }
 }
+// ---------- the recurring mysteries ----------
+// Listening Pipes: orphan Relay pipes that reach from stone toward places
+// no pipe should reach — one aims at the Shear's notch, one at the sky
+const ORPHAN_PIPES=[];
+{
+  const spots=[[0,0.55],[2,0.35],[4,0.4],[6,0.62]];
+  for(let i=0;i<spots.length;i++){
+    const c=CHAPS[spots[i][0]];
+    const sP=SP(c.f0+spots[i][1]*(c.f1-c.f0));
+    const f=frameAtPrimary(sP,0);
+    const side=PLACE.chance(0.5)?1:-1;
+    const lat=side*PLACE.r(15,34);
+    const x=f.x+f.lx*lat, z=f.z+f.lz*lat;
+    if(!corridorClear(x,z,2)||inPlaceZone(x,z,2)||inSlotZone(x,z,2)) continue;
+    let az,el;
+    if(i===0){ az=Math.atan2(gateC.x-x,gateC.z-z); az=Math.atan2(Math.sin(az),Math.cos(az)); az=Math.atan2(gateC.x-x,gateC.z-z); el=PLACE.r(0.06,0.12); } // toward the Shear
+    else if(i===3){ az=PLACE.r(0,TAU); el=PLACE.r(0.4,0.55); }                     // at the sky
+    else { az=PLACE.r(0,TAU); el=PLACE.r(0.02,0.1); }
+    ORPHAN_PIPES.push({x,z,az:Math.atan2(Math.sin(az),Math.cos(az)),el,len:PLACE.r(3.2,5.2),sP,seed:PLACE.i(0,1e9)});
+  }
+}
+// The Long Tracks: a stride crossing the country, indifferent to the road
+let LONG_TRACKS=null, STRIDER=null;
+{
+  const c=CHAPS[LIFE.chance(0.5)?2:4];
+  const sP=SP(c.f0+LIFE.r(0.3,0.7)*(c.f1-c.f0));
+  const f=frameAtPrimary(sP,0);
+  const dir=LIFE.chance(0.5)?1:-1;
+  LONG_TRACKS={x0:f.x+f.lx*dir*42,z0:f.z+f.lz*dir*42,
+    x1:f.x-f.lx*dir*42,z1:f.z-f.lz*dir*42,
+    px:f.tx,pz:f.tz,n:16,sP,seed:LIFE.i(0,1e9)};
+  const striderRoll=LIFE.f();
+  if(striderRoll<0.12){
+    const c6=CHAPS[6];
+    const sS=SP(c6.f0+LIFE.r(0.2,0.45)*(c6.f1-c6.f0));
+    const fS=frameAtPrimary(sS,0);
+    const side=LIFE.chance(0.5)?1:-1;
+    STRIDER={sTrig:sS-260,path:[],dur:LIFE.r(12,16),seed:LIFE.i(0,1e9)};
+    for(let k=0;k<=8;k++){
+      const lat=side*(430+k*8), along=sS-160+k*46;
+      const fp=frameAtPrimary(clamp(along,0,SP_LEN-1),0);
+      const px=fp.x+fp.lx*lat, pz=fp.z+fp.lz*lat;
+      STRIDER.path.push({x:px,y:terrainH(px,pz),z:pz});
+    }
+  }
+}
+// the lone rusted chair, facing a wall nobody can reach — some seeds only
+let CHAIR=null;
+{
+  const roll=PLACE.f();
+  if(roll<0.5){
+    const c=CHAPS[6];
+    const sP=SP(c.f0+PLACE.r(0.5,0.8)*(c.f1-c.f0));
+    const f=frameAtPrimary(sP,0);
+    const side=PLACE.chance(0.5)?1:-1;
+    const x=f.x+f.lx*side*PLACE.r(18,26), z=f.z+f.lz*side*PLACE.r(18,26);
+    if(corridorClear(x,z,1)&&!inPlaceZone(x,z,1))
+      CHAIR={x,z,yaw:Math.atan2(f.lx*side,f.lz*side)+PLACE.r(-0.3,0.3),seed:PLACE.i(0,1e9)};
+  }
+}
 // the designed opening: a composed foreground relationship at the first pedal stroke
 const OPENING=[];
 {
@@ -1773,10 +1933,10 @@ const ROCKS_NEAR={
 };
 const ROCKS_MID={
   0:['steppedMesa','dome','brokenCaprock','dome','washTerrace','steppedMesa'],
-  1:['brokenCaprock','hoodoo','steppedMesa','layeredButtress','spire','dome'],
+  1:['brokenCaprock','hoodoo','steppedMesa','layeredButtress','dome','dome'],
   2:['steppedMesa','layeredButtress','flutedCliff','brokenCaprock','dome'],
   3:['layeredButtress','flutedCliff','steppedMesa','brokenCaprock'],
-  4:['steppedMesa','faultFin','brokenCaprock','strataRib','steppedMesa','spire'],
+  4:['steppedMesa','brokenCaprock','strataRib','steppedMesa','spire'],
   5:['brokenCaprock','faultFin','steppedMesa'],
   6:['spire','dome','steppedMesa','hoodoo','brokenCaprock','dome'],
 };
@@ -1811,17 +1971,18 @@ function planChunk(id){
     return {x:f.x+f.lx*lat+st.r(-6,6),z:f.z+f.lz*lat+st.r(-6,6),sP,arm,side,lat};
   };
   // — geology —
-  const quota=[16,18,20,22,19,12,16][chap.idx]+g.i(-1,4);
+  const quota=[18,20,22,24,21,14,18][chap.idx]+g.i(-1,4);
   let ledges=0;
   for(let i=0;i<quota;i++){
     const near=g.chance(0.42);
     const p=near? pos(g,20,88) : pos(g,100,360);
+    if(!near&&g.chance(0.10)) continue;   // fewer, larger masses read better
     let table;
     if(near){
       table=(chap.idx===2&&p.arm===1)?ROCKS_NEAR[2.5]:ROCKS_NEAR[chap.idx];
     } else table=ROCKS_MID[chap.idx];
     const type=g.pick(table);
-    const sc=near? g.r(0.7,1.25) : g.r(0.9,2.0);
+    const sc=near? g.r(0.7,1.25) : g.r(1.15,2.5);
     const fr=footRadius(type,sc);
     const hEst=(type==='steppedMesa'||type==='layeredButtress'||type==='brokenCaprock'||type==='flutedCliff')?38*sc:
       (type==='spire'?26*sc:14*sc);
@@ -1887,6 +2048,28 @@ function planChunk(id){
       s+=segLen+g.r(26,72);   // the gap is composed too — light and sightline vent
     }
   }
+  // — road construction: culverts under fills, retaining stones along cuts —
+  recs.roadworks=[];
+  { let n=0;
+    for(let s=s0+t.r(6,26);s<s1-10&&n<3;s+=t.r(26,44)){
+      const f=frameAtPrimary(clamp(s,0,SP_LEN-1),0);
+      const side=t.chance(0.5)?1:-1;
+      const px=f.x+f.lx*side*7.8, pz=f.z+f.lz*side*7.8;
+      const ri2=routeInfo(px,pz);
+      const delta=cutFillAt(px,pz,ri2);
+      if(ri2.d<7.0||ri2.d>9.5){ continue; }
+      if(delta<-2.5&&moistureAt(px,pz)>0.42){
+        recs.roadworks.push({t:'culvert',x:px,z:pz,yaw:Math.atan2(f.lx*side,f.lz*side),seed:t.i(0,1e9)});
+        tally(TAL.propKinds,'culvert'); n++;
+      } else if(delta>2.5&&t.chance(0.7)){
+        const rx=f.x+f.lx*side*t.r(8.7,9.8), rz=f.z+f.lz*side*t.r(8.7,9.8);
+        if(routeInfo(rx,rz).d<8.5) continue;
+        recs.roadworks.push({t:'retWall',x:rx,z:rz,yaw:Math.atan2(f.tx,-f.tz),seed:t.i(0,1e9)});
+        if(baskPts.length<60) baskPts.push({x:rx,z:rz});
+        tally(TAL.propKinds,'retainingStones'); n++;
+      }
+    }
+  }
   // — ground contact: talus, slabs, shale, roots —
   const gq=76+t.i(0,18);
   for(let i=0;i<gq;i++){
@@ -1905,14 +2088,20 @@ function planChunk(id){
     recs.ground.push(rec); tally(TAL.ground,kind);
     if(kind==='slab'&&rec.sc>0.9&&coverPts.length<340) coverPts.push({x:p.x,z:p.z});
   }
-  // — flora: causal families, clustered —
-  const vq=60+v.i(0,14);
+  // — flora: causal families, clustered where the water went —
+  const vq=68+v.i(0,14);
   const clusters=[];
   for(let k2=0;k2<v.i(3,5);k2++){
-    const p=pos(v,9,56);
-    clusters.push(p);
+    let best=pos(v,9,56);
+    for(let tr2=0;tr2<3;tr2++){        // cluster hearts seek moisture memory
+      const cand=pos(v,9,56);
+      if(moistureAt(cand.x,cand.z)>moistureAt(best.x,best.z)) best=cand;
+    }
+    clusters.push(best);
   }
-  const densMul=chap.idx===1?1.25:(chap.idx===5?0.35:(chap.idx===6?0.7:1));
+  // the emotional density curve: silence → gardens → play → oppression →
+  // wind-blasted climb → bare contact → enormous quiet
+  const densMul=[0.65,1.4,1.1,0.5,0.55,0.35,0.5][chap.idx];
   for(let i=0;i<Math.round(vq*densMul);i++){
     let p;
     if(v.chance(0.62)&&clusters.length){ const c2=clusters[v.i(0,clusters.length-1)];
@@ -1935,6 +2124,7 @@ function planChunk(id){
       roll<0.68?'bunch':roll<0.8?'shrub':roll<0.9?'yucca':'dead'; }
     if(chap.idx===1&&v.chance(0.3)) fam=v.chance(0.5)?'lantern':'pads';
     if(chap.idx===6&&v.chance(0.4)) fam=v.chance(0.5)?'dead':'yucca';
+    if(chap.idx===4&&v.chance(0.45)) fam=v.chance(0.5)?'dead':'whip';
     if(chap.idx===2&&inFork&&p.arm===1&&(fam==='cholla'||fam==='pads'))
       fam=v.chance(0.5)?'barrel':'dead';
     const sc=v.r(0.6,1.5);
@@ -1979,6 +2169,7 @@ function planChunk(id){
   h=fnvStr(h,'c'+id);
   for(const r of recs.rocks){ h=fnvStr(h,r.type); h=fnvAdd(h,r.x); h=fnvAdd(h,r.z); h=fnvAdd(h,r.sc); }
   for(const r of recs.walls){ h=fnvStr(h,'w'+r.side); h=fnvAdd(h,r.sA); h=fnvAdd(h,r.sB); h=fnvAdd(h,r.h); h=fnvAdd(h,r.dist); }
+  for(const r of recs.roadworks){ h=fnvStr(h,r.t); h=fnvAdd(h,r.x); h=fnvAdd(h,r.z); }
   for(const r of recs.ground){ h=fnvStr(h,r.t); h=fnvAdd(h,r.x); h=fnvAdd(h,r.z); }
   for(const r of recs.plants){ h=fnvStr(h,r.t); h=fnvAdd(h,r.x); h=fnvAdd(h,r.z); }
   for(const r of recs.inst){ h=fnvStr(h,r.t); h=fnvAdd(h,r.x); h=fnvAdd(h,r.z); }
@@ -2068,6 +2259,22 @@ const ANIMALS={ lizards:[], packrats:[], quail:null, ravens:[], vultures:[], big
     ANIMALS.rabbits.push({cross:i,seed:LIFE.i(0,1e9),dur:LIFE.r(2.6,3.6)}); }
   const foxRoll=LIFE.f();
   ANIMALS.fox=foxRoll<0.14? {sP:SP(CHAPS[6].f0+0.10*(CHAPS[6].f1-CHAPS[6].f0)),dur:LIFE.r(6,9),seed:LIFE.i(0,1e9)}:null;
+  // a racer for the shoulder, and small lives at arm's length
+  ANIMALS.roadrunners=[{seed:LIFE.i(0,1e9)},{seed:LIFE.i(0,1e9)}];
+  ANIMALS.bugs=[];
+  for(let i=0;i<6;i++){
+    const ci=[0,1,2,4,6,6][i];
+    const sP=SP(CHAPS[ci].f0+LIFE.r(0.2,0.8)*(CHAPS[ci].f1-CHAPS[ci].f0));
+    const f=frameAtPrimary(sP,0);
+    const side=LIFE.chance(0.5)?1:-1;
+    const p=pushOut({x:f.x+f.lx*side*LIFE.r(8.7,10),z:f.z+f.lz*side*LIFE.r(8.7,10)},0.4);
+    ANIMALS.bugs.push({x:p.x,z:p.z,mirror:i>=4,seed:LIFE.i(0,1e9)});
+  }
+  // packrats live in the Listening Pipes when the pipes exist
+  if(ORPHAN_PIPES.length>=1){
+    const op=ORPHAN_PIPES[0];
+    ANIMALS.packrats[1]=pushOut({x:op.x+1.2,z:op.z+0.8,r:5,seed:ANIMALS.packrats[1].seed},1);
+  }
 }
 // ---------- ambient event schedule: route-distance windows + cooldowns ----------
 const EVENTS=[];
@@ -2089,6 +2296,11 @@ const EVENTS=[];
   E('poolBlade',S_GATE-64,80);
   E('chimeWave',listen.s-95,60);
   if(ANIMALS.fox) E('foxTrot',ANIMALS.fox.sP,60);
+  E('ravenSteal',relay.s-22,32);
+  E('roadrunner0',SP(CHAPS[1].f0+0.72*(CHAPS[1].f1-CHAPS[1].f0)),40);
+  E('roadrunner1',SP(CHAPS[6].f0+0.35*(CHAPS[6].f1-CHAPS[6].f0)),40);
+  E('mothWeather',S_GATE-38,70);
+  if(STRIDER) E('longStrider',STRIDER.sTrig,90);
 }
 // ---------- dust plan: one wind, weighted air ----------
 const WIND_AZ=Math.atan2(gateFwd.x,-gateFwd.z)+0.34*SUN_SIDE;
@@ -2150,6 +2362,9 @@ let ecologyHash,placesHash,eventsHash,worldHash;
   h=fnvAdd(h,ANIMALS.quail.x); h=fnvAdd(h,ANIMALS.quail.z);
   for(const b of ANIMALS.bighorn) h=fnvAdd(h,b.off*100);
   h=fnvAdd(h,ANIMALS.fox?1:0);
+  for(const b of ANIMALS.bugs){ h=fnvAdd(h,b.x); h=fnvAdd(h,b.z); }
+  h=fnvAdd(h,ORPHAN_PIPES.length); h=fnvAdd(h,STRIDER?1:0); h=fnvAdd(h,CHAIR?1:0);
+  if(LONG_TRACKS){ h=fnvAdd(h,LONG_TRACKS.x0); h=fnvAdd(h,LONG_TRACKS.z0); }
   ecologyHash=hex8(h);
   h=fnvInit();
   for(const p of PLACES){ h=fnvStr(h,p.id); h=fnvAdd(h,p.x); h=fnvAdd(h,p.z); h=fnvAdd(h,p.props.length); }
@@ -2199,6 +2414,7 @@ const MEASURE={ minTerrainClear:1e9, terrainIntrusions:0, propIntrusions:0,
         checkP(fs.x+fs.lx*sg2*r.dist,fs.z+fs.lz*sg2*r.dist,7);
       }
     }
+    for(const r of (cp.recs.roadworks||[])) checkP(r.x,r.z,0.9);
     for(const r of cp.recs.ground) checkP(r.x,r.z,(FOOT_KIND[r.t]||0.6)*r.sc);
     for(const r of cp.recs.plants) checkP(r.x,r.z,(FOOT_KIND[r.t]||0.6)*r.sc);
     for(const r of cp.recs.inst) checkP(r.x,r.z,(FOOT_KIND[r.t]||0.5)*r.sc);
@@ -2858,6 +3074,15 @@ const furnB=Buf();
     apron(furnB,gr.x,gr.z,0.5,0,1,K.shadow());
     tally(TAL.propKinds,'flowGauge');
   }
+  // the recurring mysteries
+  for(const op of ORPHAN_PIPES){
+    const R=makeStream('orphan:'+op.seed);
+    kitOrphanPipe(furnB,op,R);
+    tally(TAL.propKinds,'listeningPipe');
+  }
+  if(LONG_TRACKS) tally(TAL.propKinds,'longTracks');
+  if(LONG_TRACKS){ const R=makeStream('tracks:'+LONG_TRACKS.seed); kitLongTracks(furnB,LONG_TRACKS,R); }
+  if(CHAIR){ const R=makeStream('chair:'+CHAIR.seed); kitChair(furnB,CHAIR.x,CHAIR.z,CHAIR.yaw,R); tally(TAL.propKinds,'theChair'); }
   // roadside pipe spurs
   for(const pr2 of PIPE_RUNS){
     const R=makeStream('pipes:'+pr2.seed);
@@ -3124,6 +3349,15 @@ function buildChunkMeshes(cp){
       buildWall(B,r,R);
       realized.rocks++;
     }
+    for(const r of (cp.recs.roadworks||[])){
+      const R=makeStream('rw:'+r.seed);
+      if(r.t==='culvert') kitCulvert(B,r.x,r.z,r.yaw,R);
+      else { // retaining stones shoring the cut, seats for sunning lizards
+        const ca=Math.cos(r.yaw),sa=Math.sin(r.yaw);
+        for(let k=-2;k<=2;k++)
+          stoneSmall(B,r.x+ca*k*1.1,r.z-sa*k*1.1,R.r(0.8,1.3),R,mixc(PAL.rust,PAL.sandstone,R.r(0.2,0.5)));
+      }
+    }
     for(const r of cp.recs.ground){
       if(r.pr>QP.prSkip) continue;
       const R=makeStream('gnd:'+r.seed);
@@ -3266,6 +3500,35 @@ updateChunks(0,true);
     const hgg=bufGeo(hg);
     const im=new THREE.InstancedMesh(hgg,new THREE.MeshToonMaterial({gradientMap:gradTex,vertexColors:true}),MOVERS.vanes.length);
     scene.add(im); MOVERS.vaneMesh=im;
+  }
+  // the Long Strider — most rides never see it
+  if(STRIDER){
+    const sB=Buf();
+    const dk=mixc(PAL.wine,PAL.aubergine,0.6);
+    strut(sB,-1.1,0,0,-0.4,5.6,0,0.42,0.42,dk);
+    strut(sB,1.1,0,0,0.4,5.6,0,0.42,0.42,dk);
+    strut(sB,-0.5,5.4,0,0.5,7.4,0,2.4,1.5,dk);
+    strut(sB,0.3,7.4,0,1.4,10.6,0,0.5,0.5,dk);
+    strut(sB,1.4,10.6,0,2.2,10.9,0,0.42,0.7,dk.clone().lerp(col(PAL.wine),0.2));
+    const m2=new THREE.Mesh(bufGeo(sB),rockMatShadow);
+    m2.position.set(0,-500,0);
+    scene.add(m2);
+    MOVERS.strider={mesh:m2,t0:-1};
+  }
+  // vulture shadows arrive before the birds do
+  {
+    const g2=new THREE.PlaneGeometry(3.6,1.7); g2.rotateX(-Math.PI/2);
+    const im2=new THREE.InstancedMesh(g2,new THREE.MeshBasicMaterial({
+      color:col(PAL.aubergine),transparent:true,opacity:0.20,depthWrite:false}),4);
+    im2.frustumCulled=false; scene.add(im2);
+    MOVERS.vultureShadows=im2;
+  }
+  // the shine a raven cannot resist
+  {
+    const gm=new THREE.Mesh(new THREE.OctahedronGeometry(0.12,0),
+      new THREE.MeshBasicMaterial({color:mixc(PAL.cream,PAL.gold,0.3)}));
+    gm.position.set(0,-500,0); scene.add(gm);
+    MOVERS.stealGlint={mesh:gm,follow:null,untilT:-1};
   }
   // the far crawler — something out there is still working
   const CRW=makeStream('crawler');
@@ -3482,6 +3745,30 @@ let devilSys=null;
   devilSys.sys.mat.uniforms.uAmp.value=0;
   dustTotal-=44;   // counted only while active
 }
+// Moth Weather — pale wings rise from the keeping pool like windblown ash
+const _mothCam=new THREE.Vector3();
+let mothT0=-1, mothAmp=0;
+const mothSys=makePointsSystem('moths',220,'1.0,0.94,0.82',24,0.65,
+  (sys,i)=>{ const st=sys.st;
+    const a=DUST_RT.r(0,TAU), rr=DUST_RT.r(0.5,7);
+    st.p[i*3]=POOL.x+Math.cos(a)*rr; st.p[i*3+1]=gateC.y-0.9+DUST_RT.r(0,1.5); st.p[i*3+2]=POOL.z+Math.sin(a)*rr;
+    st.vx[i]=DUST_RT.r(0,TAU); st.vz[i]=DUST_RT.r(0.4,1.4); st.vy[i]=DUST_RT.r(0.5,1.2);
+    st.maxLife[i]=DUST_RT.r(18,26); st.life[i]=st.maxLife[i]*DUST_RT.f(); },
+  (sys,i,dt)=>{ const st=sys.st;
+    st.life[i]-=dt;
+    if(st.life[i]<=0){ sys.init(sys,i); st.life[i]=st.maxLife[i]; return; }
+    st.vx[i]+=dt*1.7;   // one coherent swirl, individually phased
+    st.p[i*3]+=(Math.cos(st.vx[i])*st.vz[i]+windDir.x*0.5)*dt;
+    st.p[i*3+2]+=(Math.sin(st.vx[i])*st.vz[i]+windDir.z*0.5)*dt;
+    st.p[i*3+1]+=st.vy[i]*dt;
+    // the cloud parts around the rider and closes behind
+    const dxm=st.p[i*3]-_mothCam.x, dzm=st.p[i*3+2]-_mothCam.z;
+    const dm=Math.hypot(dxm,dzm);
+    if(dm<7&&dm>0.01){ const push=(7-dm)*0.9*dt/dm;
+      st.p[i*3]+=dxm*push; st.p[i*3+2]+=dzm*push; }
+  });
+mothSys.mat.uniforms.uAmp.value=0;
+dustTotal-=220;   // counted only during Moth Weather
 
 // ============================================================
 // ANIMALS — world-anchored, asynchronous, indifferent
@@ -3514,16 +3801,27 @@ const hopBodyGeo=(()=>{ const B=Buf();
   pushTri(B,[-0.2,0.05,-0.1],[0.2,0.05,-0.1],[0,0.28,0.16],c);
   pushTri(B,[-0.2,0.05,-0.1],[0,0.28,0.16],[0,0.3,-0.18],c);
   pushTri(B,[0.2,0.05,-0.1],[0,0.3,-0.18],[0,0.28,0.16],c);
-  pushQuad(B,[-0.05,0.28,0.1],[-0.01,0.28,0.1],[-0.01,0.52,0.02],[-0.05,0.52,0.02],c);
-  pushQuad(B,[0.01,0.28,0.1],[0.05,0.28,0.1],[0.05,0.52,0.02],[0.01,0.52,0.02],c);
+  pushQuad(B,[-0.07,0.28,0.1],[-0.015,0.28,0.1],[-0.015,0.78,-0.02],[-0.07,0.78,-0.02],c);
+  pushQuad(B,[0.015,0.28,0.1],[0.07,0.28,0.1],[0.07,0.78,-0.02],[0.015,0.78,-0.02],c);
+  return geoFromBuf(B); })();
+const runnerBodyGeo=(()=>{ const B=Buf();
+  const c=col(0xffffff);
+  pushTri(B,[-0.16,0.16,-0.1],[0.16,0.16,-0.1],[0,0.3,0.34],c);          // low body, beak forward
+  pushTri(B,[-0.16,0.16,-0.1],[0,0.3,0.34],[0,0.36,-0.05],c);
+  pushTri(B,[0.16,0.16,-0.1],[0,0.36,-0.05],[0,0.3,0.34],c);
+  pushQuad(B,[-0.02,0.3,-0.08],[0.02,0.3,-0.08],[0.02,0.44,-0.62],[-0.02,0.42,-0.6],c); // long tail
+  pushTri(B,[0,0.36,0.1],[0,0.5,0.02],[0,0.38,-0.04],c);                 // crest
+  strut(B,-0.06,0,-0.02,-0.06,0.17,-0.02,0.03,0.03,c);
+  strut(B,0.06,0,-0.02,0.06,0.17,-0.02,0.03,0.03,c);
   return geoFromBuf(B); })();
 const animalMats=()=>new THREE.MeshToonMaterial({gradientMap:gradTex});
-const smallMesh=new THREE.InstancedMesh(smallBodyGeo,animalMats(),16);
+const smallMesh=new THREE.InstancedMesh(smallBodyGeo,animalMats(),24);
 const birdMesh=new THREE.InstancedMesh(birdBodyGeo,new THREE.MeshBasicMaterial({
   color:mixc(PAL.wine,PAL.aubergine,0.5),side:THREE.DoubleSide}),9);
 const hornMesh=new THREE.InstancedMesh(hornBodyGeo,animalMats(),4);
-const hopMesh=new THREE.InstancedMesh(hopBodyGeo,animalMats(),4);
-for(const m of [smallMesh,birdMesh,hornMesh,hopMesh]){ m.frustumCulled=false; scene.add(m); }
+const hopMesh=new THREE.InstancedMesh(hopBodyGeo,animalMats(),5);
+const runnerMesh=new THREE.InstancedMesh(runnerBodyGeo,animalMats(),2);
+for(const m of [smallMesh,birdMesh,hornMesh,hopMesh,runnerMesh]){ m.frustumCulled=false; scene.add(m); }
 const _am=new THREE.Matrix4(), _aq=new THREE.Quaternion(), _ae=new THREE.Euler(), _av=new THREE.Vector3(), _as=new THREE.Vector3();
 function setInst(mesh,i,x,y,z,yaw,pitch,roll,sc){
   _ae.set(pitch,yaw,roll); _aq.setFromEuler(_ae);
@@ -3543,13 +3841,22 @@ let LIFE_RT=null;
 function resetLife(){
   LIFE_RT=makeStream('life-rt');
   ACTORS.small.length=0; ACTORS.birds.length=0; ACTORS.horns.length=0; ACTORS.hops.length=0;
+  if(ACTORS.runners) ACTORS.runners.length=0;
   // lizards + packrats + quail → the small pool
   let si=0;
-  for(const l of ANIMALS.lizards){
+  ANIMALS.lizards.forEach((l,li)=>{
     const st=makeStream('liz:'+l.seed);
-    ACTORS.small.push({i:si++,kind:'lizard',home:l,st,x:l.x,z:l.z,tx:l.x,tz:l.z,
-      mode:'rest',t:st.r(0,4),dur:st.r(2,8),yaw:st.r(0,TAU),
+    const bp=li<4&&baskPts[li]?baskPts[li]:null;   // the first few keep house on retaining stones
+    const hm=bp?{x:bp.x,z:bp.z,r:5}:l;
+    ACTORS.small.push({i:si++,kind:'lizard',home:hm,st,x:hm.x,z:hm.z,tx:hm.x,tz:hm.z,
+      bask:!!bp,scT:0,mode:'rest',t:st.r(0,4),dur:st.r(2,8),yaw:st.r(0,TAU),
       col:mixc(PAL.rust,PAL.wine,st.r(0.2,0.6)),sc:st.r(0.95,1.4)});
+  });
+  for(const bg of ANIMALS.bugs){
+    const st=makeStream('bug:'+bg.seed);
+    ACTORS.small.push({i:si++,kind:'bug',home:bg,st,x:bg.x,z:bg.z,tx:bg.x,tz:bg.z,
+      hd:st.r(0,TAU),mirror:bg.mirror,mode:'crawl',t:0,dur:1,yaw:st.r(0,TAU),
+      col:bg.mirror?mixc(PAL.wine,PAL.cyan,0.35):mixc(PAL.wine,PAL.aubergine,0.4),sc:st.r(0.28,0.42)});
   }
   for(const p of ANIMALS.packrats){
     const st=makeStream('rat:'+p.seed);
@@ -3590,6 +3897,14 @@ function resetLife(){
     ACTORS.hops.push({i:ACTORS.hops.length,kind:'fox',fox:ANIMALS.fox,st,mode:'hidden',t:0,
       x:0,z:0,yaw:0,col:mixc(PAL.rust,PAL.rose,0.4),sc:1.7});
   }
+  ACTORS.runners=[];
+  ANIMALS.roadrunners.forEach((rr,i)=>{
+    const st=makeStream('rr:'+rr.seed);
+    ACTORS.runners.push({i,st,mode:'hidden',t:0,s:0,side:1,x:0,z:0,yaw:0,sc:1.25,
+      col:mixc(PAL.wine,PAL.sandstone,st.r(0.25,0.4))});
+  });
+  for(const a of ACTORS.runners) runnerMesh.setColorAt(a.i,a.col);
+  if(runnerMesh.instanceColor) runnerMesh.instanceColor.needsUpdate=true;
   for(const a of ACTORS.small) smallMesh.setColorAt(a.i,a.col);
   for(const a of ACTORS.horns) hornMesh.setColorAt(a.i,a.col);
   for(const a of ACTORS.hops) hopMesh.setColorAt(a.i,a.col);
@@ -3600,8 +3915,43 @@ function resetLife(){
 let lifeCheckCursor=0;
 function updateAnimals(wT,dt,riderS,riderPos){
   // — small ground life —
+  let qLead=null;
+  for(const a of ACTORS.small) if(a.kind==='quail'){ qLead=a; break; }
   for(const a of ACTORS.small){
     a.t+=dt;
+    if(a.kind==='bug'){
+      // shoulder-range crawlers: slow wander, freeze near the rider
+      const rd=Math.hypot(a.x-riderPos.x,a.z-riderPos.z);
+      if(rd>10){
+        a.hd+=(a.st.n1(wT*0.13+a.i)-0.5)*1.6*dt;
+        const nx=a.x+Math.sin(a.hd)*0.15*dt, nz=a.z+Math.cos(a.hd)*0.15*dt;
+        if(routeInfo(nx,nz).d>=CLEAR_D+0.3){ a.x=nx; a.z=nz; }   // never toward the riding line
+        else a.hd+=Math.PI;
+        const hx=a.x-a.home.x, hz=a.z-a.home.z;
+        if(Math.hypot(hx,hz)>2.2){ a.hd=Math.atan2(-hx,-hz); }
+        a.yaw=a.hd;
+      }
+      if(a.mirror&&Math.sin(wT*6.3+a.i*2.4)>0.965){
+        smallMesh.setColorAt(a.i,mixc(PAL.cream,PAL.gold,0.2));
+        if(smallMesh.instanceColor) smallMesh.instanceColor.needsUpdate=true;
+      } else if(a.mirror&&Math.sin(wT*6.3+a.i*2.4)<0.9&&a.glinted!==false){
+        smallMesh.setColorAt(a.i,a.col); a.glinted=false;
+        if(smallMesh.instanceColor) smallMesh.instanceColor.needsUpdate=true;
+      }
+      setInst(smallMesh,a.i,a.x,terrainH(a.x,a.z)+0.02,a.z,a.yaw,0,0,a.sc);
+      continue;
+    }
+    // sunning lizards scatter when the rider closes in
+    if(a.kind==='lizard'&&a.bask&&(a.mode==='rest')&&wT-a.scT>25){
+      const rd=Math.hypot(a.x-riderPos.x,a.z-riderPos.z);
+      if(rd<16){
+        a.scT=wT; a.mode='dart'; a.t=0; a.dur=0.7;
+        const ri3=routeInfo(a.x,a.z);
+        const dx3=a.x-ri3.sx, dz3=a.z-ri3.sz, l3=Math.hypot(dx3,dz3)||1;
+        a.fx=a.x; a.fz=a.z; a.tx=a.x+dx3/l3*4.5; a.tz=a.z+dz3/l3*4.5;
+        a.yaw=Math.atan2(a.tx-a.fx,a.tz-a.fz);
+      }
+    }
     if(a.kind==='quail'&&a.flying){
       const t=clamp(a.t/a.dur,0,1);
       a.x=lerp(a.fx,a.tx,t); a.z=lerp(a.fz,a.tz,t);
@@ -3611,8 +3961,14 @@ function updateAnimals(wT,dt,riderS,riderPos){
     } else if(a.mode==='rest'||a.mode==='peck'){
       if(a.t>a.dur){
         a.mode='dart'; a.t=0; a.dur=a.st.r(0.5,1.1);
-        const home=a.kind==='quail'?{x:a.cx,z:a.cz}:a.home;
-        const s2=safeSpot(home.x,home.z,a.kind==='quail'?4:(a.home.r||5),a.st);
+        if(a.kind==='packrat'){ a.carry=!a.carry; if(a.carry) a.dur*=2.5; } // dragging the hoard home
+        let home=a.kind==='quail'?{x:a.cx,z:a.cz}:a.home;
+        // the covey moves as a family line behind its leader
+        if(a.kind==='quail'&&qLead&&a!==qLead&&!qLead.flying){
+          const rank=(a.i-qLead.i);
+          home={x:qLead.x-Math.sin(qLead.yaw)*0.85*rank,z:qLead.z-Math.cos(qLead.yaw)*0.85*rank};
+        }
+        const s2=safeSpot(home.x,home.z,a.kind==='quail'?2.5:(a.home.r||5),a.st);
         a.fx=a.x; a.fz=a.z; a.tx=s2.x; a.tz=s2.z;
         a.yaw=Math.atan2(a.tx-a.fx,a.tz-a.fz);
       }
@@ -3623,7 +3979,9 @@ function updateAnimals(wT,dt,riderS,riderPos){
         a.dur=a.st.r(a.kind==='lizard'?2:3,a.kind==='lizard'?9:10); }
     }
     const bob=a.kind==='quail'&&a.mode==='peck'?Math.max(0,Math.sin(a.t*7))*0.03:0;
-    setInst(smallMesh,a.i,a.x,terrainH(a.x,a.z)+0.04+a.fh-bob,a.z,a.yaw,0,0,a.sc);
+    const seat=(a.kind==='lizard'&&a.bask&&a.mode==='rest')?0.34:0;   // up on the warm stone
+    const low=(a.kind==='packrat'&&a.carry)?-0.02:0;
+    setInst(smallMesh,a.i,a.x,terrainH(a.x,a.z)+0.04+a.fh-bob+seat+low,a.z,a.yaw,0,0,a.sc);
   }
   smallMesh.instanceMatrix.needsUpdate=true;
   // — birds —
@@ -3642,6 +4000,8 @@ function updateAnimals(wT,dt,riderS,riderPos){
           b.from=b.perch; b.to=next;
           const d=Math.hypot(next.x-b.perch.x,next.z-b.perch.z);
           b.dur=Math.max(2,d/9);
+          if(b.stealing===2&&MOVERS.stealGlint){   // it takes the shine with it
+            MOVERS.stealGlint.follow=b; MOVERS.stealGlint.untilT=wT+12; }
           if(AUDIO.ok&&Math.hypot(b.x-riderPos.x,b.z-riderPos.z)<160) sndWing();
         }
       } else {
@@ -3652,6 +4012,8 @@ function updateAnimals(wT,dt,riderS,riderPos){
         b.yaw=Math.atan2(b.to.x-b.from.x,b.to.z-b.from.z);
         if(t>=1){ b.mode='perched'; b.perch=b.to; b.t=0;
           b.dwell=b.st.r(8,28);
+          if(b.stealing===1&&b.to.kind==='glint'){ b.dwell=2.4; b.stealing=2; }   // the inspection
+          else if(b.stealing===2){ b.stealing=0; }
           if(AUDIO.ok&&b.st.chance(0.4)&&Math.hypot(b.x-riderPos.x,b.z-riderPos.z)<220) sndRaven(b.x-riderPos.x);
         }
       }
@@ -3723,6 +4085,43 @@ function updateAnimals(wT,dt,riderS,riderPos){
     }
   }
   hopMesh.instanceMatrix.needsUpdate=true;
+  // — the racer on the shoulder —
+  if(ACTORS.runners){
+    for(const rr of ACTORS.runners){
+      if(rr.mode==='hidden'){ setInst(runnerMesh,rr.i,0,-500,0,0,0,0,0.001); continue; }
+      if(rr.mode==='race'){
+        rr.t+=dt;
+        const spd=clamp(rideState.v*1.12,7.5,13.5);
+        rr.s+=spd*dt;
+        const f=frameAtPrimary(clamp(rr.s,0,SP_LEN-1),rideState.branch==='right'?1:0);
+        const off=rr.t>rr.dur? 9.2+(rr.t-rr.dur)*7 : 9.2;
+        rr.x=f.x+f.lx*rr.side*off; rr.z=f.z+f.lz*rr.side*off;
+        rr.yaw=Math.atan2(f.tx,f.tz)+(rr.t>rr.dur?rr.side*0.6:0);
+        const bob=Math.abs(Math.sin(rr.t*14))*0.05;
+        setInst(runnerMesh,rr.i,rr.x,terrainH(rr.x,rr.z)+0.03+bob,rr.z,rr.yaw,0,0,rr.sc);
+        if(rr.t>rr.dur+1.8) rr.mode='rest';
+        continue;
+      }
+      setInst(runnerMesh,rr.i,rr.x,terrainH(rr.x,rr.z)+0.02,rr.z,rr.yaw,0,0,rr.sc);
+    }
+    runnerMesh.instanceMatrix.needsUpdate=true;
+  }
+  // vulture shadows sweep the ground ahead of their birds
+  if(MOVERS.vultureShadows){
+    let vi=0;
+    for(const b of ACTORS.birds) if(b.kind==='vulture'){
+      const gy=terrainH(b.x,b.z);
+      const px=b.x-sunDir.x*(b.y-gy)/Math.max(0.05,sunDir.y);
+      const pz=b.z-sunDir.z*(b.y-gy)/Math.max(0.05,sunDir.y);
+      setInst(MOVERS.vultureShadows,vi++,px,terrainH(px,pz)+0.06,pz,b.yaw,0,0,1);
+    }
+    MOVERS.vultureShadows.instanceMatrix.needsUpdate=true;
+  }
+  if(MOVERS.stealGlint&&MOVERS.stealGlint.follow){
+    const g3=MOVERS.stealGlint;
+    g3.mesh.position.set(g3.follow.x,g3.follow.y-0.12,g3.follow.z);
+    if(wT>g3.untilT){ g3.follow=null; g3.mesh.position.y=-500; }
+  }
   // measured life-path sovereignty — rotating sample of live GROUND actors
   // (a flushed covey crossing in the air is flight, not a ground path)
   const pool=ACTORS.small;
@@ -3764,6 +4163,9 @@ function audioInit(){
       return {src,flt,g};
     };
     AUDIO.wind=mkLoop('lowpass',420,0.6,0.05);
+    AUDIO.pipeHum=mkLoop('bandpass',205,9,0.0);
+    AUDIO.ghost=mkLoop('bandpass',3100,2.5,0.0);
+    AUDIO.flutter=mkLoop('highpass',3800,0.7,0.0);
     AUDIO.whistle=mkLoop('bandpass',980,9,0.0);
     AUDIO.tire=mkLoop('bandpass',520,0.8,0.0);
     AUDIO.crackle=mkLoop('highpass',2400,0.7,0.0);
@@ -3941,6 +4343,25 @@ function fireEvent(e,sPrim){
       const hp=ACTORS.hops.find(h=>h.kind==='fox');
       if(hp){ hp.mode='trot'; hp.t=0; hp.s0=sPrim+30; hp.side=hp.st.chance(0.5)?1:-1; }
       break; }
+    case 'ravenSteal':{
+      const relay=PLACES[0];
+      const bin=relay.props.find(p2=>p2.kind==='bin');
+      let best=null,bd=1e9;
+      for(const b of ACTORS.birds) if(b.kind==='raven'&&b.mode==='perched'){
+        const d2=Math.hypot(b.x-relay.x,b.z-relay.z); if(d2<bd){bd=d2;best=b;} }
+      if(best&&bin){ best.mode='fly'; best.t=0; best.from=best.perch;
+        best.to={x:bin.x+1.1,y:terrainH(bin.x+1.1,bin.z+0.6)+0.4,z:bin.z+0.6,kind:'glint'};
+        best.dur=Math.max(2,Math.hypot(best.to.x-best.x,best.to.z-best.z)/9);
+        best.stealing=1; }
+      break; }
+    case 'roadrunner0': case 'roadrunner1':{
+      const idx=Number(e.id.slice(-1));
+      const rr=ACTORS.runners&&ACTORS.runners[idx];
+      if(rr&&rr.mode==='hidden'){ rr.mode='race'; rr.t=0; rr.s=sPrim+9;
+        rr.side=rr.st.chance(0.5)?1:-1; rr.dur=rr.st.r(5.5,7.5); }
+      break; }
+    case 'mothWeather': mothT0=worldT; break;
+    case 'longStrider': if(MOVERS.strider) MOVERS.strider.t0=worldT; break;
   }
 }
 function restartRide(){
@@ -3955,6 +4376,9 @@ function restartRide(){
   if(devilSys) devilSys.sys.mat.uniforms.uAmp.value=0;
   resetLife();
   if(MOVERS.crawler){ MOVERS.crawler.greeted=false; MOVERS.crawler.tAcc=0; MOVERS.crawler.pauseT=0; }
+  mothT0=-1; mothAmp=0; mothSys.mat.uniforms.uAmp.value=0;
+  if(MOVERS.strider){ MOVERS.strider.t0=-1; MOVERS.strider.mesh.position.y=-500; }
+  if(MOVERS.stealGlint){ MOVERS.stealGlint.follow=null; MOVERS.stealGlint.mesh.position.y=-500; }
   poolUniforms.uGlow.value=0.25; if(bladeMat) bladeMat.uniforms.uAmp.value=0.25;
   updateChunks(0,true);
 }
@@ -3981,9 +4405,9 @@ const _camA=new THREE.Vector3(), _camB=new THREE.Vector3(), _camC=new THREE.Vect
 let baseYaw=0, camRoll=0, camInit=false;
 const wrapPi=(a)=>{ while(a>Math.PI)a-=TAU; while(a<-Math.PI)a+=TAU; return a; };
 // ---------- proof ----------
-const BEHAVIOR_FAMILIES=['darter-small-ground','percher-raven','soarer-vulture','grazer-cliff','crosser-rabbit'+(ANIMALS.fox?'+rare-fox':'')];
+const BEHAVIOR_FAMILIES=['darter-small-ground','basker-lizard','percher-thief-raven','soarer-vulture','grazer-cliff','crosser-rabbit','racer-roadrunner','crawler-bug'+(ANIMALS.fox?'+rare-fox':'')];
 const ANIMAL_COUNT=ANIMALS.lizards.length+ANIMALS.packrats.length+ANIMALS.quail.n+
-  ANIMALS.ravens.length+ANIMALS.vultures.length+ANIMALS.bighorn.length+ANIMALS.rabbits.length+(ANIMALS.fox?1:0);
+  ANIMALS.ravens.length+ANIMALS.vultures.length+ANIMALS.bighorn.length+ANIMALS.rabbits.length+(ANIMALS.fox?1:0)+ANIMALS.roadrunners.length+ANIMALS.bugs.length;
 window.__SUNSCAR_PROOF__={
   snapshot(){
     const ft=frameTimes.slice(-300).sort((a,b)=>a-b);
@@ -4039,7 +4463,10 @@ window.__SUNSCAR_PROOF__={
       realizedCounts:Object.assign({},realized),
       animalCount:ANIMAL_COUNT,
       behaviorFamilies:BEHAVIOR_FAMILIES,
-      rareEventPresent:!!ANIMALS.fox,
+      rareEventPresent:!!ANIMALS.fox||!!STRIDER,
+      mysteries:{listeningPipes:ORPHAN_PIPES.length,longTracksAtM:LONG_TRACKS?Math.round(LONG_TRACKS.sP):null,
+        striderPresent:!!STRIDER,mothWeather:'the-keeping-pool',chairPresent:!!CHAIR,
+        flumeGhost:'coldwash-aqueduct'},
       ambientEventPlan:EVENTS.map(e=>({id:e.id,atM:Math.round(e.sTrig),win:e.win,arm:e.armReq})),
       firedEvents:firedEvents.slice(),
       qualityRequested:QUALITY_REQ, qualityResolved:QUALITY,
@@ -4143,6 +4570,15 @@ function audioFrame(dt,sPrim,camPos){
   // pebbles under the tires
   pebbleAcc+=spd*dt;
   if(pebbleAcc>SND_RT.r(14,40)){ pebbleAcc=0; sndPebble(); }
+  // the Listening Pipes hum in crosswind; the dry flume remembers water
+  { let pd=1e9;
+    for(const op of ORPHAN_PIPES){ const d2=Math.hypot(op.x-camPos.x,op.z-camPos.z); if(d2<pd) pd=d2; }
+    AUDIO.pipeHum.g.gain.setTargetAtTime(pd<60? (1-pd/60)*0.045*(0.4+gustEnv) : 0,t,0.4);
+    const aq=PLACES[4];
+    const gd=Math.hypot(aq.x-camPos.x,aq.z-camPos.z);
+    AUDIO.ghost.g.gain.setTargetAtTime(gd<45? (1-gd/45)*0.013 : 0,t,0.6);
+    AUDIO.flutter.g.gain.setTargetAtTime(mothAmp*0.022,t,0.3);
+  }
   // sparse life sounds
   if(worldT-quailCallT>SND_RT.r(20,50)){
     quailCallT=worldT;
@@ -4298,6 +4734,27 @@ renderer.setAnimationLoop(()=>{
     cr.mesh.rotation.y=Math.atan2(p1.x-p0.x,p1.z-p0.z)+Math.PI/2;
     const blink=paused2? (Math.sin(worldT*14)>0?1:0.1) : (Math.sin(worldT*2.2)>0.85?1:0.35);
     cr.beacon.material.color.copy(mixc(PAL.gold,PAL.cream,0.3)).multiplyScalar(blink);
+  }
+  // the Long Strider crosses once, far off, and is gone
+  if(MOVERS.strider&&MOVERS.strider.t0>0){
+    const st2=MOVERS.strider;
+    const t=(worldT-st2.t0)/STRIDER.dur;
+    if(t>=1){ st2.mesh.position.y=-500; st2.t0=-1; }
+    else {
+      const path=STRIDER.path;
+      const fi=t*(path.length-1), i0=Math.floor(fi), tt=fi-i0;
+      const p0=path[i0], p1=path[Math.min(path.length-1,i0+1)];
+      st2.mesh.position.set(lerp(p0.x,p1.x,tt),lerp(p0.y,p1.y,tt)+Math.abs(Math.sin(worldT*1.9))*0.35,lerp(p0.z,p1.z,tt));
+      st2.mesh.rotation.y=Math.atan2(p1.x-p0.x,p1.z-p0.z);
+      st2.mesh.rotation.z=Math.sin(worldT*1.9)*0.05;
+    }
+  }
+  if(mothT0>0){
+    const u=worldT-mothT0;
+    mothAmp=smooth(0,4,u)*(1-smooth(26,40,u));
+    mothSys.mat.uniforms.uAmp.value=mothAmp;
+    _mothCam.copy(camera.position);
+    if(u>42){ mothT0=-1; mothSys.mat.uniforms.uAmp.value=0; }
   }
   // the blade and the pool
   {
