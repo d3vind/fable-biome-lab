@@ -624,7 +624,9 @@ function buildPlan(seedStr) {
   const ROLE = {
     // dig/mass are 0..1 per side; vig is a direct stem-height multiplier; rise lifts the road
     corridor:     { digL: 0.06, digR: 0.06, massL: 1.00, massR: 1.00, vigL: 1.86, vigR: 1.86, rise: 0 },
-    waterSlit:    { digL: 0.62, digR: 0.06, massL: 0.24, massR: 1.00, vigL: 0.62, vigR: 1.80, rise: 0 },
+    /* the slit has to be seen, not inferred: no reed screen at all on the wet hand, or
+       a 1.4 m eye looks straight over the water it is supposed to be told about */
+    waterSlit:    { digL: 0.90, digR: 0.05, massL: 0.00, massR: 1.00, vigL: 0.20, vigR: 1.84, rise: 0 },
     waterSide:    { digL: 1.00, digR: 0.14, massL: 0.00, massR: 0.94, vigL: 0.28, vigR: 1.26, rise: 0 },
     openBoth:     { digL: 0.96, digR: 0.96, massL: 0.00, massR: 0.00, vigL: 0.30, vigR: 0.30, rise: 0 },
     aperture:     { digL: 0.14, digR: 0.14, massL: 1.00, massR: 1.00, vigL: 1.72, vigR: 1.72, rise: 0, gap: 1 },
