@@ -93,6 +93,10 @@ const PAL={
   road:0xE9DCB4,           // pale warm road stone
   blossom:0xEBAFB9,        // small blossom / seedhead accent
 };
+// One eye height for the whole world: the riding camera, the sight lines the
+// plan uses to decide what is visible from the road, and the validator that
+// checks the camera never ends up inside the terrain.
+const EYE_H=1.74, PITCH_BIAS=0.036;
 const col=(h)=>new THREE.Color(h);
 const mixc=(a,b,t)=>col(a).lerp(col(b),t);
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -400,7 +404,12 @@ function armPoints(kind){
     // height; otherwise the split reads as a step in the ground, not a fork
     // the lanes part quickly enough to be seen as two roads from a hundred
     // metres back, then keep parting slowly, then come together gently
-    const latP=(0.44*smooth(0.012,0.145,u)+0.56*smooth(0.13,0.40,u))*(1-smooth(0.63,0.97,u));
+    // The onset used to begin seven metres past the split, which put a corner in
+    // the arm sharp enough to fail the route's own continuity check on some
+    // seeds. It now eases in over the first forty metres — still parted far
+    // enough to be read as two roads from a hundred metres back, but no longer
+    // a hinge.
+    const latP=(0.44*smooth(0.030,0.200,u)+0.56*smooth(0.16,0.44,u))*(1-smooth(0.63,0.97,u));
     const bell=Math.sin(Math.PI*clamp((u-0.02)/0.96,0,1));
     const wob=Math.sin(u*TAU*wobN+wobP)*wobA*bell;
     const off=side*(out*latP)+wob;
@@ -440,7 +449,11 @@ function buildFrames(arm){
     tmp[0]=arr[0]; tmp[F.N]=arr[F.N];
     for(let i=1;i<F.N;i++) tmp[i]=(arr[i-1]+arr[i]*2+arr[i+1])*0.25;
     arr.set(tmp); } };
-  blur(F.x,3); blur(F.z,3); blur(F.y,60);
+  // Seven passes rather than three. At two-metre spacing this is a three-metre
+  // smoothing radius against a route whose curvature is measured in hundreds of
+  // metres — the shape is untouched — but it takes the tightest corner in the
+  // seed space under the continuity threshold instead of leaving it to chance.
+  blur(F.x,7); blur(F.z,7); blur(F.y,60);
   F.tx=new Float32Array(F.N+1); F.tz=new Float32Array(F.N+1);
   F.lx=new Float32Array(F.N+1); F.lz=new Float32Array(F.N+1); F.k=new Float32Array(F.N+1);
   for(let i=0;i<=F.N;i++){
@@ -1189,7 +1202,7 @@ const SISTERS=(()=>{
   const cand=[];
   for(const p of pairs){ if(cand.every(c=>Math.abs(c.gA-p.gA)>180)) cand.push(p); if(cand.length>=6) break; }
   const sees=(fr,x,z,y)=>{
-    const ex=fr.x, ez=fr.z, ey=fr.y+1.62;
+    const ex=fr.x, ez=fr.z, ey=fr.y+EYE_H;
     const D=Math.hypot(x-ex,z-ez);
     if(D>1500||D<130) return false;
     for(let t=0.05;t<0.96;t+=0.028){
@@ -1233,7 +1246,7 @@ const SISTERS=(()=>{
   best.needCrown=(()=>{
     let need=best.y+16;
     for(const fr of [best.a,best.b]){
-      const ey=fr.y+1.62;
+      const ey=fr.y+EYE_H;
       for(let t=0.08;t<0.97;t+=0.02){
         const px=lerp(fr.x,best.x,t), pz=lerp(fr.z,best.z,t);
         const obst=groundY(px,pz)+1.2;
@@ -1489,6 +1502,90 @@ const WEATHER=(()=>{
 // ============================================================
 // PLAN HASH — the complete world identity, before any geometry exists
 // ============================================================
+// PLAN — THE SKY
+// The formations are part of this world's identity, not a budget line. How many
+// there are, where they sit, how wide they are and which band of depth they
+// belong to is decided here, once, before any tier is known. Quality may only
+// change how finely each one is tessellated.
+// Fewer and larger than before: a sky of a dozen broad masses reads as weather,
+// a sky of twenty small ones reads as a texture.
+// ============================================================
+const CLOUD_PLAN=(()=>{
+  const c0=spineAt(L_TOTAL*0.5);
+  // three depth bands: the near few carry the drama, the far ones give scale
+  const BANDS=[
+    {n:CLOUD.i(3,4), rr:[520,1250],  span:[300,470], h:[250,320], lift:[70,110], val:1.00},
+    {n:CLOUD.i(4,5), rr:[1250,2300], span:[220,340], h:[330,430], lift:[48,84],  val:0.90},
+    {n:CLOUD.i(3,4), rr:[2300,3600], span:[170,260], h:[420,520], lift:[34,62],  val:0.78},
+  ];
+  const out=[];
+  for(let bi=0;bi<BANDS.length;bi++){
+    const B=BANDS[bi];
+    for(let i=0;i<B.n;i++){
+      const a=CLOUD.r(0,TAU), rr=CLOUD.r(B.rr[0],B.rr[1]);
+      // the lobes that make one connected mass; they are welded at realization,
+      // never drawn as separate spheres
+      const nL=CLOUD.i(5,8), lobes=[];
+      const spanX=CLOUD.r(B.span[0],B.span[1]);
+      // A raft under everything: broad, low, centred. Without it the lobes laid
+      // along the formation's length can leave a gap between them, and a cloud
+      // with a hole through it is not weather.
+      lobes.push({ x:CLOUD.r(-0.06,0.06)*spanX, z:CLOUD.r(-0.05,0.05)*spanX,
+                   r:spanX*CLOUD.r(0.38,0.48), dy:0, y:0.18 });
+      for(let k=0;k<nL;k++){
+        const t=(k+0.5)/nL;
+        // `dy` is what makes a cumulus stack instead of spreading: a lobe that
+        // sits on the shoulder of the one below builds a tower, and a sky of
+        // towers has a silhouette you can read from a moving bicycle.
+        lobes.push({ x:(t-0.5)*spanX*CLOUD.r(0.78,1.0)+CLOUD.r(-22,22),
+                     z:CLOUD.r(-1,1)*spanX*0.20,
+                     r:spanX*CLOUD.r(0.17,0.26)*(1-0.28*Math.abs(t-0.5)*2),
+                     dy:CLOUD.chance(0.42)?CLOUD.r(0.18,0.62):CLOUD.r(0,0.10),
+                     y:CLOUD.r(0,1) });
+      }
+      out.push({ band:bi, ang:a, rr, x:c0.x+Math.sin(a)*rr, z:c0.z+Math.cos(a)*rr,
+        baseY:CLOUD.r(B.h[0],B.h[1]), lift:CLOUD.r(B.lift[0],B.lift[1]),
+        spanX, rot:CLOUD.r(0,TAU), val:B.val, lobes, seed:CLOUD.i(1,1e9) });
+    }
+  }
+  return out;
+})();
+// ============================================================
+// ============================================================
+// PLAN — WHERE THE AIR IS VISIBLE
+// Airborne life is an event, not a filter. Most of this ride has nothing in the
+// air at all; a handful of planned pockets have a shaft of pollen, a pocket of
+// motes over water, or one brief breeze carrying leaves. Bellroot keeps its own.
+// ============================================================
+const AIR_POCKETS=(()=>{
+  const out=[];
+  const add=(g,w,strength,why)=>out.push({g,w,strength,why});
+  // one shaft of light through the Dappled Gate
+  add(chapEnd('gate')*LIFE.r(0.42,0.62),LIFE.r(46,70),LIFE.r(0.85,1.15),'light-shaft');
+  // one brief breeze on the open ground
+  add(lerp(chapEnd('gate'),chapEnd('sunbank'),LIFE.r(0.35,0.7)),LIFE.r(70,110),LIFE.r(0.7,0.95),'breeze');
+  // the compression chapter gets one, deep in
+  add(lerp(chapEnd('sunbank'),chapEnd('fernfold'),LIFE.r(0.45,0.7)),LIFE.r(40,64),LIFE.r(0.9,1.2),'fernfold-shaft');
+  // the water margins
+  for(const P of PONDS) add(P.g,LIFE.r(48,74),LIFE.r(0.8,1.1),'water-'+P.name);
+  // and the tree the ride is walking towards
+  add(HERO_G,LIFE.r(70,96),LIFE.r(1.0,1.3),'bellroot');
+  out.sort((a,b)=>a.g-b.g);
+  for(const o of out) H.life.feed('air',Math.round(o.g),Math.round(o.w),o.why);
+  return out;
+})();
+function airAmountAt(g){
+  // a small residual so the world is not sterile, and a pocket where one was planned
+  let v=0.10;
+  for(const o of AIR_POCKETS){
+    const t=1-clamp(Math.abs(g-o.g)/o.w,0,1);
+    v=Math.max(v,0.10+o.strength*t*t*(3-2*t));
+  }
+  return v;
+}
+H.eco.feed('sky',CLOUD_PLAN.length);
+for(const c of CLOUD_PLAN) H.eco.feed(Math.round(c.x),Math.round(c.z),Math.round(c.spanX),c.band);
+
 const PLAN_SUMMARY={
   seed:SEED_TEXT, routeLengthM:Math.round(L_TOTAL),
   chapters:CH.map(c=>c.name),
@@ -1504,6 +1601,7 @@ const PLAN_SUMMARY={
   H.plan.feed(H.route.hex(),H.elev.hex(),H.terrain.hex(),H.eco.hex(),H.life.hex(),H.weather.hex());
   for(const k of Object.keys(PLAN_SUMMARY)) H.plan.feed(k,String(PLAN_SUMMARY[k]));
 }
+
 const PLAN_HASH=H.plan.hex();
 // A canonical serialization of the frozen plan, and a 64-bit digest of it.
 // This is a repeatability checksum, not a cryptographic commitment.
@@ -1525,6 +1623,9 @@ const PLAN_CANONICAL=(()=>{
       windows:GROVE_WINDOWS.map(w=>[num(w.g),w.kind,w.side]),
       layers:LAYER_WINDOWS.map(w=>num(w.g)) },
     life:LIFE_EVENTS.map(e=>[num(e.g),e.kind,e.arm]),
+    air:AIR_POCKETS.map(o=>[num(o.g),num(o.w),o.why]),
+    sky:CLOUD_PLAN.map(c=>[c.band,num(c.x),num(c.z),num(c.baseY),num(c.spanX),
+      c.lobes.map(l=>[num(l.x),num(l.z),num(l.r),num(l.dy)])]),
     weather:[WEATHER.has?1:0,num(WEATHER.startG),num(WEATHER.dur)],
   };
   return JSON.stringify(o);
@@ -1544,13 +1645,13 @@ QUALITY_READS_AT_PLAN=QUALITY_READS;   // the plan stage never asked what tier t
 // REALIZATION — quality tiers change representation cost, never identity
 // ============================================================
 const QCFG={
-  low:      { row:7.0,  tile:18, ahead:620,  behind:230, under:0.34, nearD:13, midD:58,  farD:230, shadow:0,    part:0.5, lobe:0, tuftBand:22, capNear:3, capMid:14, bandTreeCap:40, cloudN:13, view:1500, tileView:1500, dpr:1.0 },
-  standard: { row:5.0,  tile:16, ahead:800,  behind:270, under:0.62, nearD:17, midD:78,  farD:300, shadow:1024, part:1.0, lobe:1, tuftBand:29, capNear:5, capMid:20, bandTreeCap:56, cloudN:17, view:1620, tileView:1800, dpr:1.25 },
+  low:      { row:7.0,  tile:18, ahead:620,  behind:230, under:0.34, nearD:13, midD:58,  farD:230, shadow:0,    part:0.5, lobe:0, tuftBand:18, capNear:3, capMid:14, bandTreeCap:40, cloudN:13, view:1500, tileView:1500, dpr:1.0 },
+  standard: { row:5.0,  tile:16, ahead:800,  behind:270, under:0.62, nearD:17, midD:78,  farD:300, shadow:1024, part:1.0, lobe:1, tuftBand:24, capNear:5, capMid:20, bandTreeCap:56, cloudN:17, view:1620, tileView:1800, dpr:1.25 },
   // `lobe` is the icosphere subdivision of a foliage puff: 0=20 triangles,
   // 1=80, 2=320. Now that lobes carry smooth normals, level 2 costs four times
   // the geometry for a difference nobody can see at riding speed — so the top
   // tier spends its budget on reach, density and shadow resolution instead.
-  high:     { row:5.0,  tile:15, ahead:960,  behind:300, under:0.84, nearD:22, midD:94,  farD:340, shadow:2048, part:1.3, lobe:1, tuftBand:34, capNear:7, capMid:26, bandTreeCap:68, cloudN:21, view:1900, tileView:2100, dpr:1.5 },
+  high:     { row:5.0,  tile:15, ahead:960,  behind:300, under:0.84, nearD:22, midD:94,  farD:340, shadow:2048, part:1.3, lobe:1, tuftBand:29, capNear:7, capMid:26, bandTreeCap:68, cloudN:21, view:1900, tileView:2100, dpr:1.5 },
 }[readQuality()];
 H.real.feed(QUALITY); for(const k of Object.keys(QCFG)) H.real.feed(k,QCFG[k]);
 
@@ -1575,7 +1676,7 @@ const AIR=mixc(PAL.sky,PAL.sunGrass,0.34).lerp(col(0xffffff),0.16);   // warm pa
 scene.background=col(PAL.sky);
 scene.fog=new THREE.Fog(AIR,330,QCFG.tileView*1.12);
 
-const camera=new THREE.PerspectiveCamera(60,window.innerWidth/window.innerHeight,0.1,7200);
+const camera=new THREE.PerspectiveCamera(58,window.innerWidth/window.innerHeight,0.1,7200);
 
 // one high summer sun, warm, a little to the left of the opening view
 const startHd=spineAt(0).hd;
@@ -1781,9 +1882,18 @@ function buildCorridor(arm,sLo,sHi,rowScale){
   const CA=new Float32Array(rows*W), SS=new Float32Array(rows*W), LT=new Float32Array(rows*W), MT=new Float32Array(rows*W);
   const ok=new Uint8Array(rows*W);
   const IDX=[];
-  const lift=(ai===1)?0.055:0;
+  // The Mosswater lane is lifted a few centimetres so it wins the depth test
+  // where it runs beside the Sunpath — but that lift has to be gone by the time
+  // the two become one road, or the rejoin is a doubled surface with a visible
+  // shelf along it. It fades in after the split and out before the merge.
+  const liftAt=(sLoc)=>{
+    if(ai!==1) return 0;
+    return 0.055*smooth(S_COMMIT.moss-30,S_COMMIT.moss+34,sLoc)
+                *(1-smooth(S_MERGE.moss-52,S_MERGE.moss-4,sLoc));
+  };
   for(let r=0;r<rows;r++){
     const s=i0+(i1-i0)*r/(rows-1);
+    const lift=liftAt(s);
     const fr=getFrame(F,s);
     const g=toGlobal(arm,s);
     const enc=enclosureAt(g,arm);
@@ -1825,13 +1935,23 @@ function buildCorridor(arm,sLo,sHi,rowScale){
       if(a>RH){
         const ri=routeInfo(x,z);
         if(ri.dA[1-ai]<ri.dA[ai]-1.6) keep=0;
+      } else if(ai===1){
+        // where the arms have converged to within a lane width the stone is the
+        // same stone; only one of them may draw it
+        const ri=routeInfo(x,z);
+        if(ri.dA[0]<RH+0.8) keep=0;
       }
       ok[k]=keep;
     }
   }
+  // Which quads actually became triangles. A vertex can sit in the position
+  // buffer and be referenced by nothing; validating those is validating geometry
+  // the renderer never sees.
+  const emit=new Uint8Array((rows-1)*(W-1));
   for(let r=0;r<rows-1;r++) for(let j=0;j<W-1;j++){
     const a=r*W+j, b=a+1, c=a+W, d=a+W+1;
     if(!(ok[a]&&ok[b]&&ok[c]&&ok[d])) continue;
+    emit[r*(W-1)+j]=1;
     IDX.push(a,c,b, b,c,d);
   }
   if(!IDX.length) return null;
@@ -1844,7 +1964,7 @@ function buildCorridor(arm,sLo,sHi,rowScale){
   gm.setAttribute('aMat',new THREE.BufferAttribute(MT,1));
   gm.setIndex(IDX);
   gm.computeVertexNormals();
-  gm.userData.real={arm,i0,i1,rows,W,P};
+  gm.userData.real={arm,i0,i1,rows,W,P,emit};
   return gm;
 }
 const corridorMeshes=[];
@@ -1862,7 +1982,9 @@ const CORRIDOR_REAL=[];   // the vertices actually emitted, for realized-mesh pr
     const m=new THREE.Mesh(gm,corridorMat); m.receiveShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false;
     scene.add(m); corridorMeshes.push(m);
   }
-  const m0=Math.max(0,S_COMMIT.moss-90), m1=Math.min(FRAMES.moss.len,S_MERGE.moss+90);
+  // and the arm's own mesh stops at the merge instead of running ninety metres
+  // past it on top of the road it has just rejoined
+  const m0=Math.max(0,S_COMMIT.moss-44), m1=Math.min(FRAMES.moss.len,S_MERGE.moss+4);
   for(let s=m0;s<m1;s+=CHUNK){
     const e=Math.min(m1,s+CHUNK+QCFG.row*1.05);
     const gm=buildCorridor('moss',s,e,1);
@@ -1891,7 +2013,9 @@ function realizedCorridorY(arm,s,u){
     const margin=Math.min(s-sLo,sHi-s);
     if(margin<=bestMargin) continue;
     const fr=(s-sLo)/Math.max(1e-6,sHi-sLo)*(R.rows-1);
-    const r0=clamp(Math.floor(fr),0,R.rows-1), r1=Math.min(R.rows-1,r0+1), rt=fr-r0;
+    const r0=clamp(Math.floor(fr),0,R.rows-2), r1=Math.min(R.rows-1,r0+1), rt=fr-r0;
+    // only where a triangle was actually emitted
+    if(!R.emit[r0*(R.W-1)+Math.min(col,R.W-2)]) continue;
     const at=(r,c)=>R.P[(r*R.W+c)*3+1];
     const ya=lerp(at(r0,col),at(r0,col+1),ct);
     const yb=lerp(at(r1,col),at(r1,col+1),ct);
@@ -1977,14 +2101,33 @@ let TILE_REAL=null;
 // whether any tile geometry exists at this place at all
 function realizedTileY(x,z){
   const T=TILE_REAL; if(!T) return null;
+  // The drawn surface between vertices, not the nearest vertex. A thing standing
+  // here stands on the triangle, and on a convex cell the triangle is below the
+  // function the plan used — which is exactly how trees came to hover.
   const fx=(x-T.x0)/T.cell, fz=(z-T.z0)/T.cell;
-  const ix=Math.round(fx), iz=Math.round(fz);
-  if(ix<0||iz<0||ix>=T.nx||iz>=T.nz) return null;
+  const ix=Math.floor(fx), iz=Math.floor(fz);
+  if(ix<0||iz<0||ix>=T.nx-1||iz>=T.nz-1) return null;
   const k=iz*T.nx+ix;
   if(T.DG[k]<36) return null;                 // the corridor owns this ground
-  return T.TG[k];
+  const tx=fx-ix, tz=fz-iz;
+  const a=T.TG[k], b=T.TG[k+1], c=T.TG[k+T.nx], d=T.TG[k+T.nx+1];
+  return lerp(lerp(a,b,tx),lerp(c,d,tx),tz);
 }
-{
+// The height of the surface actually drawn at a world point: the corridor mesh
+// where the corridor owns the ground, the ground field beyond it, and the plan's
+// own function only where neither exists. Everything that has to stand on the
+// world reads this, not `groundY`.
+function realizedGroundY(x,z){
+  const ri=routeInfo(x,z);
+  if(ri.d<=APRON+2){
+    const arm=(ri.arm===1)?'moss':'sun';
+    const fr=getFrame(FRAMES[arm],clamp(ri.s,0,FRAMES[arm].len-0.001));
+    const u=(x-fr.x)*fr.lx+(z-fr.z)*fr.lz;
+    const y=realizedCorridorY(arm,clamp(ri.s,0,FRAMES[arm].len-0.001),clamp(u,-APRON,APRON));
+    if(y!==null) return y;
+  }
+  const t=realizedTileY(x,z);
+  return (t===null)?groundY(x,z):t;
 }
 
 // ---------- the far country: layered blue-green silhouettes ----------
@@ -2133,8 +2276,8 @@ const ARCH={
   oak:       {h:[11,15.5],r:[0.40,0.56],w:1.52,lift:0.47,lobes:[5,7],limbs:[3,4],lean:[0,0.05],bark:0},
   beech:     {h:[15,20],  r:[0.34,0.48],w:0.98,lift:0.60,lobes:[4,6],limbs:[2,3],lean:[0,0.04],bark:0},
   birch:     {h:[9,13],   r:[0.17,0.26],w:0.82,lift:0.64,lobes:[3,5],limbs:[2,3],lean:[0,0.07],bark:1},
-  leaning:   {h:[10,14],  r:[0.32,0.46],w:1.22,lift:0.54,lobes:[4,6],limbs:[2,4],lean:[0.20,0.32],bark:0},
-  windshaped:{h:[9,13.5], r:[0.30,0.44],w:1.18,lift:0.58,lobes:[3,6],limbs:[2,4],lean:[0.11,0.20],bark:0},
+  leaning:   {h:[10,14],  r:[0.32,0.46],w:1.22,lift:0.54,lobes:[4,6],limbs:[2,4],lean:[0.13,0.21],bark:0},
+  windshaped:{h:[9,13.5], r:[0.30,0.44],w:1.18,lift:0.58,lobes:[3,6],limbs:[2,4],lean:[0.09,0.15],bark:0},
   orchard:   {h:[5.5,8],  r:[0.22,0.34],w:1.34,lift:0.44,lobes:[3,5],limbs:[3,4],lean:[0,0.08],bark:0},
 };
 const FAM_BUILT={}; for(const f of FAMS) FAM_BUILT[f]=0;
@@ -2152,14 +2295,26 @@ function buildTree(B,t,tier,minCrownY){
   const cMidL=LEAF_MID.clone().lerp(LEAF_SHADE,shade*0.52);
   const cShL=LEAF_SHADE.clone().lerp(LEAF_DEEP,shade*0.56);
   const bSun=A.bark?BIRCH_SUN:BARK_SUN, bSh=A.bark?BIRCH_SHADE:BARK_SHADE;
+  // The crown's height is decided before the trunk is drawn, because a tree
+  // standing over the lane has its canopy lifted clear of it — and a trunk built
+  // to its own natural height would then stop three metres short of its own
+  // foliage. The trunk grows to meet the crown it is actually carrying.
+  const crownR=H*A.w*0.31*(t.d<14?clamp(0.50+t.d*0.036,0.50,1):1);
+  let crownY=t.y+H*A.lift*(tier===2?1.0:0.76)+H*0.16;
+  let trunkTop=t.y+H*A.lift*1.02;
+  if(minCrownY!==undefined&&crownY-crownR*0.55<minCrownY){
+    const dy=minCrownY+crownR*0.55-crownY;
+    crownY+=dy; trunkTop+=dy;
+  }
+  trunkTop=Math.max(trunkTop,crownY-crownR*0.42);
   // ---- trunk: tapered, gently bent, with a real base ----
-  const nSeg=tier===2?5:(tier===1?3:2);
+  const nSeg=tier===2?6:(tier===1?4:2);
   const tp=[];
   for(let i=0;i<=nSeg;i++){
     const f=i/nSeg;
     const bend=Math.sin(f*Math.PI*0.72)*leanAmt*H;
     tp.push(new THREE.Vector3(t.x+Math.sin(leanDir)*bend+(i?st.r(-0.14,0.14)*S:0),
-                              t.y+f*H*A.lift*1.02,
+                              lerp(t.y,trunkTop,f),
                               t.z+Math.cos(leanDir)*bend+(i?st.r(-0.14,0.14)*S:0)));
   }
   tube(B,tp,R*(tier===2?1.16:1.35),R*(tier===2?0.34:0.5),tier===2?7:(tier===1?5:4),bSun,bSh);
@@ -2174,17 +2329,9 @@ function buildTree(B,t,tier,minCrownY){
     }
   }
   // ---- crown: a ring of overlapping oblate lobes with a gap in it ----
+  // Representation level changes how a crown is built, never how big it is, and
+  // a crown right at the verge is scaled down as well as lifted.
   const top=tp[tp.length-1];
-  let crownY=t.y+H*A.lift*(tier===2?1.0:0.76)+H*0.16;
-  // Representation level changes how a crown is built, never how big it is.
-  // The old tiering inflated the radius to make three coarse lobes fill the
-  // space, so a tree visibly ballooned as it crossed an LOD boundary and rows
-  // of them fused into one dark shelf. Silhouette is now tier-invariant.
-  // A crown right at the verge is scaled down as well as lifted. Subdividing it
-  // instead costs four times the geometry for the same screen-space facet size,
-  // and the budget is better spent on the fifty trees behind it.
-  const crownR=H*A.w*0.31*(t.d<14?clamp(0.50+t.d*0.036,0.50,1):1);
-  if(minCrownY!==undefined&&crownY-crownR*0.55<minCrownY) crownY=minCrownY+crownR*0.55;
   const nL=tier===0?4:(tier===1?Math.max(4,st.i(A.lobes[0],A.lobes[1])):st.i(A.lobes[0],A.lobes[1])+4);
   // fewer lobes have to be fatter to cover the same outline
   const fill=tier===2?1:(tier===1?1.18:1.46);
@@ -2407,11 +2554,11 @@ const heroInfo={ pos:HERO_POS.clone(), crownTop:0, limbClearance:99, pods:[], po
     const pull=Math.cos(Math.atan2(e.p.x-tx,e.p.z-tz)-crownSkew)*0.5+0.5;
     const lr=G.r(5.0,7.6)+pull*G.r(2.4,4.6);
     lobe(B,e.p.x+G.r(-6,6),e.p.y+G.r(1.5,8.5),e.p.z+G.r(-6,6),
-      lr*G.r(1.02,1.32),lr*G.r(0.60,0.82),lr*G.r(1.02,1.32),G,
+      lr*G.r(1.00,1.26),lr*G.r(0.74,0.96),lr*G.r(1.00,1.26),G,
       i<nl*0.55?mixc(PAL.sunGrass,PAL.meadow,0.24):LEAF_MID,
       i<nl*0.35?LEAF_MID:LEAF_SHADE, 0.16, Math.min(2,QCFG.lobe+1));
   }
-  lobe(B,tx,ty+H0*0.66,tz,H0*0.28,H0*0.10,H0*0.28,G,LEAF_SHADE,LEAF_DEEP,0.18,Math.min(1,QCFG.lobe),0.20);
+  lobe(B,tx,ty+H0*0.70,tz,H0*0.19,H0*0.105,H0*0.19,G,LEAF_SHADE,LEAF_DEEP,0.18,Math.min(1,QCFG.lobe),0.20);
   const mesh=new THREE.Mesh(bufGeo(B),treeMatHero);
   mesh.castShadow=(QCFG.shadow>0); mesh.matrixAutoUpdate=false;
   scene.add(mesh);
@@ -2584,11 +2731,54 @@ function addLog(B,x,y,z,st,len,r,rot,gy){
 // released behind the rider. Identity comes from position, never from
 // the order in which bands happened to be built.
 // ============================================================
+// ============================================================
+// GROUNDING — every planted thing stands on the surface that is drawn
+// The plan places things using the continuous ground function. The renderer
+// draws a triangulated approximation of it. Where that approximation dips below
+// the function — every convex cell, every crease at the fork — a trunk placed by
+// the plan hangs in the air. So once, after all terrain meshes exist and before
+// anything is built, every planted position is re-seated onto the drawn surface
+// and its collar is sunk a little way into it. This is a system, not a list of
+// exceptions, and it runs before residency so a band cannot re-seat differently
+// the second time it is realised.
+// ============================================================
+const GROUND_STAT={ trees:0, lowered:0, maxDropM:0, raised:0, culled:0, maxKeptDropM:0 };
+const SEAT_LIMIT=1.25;      // beyond this the mesh and the plan disagree too much to plant here
+function seatOnGround(x,z,sink){
+  const a=groundY(x,z), r=realizedGroundY(x,z);
+  return Math.min(a,(r===null?a:r))-(sink||0);
+}
+{
+  for(const t of TREES){
+    const before=t.y;
+    // the collar sinks with the trunk's own size, so a big oak beds in further
+    // than a birch and neither shows daylight under its root flare
+    const y=seatOnGround(t.x,t.z,0.16+0.10*clamp(t.scl,0.6,3.4));
+    const drop=before-y;
+    GROUND_STAT.trees++;
+    GROUND_STAT.maxDropM=Math.max(GROUND_STAT.maxDropM,drop);
+    // A tree that has to fall more than a metre to reach the drawn surface is
+    // standing where the triangulation and the plan disagree — a crease at the
+    // fork, the lip of a coarse tile. Seating it there buries it to the crown.
+    // Remove it instead: an absent tree is invisible, a buried one is a defect.
+    // The plan keeps the tree — it is part of this world's identity at every
+    // quality. Realization declines to build it, and says so.
+    if(drop>SEAT_LIMIT){ t.unseatable=true; GROUND_STAT.culled++; continue; }
+    t.unseatable=false;
+    t.y=y;
+    if(drop>1e-4){ GROUND_STAT.lowered++; GROUND_STAT.maxKeptDropM=Math.max(GROUND_STAT.maxKeptDropM,drop); }
+    else if(drop<-1e-4) GROUND_STAT.raised++;
+  }
+}
+HERO_POS.y=seatOnGround(HERO_POS.x,HERO_POS.z,0.55);
+H.real.feed('seat',GROUND_STAT.lowered,GROUND_STAT.culled,Math.round(GROUND_STAT.maxKeptDropM*100));
+
 const BAND=200;
 const NBAND=Math.ceil(FRAMES.sun.len/BAND)+1;
 const bandTrees=Array.from({length:NBAND},()=>[]);
 const staticFar=[];
 for(const t of TREES){
+  if(t.unseatable) continue;
   // the Sisters are a fixed point of the whole ride: they must not be released
   // with the band they happen to be scheduled in, or the callback has nothing
   // left to call back to
@@ -2687,15 +2877,41 @@ function realizeBand(bi){
       const enc=enclosureAt(gHere,ri.arm===1?'moss':'sun')*clamp(1.3-ri.d/80,0,1);
       const moist=clamp(1-si.d/26,0,1);
       const slope=Math.abs(groundY(x+2.5,z)-groundY(x-2.5,z))/5+Math.abs(groundY(x,z+2.5)-groundY(x,z-2.5))/5;
-      // Growth comes in patches, not as an even sprinkle. The mask is what
-      // makes a meadow read as fields of something rather than as scatter, but
-      // it was culling so hard that the fields were mostly bare.
+      // Two scales, because a meadow is not an even sprinkle and it is not an
+      // even carpet either. The coarse field decides whether this part of the
+      // field has growth in it at all — most of it does not, and that emptiness
+      // is the point. The fine field varies density inside a patch so its edges
+      // are ragged rather than circular.
+      // A water margin is not subject to the emptiness rule: a shoreline with
+      // nothing on it reads as a hole cut in a lawn. Everywhere else the coarse
+      // field decides whether this part of the meadow has growth at all, and
+      // most of it does not — that emptiness is the composition.
+      const bank=(pin<1.22)?1:0;
+      const patch=fbmE(x/64+3.7,z/64+21.1);
+      if(!bank&&patch<0.50-moist*0.16-enc*0.14) continue;
       const mask=fbmE(x/19+7,z/19+13);
-      if(mask<0.27-slope*0.5-moist*0.12) continue;
+      if(!bank&&mask<0.34-slope*0.5-moist*0.12-(patch-0.50)*0.8) continue;
+      if(bank&&st.chance(0.45)) continue;      // sparse on the bank, never a fringe
+      // nothing clutters the foot of a trunk, where it only confuses the eye
+      // about whether the tree is standing on the ground
+      { let underTree=false;
+        for(const tt of bandTrees[bi]){
+          if(tt.unseatable) continue;
+          const ddx=x-tt.x, ddz=z-tt.z, rr2=(1.05*tt.scl+0.5);
+          if(ddx*ddx+ddz*ddz<rr2*rr2){ underTree=true; break; }
+        }
+        if(underTree) continue; }
       uB.can=clamp(enc,0,1);
       const gc=groundColor(x,z,slope,enc,moist,y-refAt(x,z)).clone();
       const r2=st.f();
-      if(pin<1.75&&pin>=0.92){                     // reeds hold the pool's margin
+      if(bank&&st.chance(0.26)){
+        // a few stones and a patch of wet loam where the bank meets the water
+        const r=st.r(0.10,0.26);
+        addBlob(uB,x,y+r*0.4,z,st,r,r*0.6,r*st.r(0.7,1.3),
+          mixc(PAL.road,PAL.bark,0.42),mixc(PAL.bark,PAL.woodDeep,0.5),0);
+        addPatch(uB,x,y,z,r*st.r(1.8,3.2),mixc(PAL.bark,PAL.woodDeep,0.42));
+        local.rocksLogs++;
+      } else if(pin<1.75&&pin>=0.92){               // reeds hold the pool's margin
         addFern(uB,x,y,z,st,mixc(PAL.leafShade,PAL.meadow,0.35),mixc(PAL.sunGrass,PAL.meadow,0.5),st.r(0.70,1.30));
         local.reeds++;
       } else if(moist>0.45&&si.d<12){
@@ -2889,46 +3105,106 @@ function disposeAllBands(){ for(let i=0;i<NBAND;i++) disposeBand(i); }
 }
 const cloudForms=[];
 {
-  const cloudMat=new THREE.MeshBasicMaterial({vertexColors:true,fog:false});
-  const c0=spineAt(L_TOTAL*0.5);
-  const N=QCFG.cloudN;
-  const CREAM=mixc(PAL.cloud,0xffffff,0.5), LIT=col(0xFFFDF6),
-        COOL=mixc(PAL.sky,0xffffff,0.52).lerp(col(PAL.leafShade),0.10);
-  for(let fi=0;fi<N;fi++){
-    const st=subStream('cloud',fi);
+  // ============================================================
+  // THE SKY — one connected mass per formation
+  // A formation is not a heap of spheres. Its lobes define a single height
+  // field; the surface is sampled from that field on one grid, so what gets
+  // drawn is one silhouette with soft stacked shoulders and no seams where
+  // spheres meet. The base is flat and shadowed because that is what the
+  // underside of a summer cumulus does, and the top is luminous where it faces
+  // the sun. Quality changes the grid, never the formation.
+  // ============================================================
+  const cloudMat=new THREE.MeshBasicMaterial({vertexColors:true,fog:false,
+    side:THREE.DoubleSide});
+  const LIT  =col(0xFFFFFB);
+  const CREAM=mixc(PAL.cloud,0xFFF6E4,0.42);
+  const COOL =mixc(PAL.cloud,PAL.sky,0.34).lerp(col(0xffffff),0.14);
+  const BASE =mixc(PAL.sky,0xffffff,0.40).lerp(col(PAL.woodDeep),0.22);
+  const GRID=QUALITY==='low'?[22,14]:(QUALITY==='high'?[46,30]:[34,22]);
+  const sunXZc=new THREE.Vector2(sunDir.x,sunDir.z).normalize();
+  for(const C of CLOUD_PLAN){
+    const st=subStream('cloudform',C.seed);
+    // a little seeded wobble per lobe so no two formations share a profile
+    const L=C.lobes.map((l,i)=>({x:l.x,z:l.z,r:l.r*st.r(0.90,1.12),
+      base:l.dy*l.r*st.r(0.9,1.25),
+      h:l.r*(i===0?st.r(0.13,0.19):st.r(0.80,1.14)*(0.56+0.56*l.y))}));
+    const halfX=C.spanX*0.74, halfZ=C.spanX*0.38;
+    const NX=GRID[0], NZ=GRID[1];
+    // the height field: the highest lobe dome over this point, softened so
+    // neighbouring domes merge into one shoulder instead of crossing
+    const hAt=(x,z)=>{
+      let acc=0, top=0;
+      for(const l of L){
+        const dx=x-l.x, dz=z-l.z;
+        const q=1-(dx*dx+dz*dz)/(l.r*l.r);
+        if(q<=0) continue;
+        const d=l.base+Math.sqrt(q)*l.h;
+        top=Math.max(top,d);
+        acc+=d*d;
+      }
+      if(top<=0) return 0;
+      // soft-max: sits just above the tallest dome where two overlap, which is
+      // what welds them into a stack rather than an intersection
+      let h=Math.min(top*1.16,Math.sqrt(acc));
+      // and a footprint taper, so the field reaches zero over several cells
+      // instead of in one. Without it the silhouette against the sky is a comb
+      // of tessellation teeth, which is the one thing a soft cloud must not be.
+      const rn=Math.hypot(x/(halfX*0.98),z/(halfZ*0.98));
+      h*=1-smooth(0.66,1.0,rn);
+      return h;
+    };
     const B=Buf(); B.sway=0;
-    const a=st.r(0,TAU), rr=st.r(500,2600);
-    const cx=c0.x+Math.sin(a)*rr, cz=c0.z+Math.cos(a)*rr;
-    const baseY=st.r(280,430);
-    // Puffs are packed rather than scattered: the radius of a puff is a large
-    // fraction of the span it sits in, so neighbours interpenetrate and the
-    // formation accumulates into one soft mass with a lumpy top and a flat
-    // shadowed base. Spread them and the same puff count reads as ice shards.
-    const nP=st.i(8,14), spanX=st.r(86,196);
-    for(let i=0;i<nP;i++){
-      const t=i/Math.max(1,nP-1);
-      const lx=(st.f()-0.5)*spanX, lz=(st.f()-0.5)*spanX*0.5;
-      const ly=st.r(0,26)+Math.sin(t*Math.PI)*22;
-      const pr=st.r(34,62)*(1-0.30*Math.abs(lx)/spanX*2);
-      const D=ICOD[Math.min(1,QCFG.lobe+1)];
-      const jit=[]; for(let v=0;v<D.n;v++) jit.push(1+(st.f()-0.5)*0.13);
-      for(let ii=0;ii<D.idx.length;ii+=3){
-        const vs=[D.idx[ii],D.idx[ii+1],D.idx[ii+2]].map(v=>{
-          let X=D.p.getX(v), Y=D.p.getY(v), Z=D.p.getZ(v);
-          const j=jit[v];
-          if(Y<0) Y*=0.40;                      // flat shadowed bases, as before
-          return [lx+X*pr*j, ly+Y*pr*0.66*j, lz+Z*pr*j, Y];
-        });
-        const ym=(vs[0][3]+vs[1][3]+vs[2][3])/3;
-        const cc=COOL.clone().lerp(ym>0.10?LIT:CREAM,clamp(0.30+ym*1.05,0,1));
-        pushTri(B,[vs[0][0],vs[0][1],vs[0][2]],[vs[1][0],vs[1][1],vs[1][2]],[vs[2][0],vs[2][1],vs[2][2]],cc);
+    const P=[], Hh=[];
+    for(let iz=0;iz<=NZ;iz++) for(let ix=0;ix<=NX;ix++){
+      const u=ix/NX*2-1, v=iz/NZ*2-1;
+      const x=u*halfX, z=v*halfZ;
+      P.push([x,z]); Hh.push(hAt(x,z));
+    }
+    const at=(ix,iz)=>iz*(NX+1)+ix;
+    // The read comes from the surface normal, which is the only honest measure
+    // of "is this plane facing the sky or facing me". Upward planes are luminous,
+    // shoulders cool, the skirt settles into a restrained blue-grey — never a
+    // hard dark line, and never so pale that the mass dissolves into the sky.
+    const colOf=(h,gwx,gwz,hRel)=>{
+      const ny=1/Math.sqrt(1+gwx*gwx+gwz*gwz);
+      const up=clamp((ny-0.28)/0.62,0,1);
+      const face=clamp(0.5+0.5*(-(gwx*sunXZc.x+gwz*sunXZc.y))/(Math.hypot(gwx,gwz)+0.35),0,1);
+      let c=COOL.clone().lerp(CREAM,up*0.60);
+      c.lerp(LIT,up*up*(0.74+0.24*face));
+      c.lerp(BASE,clamp(0.70-hRel*1.35,0,0.70));
+      return c.multiplyScalar(C.val);
+    };
+    // vertical exaggeration: a summer cumulus stands about as tall as it is
+    // half-wide, and the flat lens the field produces on its own is not weather
+    const vScale=0.62+C.lift/135;
+    const vert=(ix,iz)=>{
+      const k=at(ix,iz), h=Hh[k];
+      return [P[k][0],h*vScale,P[k][1],h];
+    };
+    // one skin over the field, plus a flat base ring so the mass is closed
+    for(let iz=0;iz<NZ;iz++) for(let ix=0;ix<NX;ix++){
+      const a=vert(ix,iz), b=vert(ix+1,iz), c=vert(ix+1,iz+1), d=vert(ix,iz+1);
+      if(a[3]<=0.02&&b[3]<=0.02&&c[3]<=0.02&&d[3]<=0.02) continue;
+      const gwx=(b[1]-a[1])/Math.max(1e-3,b[0]-a[0]);
+      const gwz=(d[1]-a[1])/Math.max(1e-3,d[2]-a[2]);
+      const hm=(a[3]+b[3]+c[3]+d[3])*0.25;
+      const cc=colOf(hm,gwx,gwz,hm/Math.max(1e-3,C.spanX*0.26));
+      pushTri(B,[a[0],a[1],a[2]],[c[0],c[1],c[2]],[b[0],b[1],b[2]],cc);
+      pushTri(B,[a[0],a[1],a[2]],[d[0],d[1],d[2]],[c[0],c[1],c[2]],cc);
+      // the shadowed underside, drawn only under the parts that have body
+      if(hm>C.spanX*0.012){
+        pushTri(B,[a[0],0,a[2]],[b[0],0,b[2]],[c[0],0,c[2]],BASE);
+        pushTri(B,[a[0],0,a[2]],[c[0],0,c[2]],[d[0],0,d[2]],BASE);
       }
     }
     const mesh=new THREE.Mesh(bufGeo(B),cloudMat);
-    mesh.position.set(cx,baseY,cz);
+    mesh.rotation.y=C.rot;
+    mesh.position.set(C.x,C.baseY,C.z);
+    mesh.updateMatrix(); mesh.matrixAutoUpdate=false;
     scene.add(mesh);
-    cloudForms.push({mesh,home:new THREE.Vector3(cx,baseY,cz)});
+    cloudForms.push({mesh,home:new THREE.Vector3(C.x,C.baseY,C.z),band:C.band,rot:C.rot});
   }
+  H.real.feed('sky',cloudForms.length,GRID[0],GRID[1]);
 }
 
 // ============================================================
@@ -3388,9 +3664,12 @@ function particleField(n,box,tint,size,opacity,kind){
   partSystems.push({m,kind,n:N});
   return m;
 }
-particleField(520,{x:150,y:5.5,z:150},0xF8EFCE,1.25,0.26,0);    // pollen close to the ground
-particleField(260,{x:150,y:14,z:150},0xA9D273,1.9,0.30,1);      // leaves letting go
-particleField(340,{x:170,y:22,z:170},0xF4E7BE,1.15,0.22,2);     // seed motes on the rising air
+// Cut to roughly a quarter of what was here, and gated to the planned pockets
+// by uBoost. A long stretch of this ride now has essentially nothing in the air,
+// which is what makes the pockets read as something.
+particleField(150,{x:150,y:5.5,z:150},0xF8EFCE,1.30,0.26,0);    // pollen close to the ground
+particleField(70,{x:150,y:14,z:150},0xA9D273,2.0,0.30,1);       // leaves letting go
+particleField(95,{x:170,y:22,z:170},0xF4E7BE,1.20,0.22,2);      // seed motes on the rising air
 const totalParticles=partSystems.reduce((a,b)=>a+b.n,0);
 
 // ---------- the warm sun shower ----------
@@ -3569,18 +3848,28 @@ for(const c of CH) checkpoints[c.key]=false;
 checkpoints.gate=true;
 // Everything the current run can claim lives in RUN and is wiped by restart.
 // Anything that accumulates across the page's life is labelled separately.
+// How this run's distance was actually covered. It only ever escalates, and it
+// is reset by restart along with everything else. `continuous` and `accelerated`
+// both mean every metre was travelled and every frame rendered — accelerated
+// only fixes the timestep. `warped` and `debug` mean the rider was moved by
+// something other than riding, and may never stand as continuous-ride evidence.
+const PROV_RANK={continuous:0,accelerated:1,warped:2,debug:3};
+function markProvenance(kind){
+  if(PROV_RANK[kind]>PROV_RANK[RUN.provenance]) RUN.provenance=kind;
+}
 function freshRun(){
   return { distanceRiddenM:0, ascentRiddenM:0, descentRiddenM:0,
     maxRollDeg:0, peakDrawCalls:0, peakTriangles:0, peakResidentBands:0,
     bandsRealized:0, bandsDisposed:0, lifeFired:0, ambientProvenWhilePaused:false,
     proximity:{ fork:false, water:false, bellroot:false, sisters:false },
     seen:{ forkBothArmsBeforeCommit:false, forkFirstSeenAtM:null, forkLeadBeforeCommitM:null,
+           forkScreenSepMax:0, forkLegibleLastAtM:null, forkLegibleSpanM:0, forkLegibleSeconds:0,
            water:false, waterFirstSeenAtM:null, waterFramesSeen:0,
            bellroot:false, bellrootFirstSeenAtM:null,
            sisters:false, sistersFirstSeenAtM:null, sistersLastSeenAtM:null,
            sistersSeenSpanM:0 },
     marks:{ forkCommitted:false, branchMid:false, rejoined:false, bellrootPassed:false, rested:false },
-    branchRidden:null, errors:0 };
+    branchRidden:null, errors:0, provenance:'continuous' };
 }
 let RUN=freshRun();
 const LIFETIME={ restarts:0, bandsRealized:0, bandsDisposed:0, peakResidentBands:0, runs:1 };
@@ -3609,13 +3898,19 @@ function restartRide(){
   for(const e of LIFE_EVENTS) e.fired=false;
   clearAllLife();
   lifeFired=0;
+  // Everything the previous ride accumulated is torn down BEFORE the new run's
+  // counters exist, so nothing from it can be counted against the new one. The
+  // elevation tracker is the one that bit: left holding the last frame's height,
+  // the first step of a restarted ride booked the whole route as descent.
+  disposeAllBands();
+  eyePrevY=null; pauseProbe=null; camRollDeg=0;
   RUN=freshRun();
   frameTimes.length=0; warmFrames=0;
+  for(const k of Object.keys(CHAP_FT)) delete CHAP_FT[k];
   LIFETIME.restarts++; LIFETIME.runs++;
   weatherState.phase='clear'; weatherState.t=0; weatherState.amount=0;
   WL.uWet.value=0; rainMat.uniforms.uAmt.value=0; rainMat.userData.pts.visible=false;
   audio.podsArmed=true;
-  disposeAllBands();
   warmResidency(0);
 }
 function warmResidency(g){
@@ -3659,7 +3954,9 @@ const VAL={};
         const atCrossing=Math.abs(toGlobal(arm,s)-BECK_XG)<34;   // the bridge abutment is masonry
         if(ySup!==null&&!atCrossing){
           const gap=yEdge-ySup;
-          supportGapMax=Math.max(supportGapMax,gap);
+          if(gap>supportGapMax){ supportGapMax=gap;
+            VAL.worstSupport={arm,s:Math.round(s),g:Math.round(toGlobal(arm,s)),side:sd,
+              gapM:Math.round(gap*1000)/1000}; }
           if(gap>0.08) unsupported++;
         }
         const yVerge=realizedCorridorY(arm,s,sd*(RH+4.4));
@@ -3680,7 +3977,7 @@ const VAL={};
       // the road surface itself against the ground function it was built from
       const yMid=realizedCorridorY(arm,s,0);
       if(yMid!==null) surfaceGapMax=Math.max(surfaceGapMax,Math.abs(yMid-(fr.y+CROWN)));
-      if(fr.y+1.62<groundY(fr.x,fr.z)) camBelow++;
+      if(fr.y+EYE_H<groundY(fr.x,fr.z)) camBelow++;
     }
   };
   scanArm('sun',2,FRAMES.sun.len-2);
@@ -3699,6 +3996,7 @@ const VAL={};
   // can be judged rather than trusted.
   VAL.analyticVsRealizedMaxM=analyticDevMax;
   VAL.cameraBelowTerrain=camBelow;
+  VAL.emittedTrianglesOnly=true;   // realizedCorridorY refuses unemitted quads
   VAL.roadNeverFloats=(supportGapMax<=0.08);
   VAL.roadNeverUnderTerrain=(tilePokeCount===0);
 
@@ -3748,7 +4046,7 @@ const VAL={};
   let hidden=0;
   for(const c of CRESTS){
     const s0=toLocal('sun',Math.max(0,c.g-120));
-    const eye=getFrame(FRAMES.sun,s0).y+1.62;
+    const eye=getFrame(FRAMES.sun,s0).y+EYE_H;
     let maxSlope=-1e9, hiddenM=0;
     for(let d=25;d<300;d+=5){
       const f=getFrame(FRAMES.sun,clamp(s0+d,0,FRAMES.sun.len-1));
@@ -3764,7 +4062,7 @@ const VAL={};
   // callback is real if two of those places are a long way apart on the road.
   const seeFrom=(g)=>{
     const fr=getFrame(FRAMES.sun,toLocal('sun',clamp(g,0,L_TOTAL)));
-    const ex=fr.x, ez=fr.z, ey=fr.y+1.62;
+    const ex=fr.x, ez=fr.z, ey=fr.y+EYE_H;
     const tx=SISTERS.x, tz=SISTERS.z, ty=SISTERS.y+14;
     const D=Math.hypot(tx-ex,tz-ez);
     if(D>1520||D<120) return false;
@@ -3819,6 +4117,35 @@ const VAL={};
 // ============================================================
 const PLANNED_ARTICULATED=TREES.filter(t=>t.d<=QCFG.nearD).length;
 const frameTimes=[]; let warmFrames=0, frameId=0, lastInfo={calls:0,tris:0};
+// frame time kept per chapter, because a single route-wide percentile hides the
+// one compression chapter that actually costs something
+const CHAP_FT={};
+function noteFrame(ms,ch){
+  let a=CHAP_FT[ch]; if(!a) a=CHAP_FT[ch]=[];
+  a.push(ms); if(a.length>400) a.shift();
+}
+// A frame that took a quarter of a second did not take a quarter of a second to
+// render: it is the harness stopping the world to save a PNG, or the tab being
+// descheduled. Both percentiles are reported — the raw one, and one with those
+// stalls removed — along with how many were removed, so neither can be quoted
+// without the other.
+const STALL_MS=220;
+function pctl(arr){
+  const a=arr.slice().sort((x,y)=>x-y);
+  const qq=(t)=>a.length?a[clamp(Math.floor(t*(a.length-1)),0,a.length-1)]:0;
+  return {n:a.length,p50:Math.round(qq(0.5)*10)/10,p95:Math.round(qq(0.95)*10)/10,
+    p99:Math.round(qq(0.99)*10)/10,fps:Math.round(1000/Math.max(qq(0.5),0.01)*10)/10};
+}
+function chapterFrameStats(){
+  const o={};
+  for(const k of Object.keys(CHAP_FT)){
+    const raw=CHAP_FT[k];
+    if(raw.length<8) continue;
+    const steady=raw.filter(v=>v<=STALL_MS);
+    o[k]=Object.assign(pctl(steady),{stalls:raw.length-steady.length,rawP95:pctl(raw).p95});
+  }
+  return o;
+}
 let realizationHash='';
 function buildProof(){
   const ft=frameTimes.slice(-300).sort((a,b)=>a-b);
@@ -3873,6 +4200,9 @@ function buildProof(){
       edgeAboveSupportM:Math.round(VAL.roadSupportGapM*1000)/1000,
       unsupportedEdgeSamples:VAL.roadUnsupportedSamples,
       designedVergeDropM:Math.round(VAL.vergeDropM*1000)/1000,
+      emittedTrianglesOnly:VAL.emittedTrianglesOnly,
+      seed:SEED_TEXT, quality:QUALITY,
+      worstStation:VAL.worstSupport||null,
       analyticVsRealizedMaxM:Math.round(VAL.analyticVsRealizedMaxM*1000)/1000,
       analyticVsRealizedWorstAt:VAL.analyticWorst||null,
       groundFieldPokeThroughSamples:VAL.tilePokeThroughCount,
@@ -3888,7 +4218,10 @@ function buildProof(){
       restEdgeDropM:Math.round(VAL.restEdgeDropM*100)/100, restSafe:VAL.restSafe,
     },
     counts:{
-      plannedTrees:TREES.length, plannedArticulatedNear:PLANNED_ARTICULATED, residentTrees:counts.trees,
+      plannedTrees:TREES.length, plannedArticulatedNear:PLANNED_ARTICULATED,
+      // realization declined to build these: the drawn surface under them
+      // disagreed with the plan by more than a tree can be seated through
+      unseatableTrees:GROUND_STAT.culled, residentTrees:counts.trees,
       articulatedNearResident:counts.articulatedNear, midResident:counts.midTrees,
       farResident:counts.farTrees, staticFarTrees:counts.staticFarTrees,
       farCanopyMasses:FAR_MASSES.length,
@@ -3935,12 +4268,27 @@ function buildProof(){
       amount:Math.round(weatherState.amount*1000)/1000, defaultSeedDry:(SEED_TEXT==='SUMMERGLASS-8421')?!WEATHER.has:null },
     chapters:CH.map(c=>({name:c.name,endM:Math.round(c.end*L_TOTAL),endS:Math.round(c.end*L_TOTAL/CRUISE)})),
     checkpoints:Object.assign({},checkpoints,RUN.marks),
-    render:{ dpr:renderer.getPixelRatio(), drawCalls:lastInfo.calls, triangles:lastInfo.tris,
+    render:{ dpr:renderer.getPixelRatio(), dprCap:DPR_CAP,
+      viewport:[renderer.domElement.width,renderer.domElement.height],
+      cssViewport:[window.innerWidth,window.innerHeight],
+      quality:QUALITY, chapter:chapterOf(rider.g),
+      drawCalls:lastInfo.calls, triangles:lastInfo.tris,
       renderer:glR, vendor:glV, contextLost:contextLost,
+      // a software rasteriser can be measured honestly; it cannot stand in for
+      // the hardware the world is meant to run on
+      softwareRenderer:/swiftshader|llvmpipe|software|basic render/i.test(glR+' '+glV),
       fpsMean:avg?Math.round(10000/avg)/10:0,
       frameP50Ms:Math.round(q(0.5)*10)/10, frameP95Ms:Math.round(q(0.95)*10)/10,
-      frameP99Ms:Math.round(q(0.99)*10)/10, samples:ft.length, composer:'none' },
-    run:{ branchRidden:RUN.branchRidden, distanceRiddenM:Math.round(RUN.distanceRiddenM),
+      frameP99Ms:Math.round(q(0.99)*10)/10, samples:ft.length,
+      steady:pctl(frameTimes.filter(v=>v<=STALL_MS)),
+      stallSamples:frameTimes.filter(v=>v>STALL_MS).length, stallThresholdMs:STALL_MS,
+      byChapter:chapterFrameStats(), composer:'none' },
+    run:{ provenance:RUN.provenance,
+      // The single field that decides whether anything else in `run` may be
+      // quoted as ride evidence. A warped run can still be inspected; it can
+      // never be presented as a ride.
+      continuousRideEligible:(RUN.provenance==='continuous'||RUN.provenance==='accelerated'),
+      branchRidden:RUN.branchRidden, distanceRiddenM:Math.round(RUN.distanceRiddenM),
       ascentRiddenM:Math.round(RUN.ascentRiddenM*10)/10, descentRiddenM:Math.round(RUN.descentRiddenM*10)/10,
       maxCameraRollDeg:Math.round(RUN.maxRollDeg*100)/100,
       peakDrawCalls:RUN.peakDrawCalls, peakTriangles:RUN.peakTriangles,
@@ -3949,7 +4297,9 @@ function buildProof(){
       lifeFired:RUN.lifeFired, ambientProvenWhilePaused:RUN.ambientProvenWhilePaused,
       marks:Object.assign({},RUN.marks),
       proximity:Object.assign({},RUN.proximity),
-      seen:Object.assign({},RUN.seen) },
+      seen:Object.assign({},RUN.seen),
+      completedContinuousRide:(RUN.provenance==='continuous'||RUN.provenance==='accelerated')&&
+        RUN.marks.rested&&RUN.marks.rejoined&&RUN.distanceRiddenM>L_TOTAL*0.985 },
     lifetime:Object.assign({},LIFETIME),
     branchTotals:{ sun:{ascentM:Math.round(VAL.arm.sun.ascentM*10)/10,
         descentM:Math.round(VAL.arm.sun.descentM*10)/10,
@@ -3982,10 +4332,14 @@ function buildProof(){
       cameraRollWithin3Deg:RUN.maxRollDeg<=3.05,
       performanceBudget:budgets,
       peakBudgetThisRun:(RUN.peakDrawCalls===0)||(RUN.peakDrawCalls<=115&&RUN.peakTriangles<=360000),
-      forkVisibleBeforeCommit:RUN.seen.forkBothArmsBeforeCommit,
-      waterVisibleFromRoad:RUN.seen.water,
-      bellrootVisibleOnApproach:RUN.seen.bellroot,
-      sistersCallbackSeenTwice:RUN.seen.sistersSeenSpanM>=900,
+      forkVisibleBeforeCommit:RUN.provenance!=='warped'&&RUN.provenance!=='debug'&&
+        (RUN.seen.forkBothArmsBeforeCommit),
+      // the brief's real bar: eight seconds of a legible choice at cruise
+      forkLegibleForEightSeconds:RUN.provenance!=='warped'&&RUN.provenance!=='debug'&&
+        (RUN.seen.forkLegibleSeconds>=8),
+      waterVisibleFromRoad:RUN.provenance!=='warped'&&RUN.provenance!=='debug'&&(RUN.seen.water),
+      bellrootVisibleOnApproach:RUN.provenance!=='warped'&&RUN.provenance!=='debug'&&(RUN.seen.bellroot),
+      sistersCallbackSeenTwice:RUN.provenance!=='warped'&&RUN.provenance!=='debug'&&(RUN.seen.sistersSeenSpanM>=900),
       planIndependentOfQuality:PLAN_HASH===PLAN_HASH_CHECK&&QUALITY_READS_AT_PLAN===0,
       noRuntimeErrors:capturedErrors.length===0&&!contextLost,
     },
@@ -4035,6 +4389,7 @@ const camFwd=new THREE.Vector3(0,0,1);
 const windDrift=WL.uCloudMove.value;
 const worldC=spineAt(L_TOTAL*0.5);
 const _eye=new THREE.Vector3(), _fwd=new THREE.Vector3();
+const _fpa=new THREE.Vector3(), _fpb=new THREE.Vector3();
 const CLOUD_SPAN=5200;
 
 function updateWeather(dt){
@@ -4061,7 +4416,8 @@ function tick(){
   const dt=fixedStep>0?fixedStep:Math.min(dtRaw,0.05);
   wTime+=dt;
   frameId++; warmFrames++;
-  if(warmFrames>20){ frameTimes.push(dtRaw*1000); if(frameTimes.length>600) frameTimes.shift(); }
+  if(warmFrames>20){ frameTimes.push(dtRaw*1000); if(frameTimes.length>600) frameTimes.shift();
+    noteFrame(dtRaw*1000,chapterOf(rider.g)); }
   WL.uWTime.value=wTime;
 
   if(!rider.started){ rider.holdT+=dt; if(rider.holdT>=1.1) rider.started=true; }
@@ -4090,8 +4446,14 @@ function tick(){
       else if(rider.latT<-0.35) pick=(FORK_SIDE>0)?'moss':'sun';
       if(pick!==rider.branch){ rider.branch=pick; rider.sM=toLocal(pick,rider.g); F=FRAMES[pick]; }
       rider.committed=true; RUN.marks.forkCommitted=true; RUN.branchRidden=rider.branch;
-      if(RUN.seen.forkFirstSeenAtM!==null)
+      if(RUN.seen.forkFirstSeenAtM!==null){
         RUN.seen.forkLeadBeforeCommitM=Math.round(rider.g-RUN.seen.forkFirstSeenAtM);
+        // the span over which the choice was actually readable, and what that is
+        // worth in seconds at cruise — which is the number that matters
+        const span=(RUN.seen.forkLegibleLastAtM||rider.g)-RUN.seen.forkFirstSeenAtM;
+        RUN.seen.forkLegibleSpanM=Math.round(span);
+        RUN.seen.forkLegibleSeconds=Math.round(span/CRUISE*10)/10;
+      }
     }
     if(rider.committed&&!RUN.marks.branchMid&&rider.g>(S_SPLIT+S_MERGE_G)*0.5) RUN.marks.branchMid=true;
     if(rider.g>S_MERGE_G+10) RUN.marks.rejoined=true;
@@ -4139,11 +4501,15 @@ function tick(){
       if(Math.hypot(c.x-pauseProbe.x,c.z-pauseProbe.z)>0.02) RUN.ambientProvenWhilePaused=true;
     }
   } else pauseProbe=null;
+  // one wind, three speeds: the near band travels visibly, the far band barely
+  // moves, and the whole sky stays coherent instead of wandering apart
   for(const cf of cloudForms){
-    let ox=cf.home.x+windDrift.x*wTime*0.42-worldC.x, oz=cf.home.z+windDrift.y*wTime*0.42-worldC.z;
+    const sp=0.46-cf.band*0.13;
+    let ox=cf.home.x+windDrift.x*wTime*sp-worldC.x, oz=cf.home.z+windDrift.y*wTime*sp-worldC.z;
     ox=((ox%CLOUD_SPAN)+CLOUD_SPAN*1.5)%CLOUD_SPAN-CLOUD_SPAN/2;
     oz=((oz%CLOUD_SPAN)+CLOUD_SPAN*1.5)%CLOUD_SPAN-CLOUD_SPAN/2;
     cf.mesh.position.set(worldC.x+ox,cf.home.y,worldC.z+oz);
+    cf.mesh.updateMatrix();
   }
 
   // ---- camera: bicycle height, composed steering, legible horizon ----
@@ -4152,13 +4518,15 @@ function tick(){
   camFwd.lerp(_fwd,camInit?1-Math.exp(-dt*3.4):1).normalize();
   camInit=true;
   _eye.set(eyeF.x,eyeF.y,eyeF.z).addScaledVector(new THREE.Vector3(eyeF.lx,0,eyeF.lz),rider.lat);
-  _eye.y+=1.62;
+  _eye.y+=EYE_H;
   if(!dragging){ yawOff*=Math.exp(-dt*1.6); pitchOff*=Math.exp(-dt*1.6); }
   const yaw=Math.atan2(-camFwd.x,-camFwd.z)+yawOff;
   const la=getFrame(F,Math.min(rider.sM+30,F.len-1));
   const pitchTarget=Math.atan2(la.y-eyeF.y,30)*0.42;
   pitchSm=(pitchSm===null)?pitchTarget:pitchSm+(pitchTarget-pitchSm)*(1-Math.exp(-dt*1.5));
-  const pitch=clamp(pitchSm+pitchOff,-0.55,0.5);
+  // A small standing bias upward. The lane stays instantly readable, but the
+  // frame gives its lower third back to the land instead of to the stone.
+  const pitch=clamp(pitchSm+pitchOff+PITCH_BIAS,-0.55,0.5);
   const roll=clamp(-rider.lat*0.030-steer*0.010,-0.052,0.052)*clamp(rider.v/11,0,1);
   camRollDeg=Math.abs(roll)*180/Math.PI;
   RUN.maxRollDeg=Math.max(RUN.maxRollDeg,camRollDeg);
@@ -4173,7 +4541,10 @@ function tick(){
   for(const p of partSystems){
     p.m.uniforms.uCam.value.copy(_eye);
     p.m.uniforms.uGround.value=eyeF.y;
-    p.m.uniforms.uBoost.value=(p.kind===2)?(0.55+moteBoost*1.5):1;
+    // the planned pockets decide whether there is anything in the air here at
+    // all; a scheduled mote event can still lift it briefly on top of that
+    const air=airAmountAt(rider.g);
+    p.m.uniforms.uBoost.value=(p.kind===2)?(air*0.85+moteBoost*1.5):air;
   }
   rainMat.uniforms.uCam.value.copy(_eye);
   rainMat.uniforms.uGround.value=eyeF.y;
@@ -4198,14 +4569,26 @@ function tick(){
   if((frameId&3)===0){
     refreshFrustum(camera);
     const eye=_eye;
+    // "Both arms visible" is not enough — two roads a pixel apart are one road.
+    // The test is that each arm's own stone is visible AND that they are far
+    // enough apart on screen to be told apart, held for long enough to act on.
     if(!rider.committed&&rider.g>S_SPLIT-320&&rider.g<S_SPLIT+FORK_COMMIT_LEAD){
       const a=getFrame(FRAMES.sun,clamp(toLocal('sun',S_SPLIT+170),0,FRAMES.sun.len-1));
       const bm=getFrame(FRAMES.moss,clamp(toLocal('moss',S_SPLIT+170),0,FRAMES.moss.len-1));
       const sa=seenByRider(eye,a.x,a.y+1.0,a.z,3,1.0);
       const sb=seenByRider(eye,bm.x,bm.y+1.0,bm.z,3,1.0);
       if(sa&&sb){
-        RUN.seen.forkBothArmsBeforeCommit=true;
-        if(RUN.seen.forkFirstSeenAtM===null) RUN.seen.forkFirstSeenAtM=Math.round(rider.g);
+        _fpa.set(a.x,a.y+1.0,a.z).project(camera);
+        _fpb.set(bm.x,bm.y+1.0,bm.z).project(camera);
+        // separation in normalised device space; 0.10 is about four degrees of
+        // view at this field of view, comfortably two distinct roads
+        const sep=Math.hypot(_fpa.x-_fpb.x,_fpa.y-_fpb.y);
+        RUN.seen.forkScreenSepMax=Math.max(RUN.seen.forkScreenSepMax,Math.round(sep*1000)/1000);
+        if(sep>=0.10){
+          RUN.seen.forkBothArmsBeforeCommit=true;
+          if(RUN.seen.forkFirstSeenAtM===null) RUN.seen.forkFirstSeenAtM=Math.round(rider.g);
+          RUN.seen.forkLegibleLastAtM=Math.round(rider.g);
+        }
       }
     }
     for(const P of PONDS){
@@ -4244,7 +4627,9 @@ window.__SUMMERGLASS_PLAN__=Object.assign({},PLAN_SUMMARY,{planHash:PLAN_HASH,qu
 
 // ---------- a small test surface (an aid to verification, not evidence of motion) ----------
 window.__SUMMERGLASS_TEST__={
-  fixedStep(dt){ fixedStep=dt||0; return fixedStep; },
+  // a fixed timestep still rides every metre and renders every frame; it only
+  // decouples the simulation from a slow rasteriser
+  fixedStep(dt){ fixedStep=dt||0; if(fixedStep>0) markProvenance('accelerated'); return fixedStep; },
   setSpeed(v){ rider.vT=clamp(v,4,18); },
   steer(v){ rider.latT=clamp(v,-2.6,2.6); },
   chooseBranch(which){
@@ -4257,6 +4642,7 @@ window.__SUMMERGLASS_TEST__={
   // an accelerated traversal used only to reach a chapter quickly; the ride
   // itself is always driven continuously
   warp(g){
+    markProvenance('warped');
     const target=clamp(g,0,S_STOP-12);
     if(target>S_SPLIT+58) rider.committed=true;
     rider.sM=toLocal(rider.branch,target); rider.g=target;
@@ -4321,6 +4707,68 @@ window.__SUMMERGLASS_TEST__={
   },
   // the ground profile out across a pool shelf, so a claim that water is
   // visible from the lane can be checked against heights rather than hoped for
+  // How much of the frame the stone actually occupies, integrated from the
+  // projected road edges rather than guessed from a screenshot. Reported for the
+  // whole frame and for the lower half, which is where dominance is felt.
+  roadFrameShare(){
+    camera.updateMatrixWorld();
+    const F=FRAMES[rider.branch];
+    const W=renderer.domElement.width, Hh=renderer.domElement.height;
+    const pt=new THREE.Vector3();
+    const proj=(x,y,z)=>{ pt.set(x,y,z).project(camera);
+      return [(pt.x*0.5+0.5)*W,(0.5-pt.y*0.5)*Hh,pt.z]; };
+    const rows=new Float64Array(Hh);
+    let prev=null;
+    for(let d=0.4;d<260;d*=1.035){
+      const s=Math.min(rider.sM+d,F.len-1);
+      const fr=getFrame(F,s);
+      const y=fr.y+CROWN;
+      const a=proj(fr.x-fr.lx*RH,y,fr.z-fr.lz*RH);
+      const b=proj(fr.x+fr.lx*RH,y,fr.z+fr.lz*RH);
+      if(a[2]>1||b[2]>1){ prev=null; continue; }
+      const cur={y:(a[1]+b[1])*0.5,w:Math.abs(b[0]-a[0])};
+      if(prev){
+        const y0=Math.min(prev.y,cur.y), y1=Math.max(prev.y,cur.y);
+        for(let yy=Math.max(0,Math.ceil(y0));yy<Math.min(Hh,y1);yy++){
+          const t=(yy-y0)/Math.max(1e-6,y1-y0);
+          rows[yy]=Math.max(rows[yy],lerp(prev.y<cur.y?prev.w:cur.w,prev.y<cur.y?cur.w:prev.w,t));
+        }
+      }
+      prev=cur;
+    }
+    let full=0, lower=0;
+    for(let yy=0;yy<Hh;yy++){
+      const w=Math.min(rows[yy],W);
+      full+=w; if(yy>=Hh*0.5) lower+=w;
+    }
+    return { framePct:Math.round(full/(W*Hh)*1000)/10,
+      lowerHalfPct:Math.round(lower/(W*Hh*0.5)*1000)/10,
+      fovDeg:camera.fov, eyeM:EYE_H, pitchBias:PITCH_BIAS, viewport:[W,Hh] };
+  },
+  // Every planted trunk measured against the surface actually drawn beneath it.
+  // Positive `above` means daylight under the root collar, which is the defect;
+  // negative means bedded in, which is what we want.
+  groundingProbe(){
+    let worst=null, floating=0, maxAbove=-1e9, sampled=0;
+    const check=(x,z,y,what)=>{
+      const r=realizedGroundY(x,z); if(r===null) return;
+      sampled++;
+      const above=y-r;
+      if(above>maxAbove){ maxAbove=above; worst={what,x:Math.round(x),z:Math.round(z),
+        aboveM:Math.round(above*1000)/1000}; }
+      if(above>0.05) floating++;
+    };
+    for(const t of TREES){ if(t.unseatable) continue; check(t.x,t.z,t.y,'tree:'+t.fam); }
+    check(HERO_POS.x,HERO_POS.z,HERO_POS.y,'bellroot');
+    return {sampled,floating,maxAboveM:Math.round(maxAbove*1000)/1000,worst,
+      seated:{lowered:GROUND_STAT.lowered,raised:GROUND_STAT.raised,
+        unseatable:GROUND_STAT.culled,
+        maxDropAnyM:Math.round(GROUND_STAT.maxDropM*1000)/1000,
+        maxDropKeptM:Math.round(GROUND_STAT.maxKeptDropM*1000)/1000,
+        plannedTotal:GROUND_STAT.trees}};
+  },
+  // anything that reaches past the controls into world state is debug-grade
+  markDebug(){ markProvenance('debug'); return RUN.provenance; },
   shelfProfile(i){
     const S=SHELVES[i||0]; if(!S) return null;
     const prof=[];
