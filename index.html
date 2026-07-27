@@ -2200,7 +2200,7 @@ vec3 groundAlbedo(vec2 wp, float h, float reed, float wet, float dist, out float
   vec3 c = mix(silt, reedCol, smoothstep(-0.40, 0.12, h));
   c = mix(c, lowMead, smoothstep(0.20, 0.95, h));
   c = mix(c, dryTop,  smoothstep(1.45, 2.60, h));
-  c = mix(c, reedCol * 0.94, reed * 0.50);                   // reed beds tint their own ground
+  c = mix(c, reedCol * 0.60, reed * 0.66);                   // under a stand it is litter, not lawn
   c *= 0.86 + 0.22 * mix(0.5, fine, grain) + 0.30*(broad-0.5) + 0.14*(mid-0.5);
   c = mix(c, c * vec3(0.56,0.62,0.60), wet * 0.62);          // wet ground goes dark and cool
   gloss = wet * (0.35 + 0.4*grain);
@@ -2371,7 +2371,7 @@ function makeRoadMaterial(shared) {
         // the batter is made ground, not upland: read it at bank height so a 4 m causeway
         // does not paint itself dry straw all the way down to the waterline
         vec3 marsh = groundAlbedo(vWorld.xz, min(vWorld.y, 1.15), 0.60, 0.35, dist, gloss);
-        vec3 verge = mix(s2l(C_REED_D)*1.05, s2l(C_OLIVE), 0.35 + 0.4*fbm2(vWorld.xz*0.8,3));
+        vec3 verge = mix(s2l(C_REED_D)*0.82, s2l(C_OLIVE)*0.78, 0.35 + 0.4*fbm2(vWorld.xz*0.8,3));
 
         vec3 col = road;
         col = mix(col, gravel, smoothstep(2.62, 3.05, a));
