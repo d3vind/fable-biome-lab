@@ -2598,6 +2598,11 @@ function makeWaterMaterial(shared) {
         }
         vec2 rp = vWorld.xz + flowDir * accel * uTime * 2.6;
         vec3 N = rippleNormal(rp, flowDir, 0.28 + 1.55*rough + accel*1.4, detail);
+        /* Distant water is one sheet, not a field of separate ripples. Flattening the
+           normal with range is the analytic equivalent of a mip: without it the grazing
+           fresnel term swings between body colour and bright overcast from pixel to
+           pixel, and a calm tide reads as salt-and-pepper glitter. */
+        N = normalize(mix(N, vec3(0.0, 1.0, 0.0), smoothstep(22.0, 130.0, vDist)));
 
         // --- colour: shallow olive silt through to deep slate
         vec3 shallow = s2l(vec3(0.353,0.361,0.259));
@@ -2611,7 +2616,9 @@ function makeWaterMaterial(shared) {
         vec3 R = reflect(V, N);
         R.y = abs(R.y) * mix(1.0, 0.55, rough) + 0.012;
         vec3 sky = skyColor(normalize(R), 1.0);
-        float fres = pow(1.0 - max(dot(-V, N), 0.0), 4.0);
+        float fres = pow(1.0 - max(dot(-V, N), 0.0), 3.2);
+        // and settle the grazing term itself, so a far tide is a value, not a stipple
+        fres = mix(fres, 0.52, smoothstep(28.0, 190.0, vDist));
         float mirror = mix(0.90, 0.34, rough);
         vec3 col = mix(body, sky, clamp(fres*mirror + 0.10*mirror, 0.0, 0.95));
 
@@ -2653,8 +2660,8 @@ function makeWaterMaterial(shared) {
         vec3 sunR = reflect(-uSunDir, N);
         float spec = pow(max(dot(sunR, -V), 0.0), 260.0);
         float align = smoothstep(0.35, 0.92, dot(normalize(vec2(-V.x,-V.z)), normalize(uSunDir.xz)));
-        float sparkle = smoothstep(0.55, 0.85, fbm2(vWorld.xz*7.0 + w.xy*uTime*1.3, 2));
-        col += uSunCol * spec * align * (0.35 + 0.65*sparkle) * (0.4 + 1.5*rough) * cloudShadow(vWorld.xz) * 2.2;
+        float sparkle = smoothstep(0.55, 0.85, fbm2(vWorld.xz*7.0 + w.xy*uTime*1.3, 2)) * detail;
+        col += uSunCol * spec * align * (0.35 + 0.65*sparkle) * (0.4 + 1.5*rough) * cloudShadow(vWorld.xz) * 1.45;
 
         // --- foam: at the waterline, and wherever the flow is forced
         float bankFoam = smoothstep(0.30, 0.05, depth) * (0.35 + 0.65*rough);
