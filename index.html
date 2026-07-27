@@ -446,14 +446,18 @@ function buildPlan(seedStr) {
   const willowLobeAmp = R.f(24, 40);
   const openPh = R.f(0, TAU), willowPh = R.f(0, TAU);
 
-  /* Lateral offset from the shared spine. w(u) is zero with zero slope at both ends, so each
-     arm leaves and rejoins tangentially — a real Y, not a stitched seam. The lobe term only
-     ever swings *outward* (0..2A), so the two arms can never cross or touch mid-fork. */
+  /* Lateral offset from the shared spine.
+     Two shaping terms: a junction ramp that opens the Y quickly enough to be read as a fork
+     from well before the commitment point, and a long sine that carries the arm out across
+     the country. Both are zero with zero slope at u=0 and u=1, so each arm still leaves and
+     rejoins tangentially. The lobe term only ever swings *outward* (0..2A), so the two arms
+     can never cross or touch mid-fork. */
   function armFromSpine(base, lobes, lobeAmp, ph, fineAmp, fineK, seedOff) {
     const n = spine.n, p = makePoly(n), sg = Math.sign(base);
     for (let i = 0; i < n; i++) {
       const u = i / (n - 1);
-      const w = Math.pow(Math.sin(PI * u), 1.4);
+      const ramp = smootherstep(0, 0.10, u) * smootherstep(1, 0.90, u);
+      const w = 0.5 * ramp + 0.5 * Math.pow(Math.sin(PI * u), 1.4);
       const wobble = 1 + 0.24 * fbm1(u * 3.1, curvSeed + seedOff, 3);
       const lobe = lobeAmp * (0.5 + 0.5 * Math.sin(TAU * lobes * u + ph));
       const fine = fineAmp * (0.5 + 0.5 * fbm1(u * fineK, curvSeed + seedOff + 88, 3));
