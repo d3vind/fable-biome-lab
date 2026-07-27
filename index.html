@@ -191,6 +191,7 @@ const S_SPLIT=chapEndPre('fork')+FORKS.r(30,90);   // the wedge
 const ARM_LEN=FORKS.r(560,660);
 const S_MERGE_SPINE=S_SPLIT+ARM_LEN;
 const S_SHELF0=S_SPLIT, S_SHELF1=S_MERGE_SPINE;
+const FORK_COMMIT_LEAD=118;   // metres past the split before the line is committed
 CH[3].end=clamp(S_MERGE_SPINE/L_TOTAL,CH[2].end+0.05,CH[4].end-0.05);
 for(const c of CH) CHS[c.key]=c.end*L_TOTAL;
 const SUN_LIFT=FORKS.r(9,12), MOSS_DROP=FORKS.r(5.5,7.5);
@@ -533,7 +534,7 @@ const S_END=toGlobal('sun',FRAMES.sun.len);
 const S_STOP=L_TOTAL;                                 // the rest; the road keeps going
 H.route.feed(FRAMES.sun.len,FRAMES.moss.len,S_COMMIT.sun,S_COMMIT.moss,S_MERGE.sun,S_MERGE.moss);
 
-const ROAD_W=ROUTE.r(5.0,5.6), RH=ROAD_W/2, SHOULDER=3.0, EXCL=RH+SHOULDER;
+const ROAD_W=ROUTE.r(4.62,4.94), RH=ROAD_W/2, SHOULDER=3.0, EXCL=RH+SHOULDER;
 const APRON=46;                                       // conformal corridor half-width
 H.route.feed(ROAD_W);
 // ============================================================
@@ -816,27 +817,122 @@ function streamInfo(x,z){
   return {d:bd>1e17?999:Math.sqrt(bd),y:by};
 }
 // the Glasswater pool: set back behind the fringe, shown through one gap
+// A pool is a composed thing, not an accident of where the noise happened to
+// dip. Two rules make it one: it must stand entirely clear of the lane's own
+// ground, and its surface must sit a knowable few metres below the lane, so the
+// rider looks *down* onto water instead of at a bank. Everything else — the
+// basin under it, the shelf across to it, the bank behind it — is derived.
+// A reveal that opens beside the rider is not a reveal — you ride past it and
+// never turn your head. So the station is chosen, not sampled: among the
+// candidates in the chapter, take the one where the water sits about twenty
+// degrees off the heading a hundred metres back, which puts it in frame and
+// moving across it as you come on.
+function composePool(arm,gLo,gHi,off,leadHi,halfFov,rx,rz){
+  // Score a candidate by how long the water actually stays inside the rider's
+  // own view cone on the way in, not by one flattering instant. A pool that is
+  // dead ahead for a single frame and abeam for the rest is not a moment.
+  let best=null, fallback=null;
+  for(let k=0;k<=28;k++){
+    const g=lerp(gLo,gHi,k/28);
+    const fr=getFrame(FRAMES[arm],clamp(toLocal(arm,g),0,FRAMES[arm].len-1));
+    for(const side of [-1,1]){
+      const cx=fr.x+fr.lx*off*side, cz=fr.z+fr.lz*off*side;
+      // measured against the direction the camera actually faces — a chord to a
+      // look-ahead point — not the instantaneous tangent, which on a bend can be
+      // fifteen degrees off where the rider is really looking
+      let hits=0, first=null, last=null, weight=0, angMid=0;
+      for(let L=leadHi;L>=34;L-=8){
+        const fa=getFrame(FRAMES[arm],clamp(toLocal(arm,g-L),0,FRAMES[arm].len-1));
+        const fb=getFrame(FRAMES[arm],clamp(toLocal(arm,g-L+22),0,FRAMES[arm].len-1));
+        let hx=fb.x-fa.x, hz=fb.z-fa.z; const hl=Math.hypot(hx,hz)||1; hx/=hl; hz/=hl;
+        const dx=cx-fa.x, dz=cz-fa.z, len=Math.hypot(dx,dz)||1;
+        const ang=Math.acos(clamp((dx*hx+dz*hz)/len,-1,1));
+        if(L>leadHi*0.68&&L<leadHi*0.82) angMid=ang*180/Math.PI;
+        if(ang<halfFov){ hits++; weight+=1-ang/halfFov; if(first===null) first=L; last=L; }
+      }
+      const cand={score:-weight,g,side,cx,cz,fr,hits,
+        windowM:(first!==null)?(first-last):0, angDeg:angMid};
+      if(!fallback||cand.score<fallback.score-1e-9) fallback=cand;
+      // near the fork the other arm is close enough that a pool sized off one
+      // lane can land squarely on the other. Every candidate has to clear both.
+      let clear=true;
+      for(let a=0;a<12&&clear;a++){
+        const t=a/12*TAU;
+        const px=cx+Math.cos(t)*rx*1.06, pz=cz+Math.sin(t)*rz*1.06;
+        if(routeInfo(px,pz).d<EXCL+7) clear=false;
+      }
+      if(clear&&(!best||cand.score<best.score-1e-9)) best=cand;
+    }
+  }
+  return best||fallback;
+}
 const POOL=(()=>{
-  const g=lerp(chapEnd('joining'),chapEnd('glasswater'),WATER.r(0.34,0.5));
-  const side=WATER.chance(0.5)?1:-1;
-  const fr=getFrame(FRAMES.sun,toLocal('sun',g));
-  const off=WATER.r(34,52);
-  const cx=fr.x+fr.lx*off*side, cz=fr.z+fr.lz*off*side;
-  return { g, side, cx, cz, rx:WATER.r(26,38), rz:WATER.r(17,26), rot:WATER.r(0,TAU),
-           apertureG:g-WATER.r(14,30), y:0, bed:0, name:'glasswater' };
+  const rx=WATER.r(23,29), rz=WATER.r(15,20);
+  const rot=WATER.r(0,TAU), drop=WATER.r(2.9,4.3), ap=WATER.r(14,30);
+  const off=rx*1.04+EXCL+WATER.r(7,13);
+  const c=composePool('sun',chapEnd('joining')+40,chapEnd('glasswater')-40,off,160,0.58,rx,rz);
+  return { g:c.g, side:c.side, cx:c.cx, cz:c.cz, rx, rz, rot,
+           apertureG:c.g-ap, revealAngleDeg:+c.angDeg.toFixed(1), revealLeadM:160,
+           revealWindowM:c.windowM,
+           y:c.fr.y-drop, bed:0, name:'glasswater' };
 })();
 // the dark pool the Mosswater arm runs past: cooler, smaller, under the trees
 const MOSSPOOL=(()=>{
-  const g=lerp(S_SPLIT,S_MERGE_G,WATER.r(0.38,0.56));
-  const side=-FORK_SIDE;
-  const fr=getFrame(FRAMES.moss,clamp(toLocal('moss',g),0,FRAMES.moss.len-1));
   const rx=WATER.r(11,16), rz=WATER.r(7.5,11);
-  const off=EXCL+rx+WATER.r(5,13);
-  return { g, side, cx:fr.x+fr.lx*off*side, cz:fr.z+fr.lz*off*side,
-           rx, rz, rot:WATER.r(0,TAU),
-           apertureG:g-WATER.r(10,22), y:0, bed:0, name:'mosswater' };
+  const rot=WATER.r(0,TAU), drop=WATER.r(2.1,3.2), ap=WATER.r(10,22);
+  const off=rx*1.06+EXCL+WATER.r(5,10);
+  const c=composePool('moss',S_SPLIT+90,S_MERGE_G-70,off,120,0.58,rx,rz);
+  return { g:c.g, side:c.side, cx:c.cx, cz:c.cz, rx, rz, rot,
+           apertureG:c.g-ap, revealAngleDeg:+c.angDeg.toFixed(1), revealLeadM:120,
+           revealWindowM:c.windowM,
+           y:c.fr.y-drop, bed:0, name:'mosswater' };
 })();
 const PONDS=[POOL,MOSSPOOL];
+for(const P of PONDS) P.bed=P.y-2.0;
+// A pool set in a basin is invisible from a road at eye height: the near rim
+// occludes the whole surface, which is how a chapter called Glasswater Shelf
+// ended up with no visible water in it. So each pool is given a shelf — a wedge
+// of ground between the lane and the near bank that falls away monotonically,
+// clamped below the rider's sight line. The far bank is deliberately left high,
+// because the water needs a dark bank behind it to read against.
+const SHELVES=PONDS.map(P=>{
+  const arm=(P.name==='mosswater')?'moss':'sun';
+  const fr=getFrame(FRAMES[arm],clamp(toLocal(arm,P.g),0,FRAMES[arm].len-1));
+  const off=(P.cx-fr.x)*fr.lx+(P.cz-fr.z)*fr.lz;    // signed lateral offset of the pool
+  return { P, arm, fr, off, side:Math.sign(off)||1,
+           uNear:Math.abs(off)-P.rx*0.94,           // where the near bank begins
+           halfV:P.rx*1.55+26,                      // how far along the lane it opens
+           backV:(P.rx*1.55+26)*2.4 };              // and much further back up the approach
+});
+function shelfY(x,z,y,rd){
+  for(const S of SHELVES){
+    const dx=x-S.fr.x, dz=z-S.fr.z;
+    const v=dx*S.fr.tx+dz*S.fr.tz;                  // along the lane
+    const ext=(v<0)?S.backV:S.halfV;                // the approach side reaches further
+    if(Math.abs(v)>ext) continue;
+    const u=(dx*S.fr.lx+dz*S.fr.lz)*S.side;         // toward the pool
+    // The shelf begins outside the verge, never inside it: within the corridor's
+    // own row spacing it changes faster than the drawn mesh can follow, and
+    // anything standing on the analytic ground would float above its triangles.
+    if(u<RH+7.5||u>S.uNear+1.5) continue;
+    const t=clamp((u-(RH+7.5))/Math.max(4,S.uNear+1.5-(RH+7.5)),0,1);
+    // eased so the ground rolls off the verge rather than shearing away from it
+    const ramp=lerp(S.fr.y-0.55,S.P.y+0.30,t*t*(3-2*t));
+    const fade=(1-smooth(ext*0.42,ext,Math.abs(v)))*smooth(RH+7.5,RH+13,u);
+    y=lerp(y,Math.min(y,ramp),fade);
+  }
+  return y;
+}
+function inShelf(x,z,margin){
+  for(const S of SHELVES){
+    const dx=x-S.fr.x, dz=z-S.fr.z;
+    const vv=dx*S.fr.tx+dz*S.fr.tz;
+    if(Math.abs(vv)>((vv<0)?S.backV:S.halfV)*0.92) continue;
+    const u=(dx*S.fr.lx+dz*S.fr.lz)*S.side;
+    if(u>RH+4.0&&u<S.uNear+(margin||0)) return true;
+  }
+  return false;
+}
 H.terrain.feed(STREAM.length,POOL.g,POOL.cx,POOL.cz,POOL.rx,POOL.rz,MOSSPOOL.g,MOSSPOOL.cx,MOSSPOOL.cz);
 
 // ---------- the ground: one function, used by everything that touches it ----------
@@ -844,8 +940,8 @@ const CROWN=0.11;
 function corridorProfile(a,cut){
   // a: lateral distance from the road centreline; cut>0 where the land stands above the road
   if(a<=RH) return CROWN*(1-(a/RH)*(a/RH));
-  let h=-0.22*smooth(RH,RH+0.55,a);                 // the shoulder rolls off the stone
-  h-=0.30*smooth(RH+0.45,RH+1.7,a);                 // the contact band steps down
+  let h=-0.30*smooth(RH,RH+0.95,a);                 // the shoulder carries the stone's edge, then rolls off
+  h-=0.24*smooth(RH+0.7,RH+1.9,a);                  // then the contact band steps down
   h-=0.34*smooth(RH+1.7,RH+4.6,a);                  // and the verge falls away
   h-=0.44*Math.exp(-Math.pow((a-(RH+4.0))/2.4,2))*clamp(cut,0,1)*smooth(RH,RH+1.4,a);  // a drain along the cut side
   return h;
@@ -878,31 +974,43 @@ function surfaceY(x,z){
   }
   for(const P of PONDS){
     const pdx=x-P.cx, pdz=z-P.cz;
-    if(Math.abs(pdx)>P.rx*2.4||Math.abs(pdz)>P.rx*2.4) continue;
+    if(Math.abs(pdx)>P.rx*3.0||Math.abs(pdz)>P.rx*3.0) continue;
     const pc=Math.cos(-P.rot), ps=Math.sin(-P.rot);
     const px=pdx*pc-pdz*ps, pz=pdx*ps+pdz*pc;
     const pr=Math.hypot(px/P.rx,pz/P.rz);
-    if(pr<1.9){
-      const t=(1-smooth(0.6,1.7,pr))*smooth(RH+2,RH+14,ri.d);
-      y=lerp(y,Math.min(y,P.bed),t);
+    if(pr<2.05){
+      // the bed is set, not merely cut down to: a pool lying across a slope has
+      // to have a floor, or the far half of it drains straight out of frame
+      const t=(1-smooth(1.10,2.05,pr))*smooth(RH+9,RH+24,ri.d);
+      y=lerp(y,P.bed,t);
+    }
+    // a rim the water can be held by: outside the basin the ground rises above
+    // the surface, so a pool never reads as a puddle poured down a hillside
+    if(pr>=1.0&&pr<2.7){
+      const rim=P.y+0.35+2.1*smooth(1.05,2.4,pr);
+      // held well clear of the corridor: inside the road's own row spacing the
+      // rim varies faster than the drawn mesh can follow, and props standing on
+      // the analytic ground would float above the triangles beneath them
+      y=lerp(y,Math.max(y,rim),smooth(RH+9,RH+26,ri.d)*(1-smooth(2.3,2.7,pr)));
     }
   }
+  y=shelfY(x,z,y,ri.d);
   // a hard guarantee: within the shoulder of either lane the ground is never
   // permitted above that lane's own edge, whatever else has been added here
   for(let a=0;a<2;a++){
-    if(ri.dA[a]<RH+2.5) y=Math.min(y,ri.yA[a]+corridorProfile(Math.max(ri.dA[a],RH+0.001),0)+0.015);
+    if(ri.dA[a]<RH+2.5&&ri.dA[a]<=ri.d+0.01)
+      y=Math.min(y,ri.yA[a]+corridorProfile(Math.max(ri.dA[a],RH+0.001),0)+0.015);
+  }
+  // and the matching guarantee in the other direction: whatever a pool basin,
+  // a shelf or a ditch wants to do out in the field, the metre of ground either
+  // side of the stone still carries it. A road that is not held up is not a road.
+  for(let a=0;a<2;a++){
+    if(ri.dA[a]<RH+1.7&&ri.dA[a]<=ri.d+0.01)
+      y=Math.max(y,ri.yA[a]+corridorProfile(Math.max(ri.dA[a],RH+0.001),0)-0.012);
   }
   return y;
 }
 function groundY(x,z){ return surfaceY(x,z); }
-for(const P of PONDS){
-  let lo=1e9;
-  for(let a=0;a<TAU;a+=0.3) for(const rr of [0.4,0.75,1.0]){
-    const px=P.cx+Math.cos(a)*P.rx*rr, pz=P.cz+Math.sin(a)*P.rz*rr;
-    lo=Math.min(lo,refAt(px,pz)+reliefAt(px,pz,routeInfo(px,pz).d));
-  }
-  P.bed=lo-2.5; P.y=lo-0.85;
-}
 const POOL_Y=POOL.y;
 H.terrain.feed(POOL_Y,ROLLER_STAT.count,ELEVATION.asc,ELEVATION.desc);
 for(let s=0;s<L_TOTAL;s+=160){ const p=spineAt(s); H.terrain.feed(groundY(p.x+70,p.z),groundY(p.x-70,p.z+40)); }
@@ -1205,6 +1313,9 @@ function famScale(fam,st){
       let inPond=false;
       for(const P of PONDS) if(Math.hypot((x-P.cx)/(P.rx*1.25),(z-P.cz)/(P.rz*1.25))<1) inPond=true;
       if(inPond) continue;
+      // nothing stands in the shelf: the whole point of it is an open sight line
+      // from the lane down onto the water
+      if(inShelf(x,z,1.5)) continue;
       if(Math.hypot(x-HERO_POS.x,z-HERO_POS.z)<64) continue;
       if(inSight(x,z,ri.s,ri.d,gr.side)) continue;
       if(treeNear(x,z,2.0*scl+st.r(0.4,2.4))) continue;
@@ -1258,15 +1369,27 @@ function famScale(fam,st){
         window:null,layer:null,formation:'orchard-row'});
     }
   }
-  // The Wind Sisters — three of them, on the skyline, seen twice from two chapters
-  for(let i=0;i<3;i++){
-    const st=subStream('sister',i);
-    const a=st.r(0,TAU), rr=st.r(4,13);
-    const x=SISTERS.x+Math.cos(a)*rr, z=SISTERS.z+Math.sin(a)*rr;
-    const ri=routeInfo(x,z);
-    treeAdd({x,y:groundY(x,z),z,fam:'windshaped',scl:st.r(1.5,1.95),rot:st.r(0,TAU),
-      lean:0.95,role:'landmark',grove:-2,d:ri.d,g:SISTERS.gA,roadY:ri.y,enc:0.1,
-      window:null,layer:null,formation:'wind-sisters'});
+  // The Wind Sisters — three of them, on the skyline, seen twice from two
+  // chapters. A landmark has to be a shape you can name, so they are not three
+  // scattered trees: they stand in a line laid across both sight lines so none
+  // hides another, at three deliberate heights, all leaning the same way. Tall,
+  // taller, short — a silhouette you recognise an hour later from the far side
+  // of the hollow.
+  {
+    const va=Math.atan2(SISTERS.a.x-SISTERS.x,SISTERS.a.z-SISTERS.z);
+    const vb=Math.atan2(SISTERS.b.x-SISTERS.x,SISTERS.b.z-SISTERS.z);
+    const vm=Math.atan2(Math.sin(va)+Math.sin(vb),Math.cos(va)+Math.cos(vb));
+    const across=vm+Math.PI*0.5;
+    const SCL=[2.55,3.35,1.95], OFF=[-36,2,31];
+    for(let i=0;i<3;i++){
+      const st=subStream('sister',i);
+      const x=SISTERS.x+Math.sin(across)*OFF[i]+st.r(-3.5,3.5);
+      const z=SISTERS.z+Math.cos(across)*OFF[i]+st.r(-3.5,3.5);
+      const ri=routeInfo(x,z);
+      treeAdd({x,y:groundY(x,z),z,fam:'windshaped',scl:SCL[i],rot:st.r(0,TAU),
+        lean:1,role:'landmark',grove:-2,d:ri.d,g:SISTERS.gA,roadY:ri.y,enc:0.06,
+        window:null,layer:null,formation:'wind-sisters'});
+    }
   }
   TREES.sort((a,b)=>a.g-b.g||a.x-b.x);
   for(let i=0;i<TREES.length;i+=17) H.eco.feed(TREES[i].x,TREES[i].z,TREES[i].fam);
@@ -1382,21 +1505,63 @@ const PLAN_SUMMARY={
   for(const k of Object.keys(PLAN_SUMMARY)) H.plan.feed(k,String(PLAN_SUMMARY[k]));
 }
 const PLAN_HASH=H.plan.hex();
+// A canonical serialization of the frozen plan, and a 64-bit digest of it.
+// This is a repeatability checksum, not a cryptographic commitment.
+const PLAN_CANONICAL=(()=>{
+  const num=(v)=>Math.round(v*1000)/1000;
+  const o={
+    v:'summerglass-hollow-2r', seed:SEED_TEXT,
+    route:{ len:num(L_TOTAL), chapters:CH.map(c=>[c.key,num(c.end)]),
+      curve:CURVE.map(c=>[num(c.wl),num(c.a*1e5),num(c.ph)]), openBow:num(OPEN_BOW*1e5) },
+    elev:{ trend:num(TREND*1e4), knots:KNOTS.map(k=>[num(k.s),num(k.y)]),
+      breath:BREATH.map(b=>[num(b.wl),num(b.a),num(b.ph)]), asc:num(ELEVATION.asc) },
+    fork:{ side:FORK_SIDE, split:num(S_SPLIT), len:num(ARM_LEN),
+      sunOut:num(SUN_OUT), mossOut:num(MOSS_OUT), lift:num(SUN_LIFT), drop:num(MOSS_DROP) },
+    water:{ beck:num(BECK_XG), ponds:PONDS.map(P=>[P.name,num(P.g),num(P.cx),num(P.cz),num(P.rx),num(P.rz)]) },
+    land:{ hero:[num(HERO_G),num(HERO_POS.x),num(HERO_POS.z)],
+      sisters:[num(SISTERS.x),num(SISTERS.z)], knoll:[num(KNOLL.h),num(KNOLL.r)],
+      orchard:num(ORCHARD_ROW.g) },
+    eco:{ groves:GROVES.length, trees:TREES.length, far:FAR_MASSES.length,
+      windows:GROVE_WINDOWS.map(w=>[num(w.g),w.kind,w.side]),
+      layers:LAYER_WINDOWS.map(w=>num(w.g)) },
+    life:LIFE_EVENTS.map(e=>[num(e.g),e.kind,e.arm]),
+    weather:[WEATHER.has?1:0,num(WEATHER.startG),num(WEATHER.dur)],
+  };
+  return JSON.stringify(o);
+})();
+const PLAN_DIGEST64=(()=>{
+  let h1=0x811C9DC5, h2=0x9E3779B9;
+  for(let i=0;i<PLAN_CANONICAL.length;i++){
+    const c=PLAN_CANONICAL.charCodeAt(i);
+    h1=Math.imul(h1^c,0x01000193);
+    h2=Math.imul(h2^(c+i),0x85EBCA77);
+    h2=(h2<<5)|(h2>>>27);
+  }
+  return ((h1>>>0).toString(16).padStart(8,'0'))+((h2>>>0).toString(16).padStart(8,'0'));
+})();
 QUALITY_READS_AT_PLAN=QUALITY_READS;   // the plan stage never asked what tier this is
 // ============================================================
 // REALIZATION — quality tiers change representation cost, never identity
 // ============================================================
 const QCFG={
-  low:      { row:7.0,  tile:15, ahead:720,  behind:260, under:0.38, nearD:13, midD:64,  farD:240, shadow:0,    part:0.5, lobe:0, tuftBand:26, capNear:3, capMid:20, bandTreeCap:52, cloudN:6,  view:1500, tileView:1500 },
-  standard: { row:5.0,  tile:12, ahead:940,  behind:300, under:0.82, nearD:17, midD:86,  farD:320, shadow:1024, part:1.0, lobe:1, tuftBand:33, capNear:6, capMid:30, bandTreeCap:78, cloudN:8,  view:1750, tileView:1950 },
-  high:     { row:3.5,  tile:9,  ahead:1120, behind:330, under:1.25, nearD:22, midD:100, farD:380, shadow:2048, part:1.3, lobe:2, tuftBand:38, capNear:8, capMid:36, bandTreeCap:96, cloudN:10, view:2200, tileView:2500 },
+  low:      { row:7.0,  tile:18, ahead:620,  behind:230, under:0.34, nearD:13, midD:58,  farD:230, shadow:0,    part:0.5, lobe:0, tuftBand:22, capNear:3, capMid:14, bandTreeCap:40, cloudN:13, view:1500, tileView:1500, dpr:1.0 },
+  standard: { row:5.0,  tile:16, ahead:800,  behind:270, under:0.62, nearD:17, midD:78,  farD:300, shadow:1024, part:1.0, lobe:1, tuftBand:29, capNear:5, capMid:20, bandTreeCap:56, cloudN:17, view:1620, tileView:1800, dpr:1.25 },
+  // `lobe` is the icosphere subdivision of a foliage puff: 0=20 triangles,
+  // 1=80, 2=320. Now that lobes carry smooth normals, level 2 costs four times
+  // the geometry for a difference nobody can see at riding speed — so the top
+  // tier spends its budget on reach, density and shadow resolution instead.
+  high:     { row:5.0,  tile:15, ahead:960,  behind:300, under:0.84, nearD:22, midD:94,  farD:340, shadow:2048, part:1.3, lobe:1, tuftBand:34, capNear:7, capMid:26, bandTreeCap:68, cloudN:21, view:1900, tileView:2100, dpr:1.5 },
 }[readQuality()];
 H.real.feed(QUALITY); for(const k of Object.keys(QCFG)) H.real.feed(k,QCFG[k]);
 
 const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});
 renderer.outputColorSpace=THREE.SRGBColorSpace;
 renderer.toneMapping=THREE.NoToneMapping;
-renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,QUALITY==='high'?2:1.5));
+// Each tier owns its own device-pixel ceiling. A shared ceiling meant the
+// cheapest tier still paid the most expensive tier's fill cost on a dense
+// display, which is exactly backwards.
+const DPR_CAP=QCFG.dpr;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,DPR_CAP));
 renderer.setSize(window.innerWidth,window.innerHeight);
 renderer.shadowMap.enabled=QCFG.shadow>0;
 renderer.shadowMap.type=THREE.PCFShadowMap;
@@ -1415,20 +1580,24 @@ const camera=new THREE.PerspectiveCamera(60,window.innerWidth/window.innerHeight
 // one high summer sun, warm, a little to the left of the opening view
 const startHd=spineAt(0).hd;
 const sunAz=startHd-ELEV.r(0.5,0.95);
-const sunEl=ELEV.r(0.86,1.02);
+const sunEl=ELEV.r(0.52,0.66);       // mid morning: low enough to throw shadows that model the land
 const sunDir=new THREE.Vector3(Math.sin(sunAz)*Math.cos(sunEl),Math.sin(sunEl),Math.cos(sunAz)*Math.cos(sunEl)).normalize();
-const sun=new THREE.DirectionalLight(mixc(PAL.road,0xffffff,0.48),2.75);
+const sun=new THREE.DirectionalLight(mixc(PAL.road,0xFFF3D8,0.30),2.95);
 sun.position.copy(sunDir.clone().multiplyScalar(300));
 if(QCFG.shadow>0){
   sun.castShadow=true;
   sun.shadow.mapSize.set(QCFG.shadow,QCFG.shadow);
-  sun.shadow.camera.near=40; sun.shadow.camera.far=520;
-  sun.shadow.camera.left=-62; sun.shadow.camera.right=62;
-  sun.shadow.camera.top=62; sun.shadow.camera.bottom=-62;
-  sun.shadow.bias=-0.0006; sun.shadow.normalBias=0.55;
+  sun.shadow.camera.near=40; sun.shadow.camera.far=560;
+  sun.shadow.camera.left=-78; sun.shadow.camera.right=78;
+  sun.shadow.camera.top=78; sun.shadow.camera.bottom=-78;
+  // a large normal bias erases exactly the contact shadow that tells you a
+  // tree is standing on this ground rather than hovering over it
+  sun.shadow.bias=-0.00042; sun.shadow.normalBias=0.10;
 }
 scene.add(sun); scene.add(sun.target);
-const hemi=new THREE.HemisphereLight(mixc(PAL.sky,0xffffff,0.46),mixc(PAL.leafShade,PAL.meadow,0.52),1.02);
+// sky fill is cool and woodland bounce is warm, and the fill is kept well under
+// the sun so cast shadows stay legible instead of being washed flat
+const hemi=new THREE.HemisphereLight(mixc(PAL.sky,0xE8F4FF,0.30),mixc(PAL.meadow,PAL.bark,0.30),0.76);
 scene.add(hemi);
 H.real.feed(sunAz,sunEl);
 
@@ -1454,6 +1623,28 @@ float dappleAt(vec2 w,float canopy){
   float cut=smoothstep(0.455+0.07*sway,0.63,n);
   return mix(1.0,mix(0.42,1.06,cut),clamp(canopy,0.0,1.0));
 }`;
+// The painted meadow field. The broad composition — where grass is pale and
+// lively, where it stays deep, where it dries out — is decided by the plan and
+// baked into vertex colour. What that cannot give is the short-range life of a
+// summer field, because the ground mesh is metres per vertex. So the last two
+// octaves live here, world-locked so they never swim under the camera: grazing
+// and growth patches at a few metres, drier bleached ground on the exposures,
+// and rare bare loam where something has worn through.
+const MEADOW_GLSL=`
+{
+  float clump=wlNoise(vWPos.xz*0.42+vec2(4.7,1.9))*0.58+wlNoise(vWPos.xz*1.05+vec2(9.1,6.3))*0.42;
+  float coarse=wlNoise(vWPos.xz*0.085+vec2(21.0,13.0));
+  float lush=smoothstep(0.40,0.78,clump*0.65+coarse*0.35);
+  // greener, slightly bluer where growth is thick; warmer and paler where it is thin
+  diffuseColor.rgb*=mix(vec3(1.08,1.045,0.94),vec3(0.90,0.965,0.93),lush);
+  float dry=smoothstep(0.60,0.86,coarse*0.7+wlNoise(vWPos.xz*0.30+vec2(31.0,2.0))*0.3);
+  diffuseColor.rgb=mix(diffuseColor.rgb,diffuseColor.rgb*vec3(1.20,1.10,0.80),dry*0.45);
+  float bare=smoothstep(0.80,0.93,wlNoise(vWPos.xz*0.62+vec2(55.0,17.0)));
+  diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.40,0.33,0.23),bare*0.34);
+  // a fine grain so the surface never reads as a flat fill up close
+  float grain=wlNoise(vWPos.xz*3.7)*0.5+wlNoise(vWPos.xz*9.1+3.3)*0.5;
+  diffuseColor.rgb*=0.965+0.07*grain;
+}`;
 function groundedMat(mat,opts){
   const o=opts||{};
   mat.onBeforeCompile=(sh)=>{
@@ -1463,7 +1654,7 @@ function groundedMat(mat,opts){
       .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*vec4(transformed,1.0);\n#ifdef USE_INSTANCING\n wp2=modelMatrix*instanceMatrix*vec4(transformed,1.0);\n#endif\n vWPos=wp2.xyz;'+(o.canopy?' vCanopy=aCanopy;':'')+' }');
     sh.fragmentShader=sh.fragmentShader
       .replace('#include <common>','#include <common>\nvarying vec3 vWPos;'+(o.canopy?'varying float vCanopy;':'const float vCanopy=0.0;')+'\n'+WL_GLSL)
-      .replace('#include <color_fragment>','#include <color_fragment>\n'+(o.wet?`
+      .replace('#include <color_fragment>','#include <color_fragment>\n'+(o.meadow?MEADOW_GLSL:'')+(o.wet?`
         { float wet=uWet*(0.55+0.45*wlNoise(vWPos.xz*0.35));
           diffuseColor.rgb*=mix(1.0,0.80,wet); }`:''))
       .replace('vec3 outgoingLight = ',
@@ -1500,22 +1691,31 @@ function groundColor(x,z,slope,enc,moist,rel){
 // built from the route's own frames. Nothing can bleed over the stone,
 // nothing can float, nothing can z-fight: there is no second surface here.
 // ============================================================
-const C_ROAD_CORE=mixc(PAL.road,0xffffff,0.13);
-const C_ROAD_MID=col(PAL.road);
-const C_ROAD_EDGE=mixc(PAL.road,PAL.bark,0.18).lerp(col(PAL.leafShade),0.06);
-const C_CONTACT=(()=>{
-  // the immediate edge band is built to a measured luminance contract
-  const target=lumOf(C_ROAD_MID)/3.35;
-  const hue=mixc(PAL.leafShade,PAL.woodDeep,0.58);
+// The stone is warm pale limestone dust, not concrete. Lifting it toward pure
+// white blew out the widest surface in the frame and made the lane read as an
+// airstrip; the centre now warms rather than brightens, and the edges carry
+// more soil, so the road sits into the land instead of on top of it.
+const C_ROAD_CORE=mixc(PAL.road,0xFFF2D2,0.16);
+const C_ROAD_MID=mixc(PAL.road,PAL.bark,0.055);
+const C_ROAD_EDGE=mixc(PAL.road,PAL.bark,0.26).lerp(col(PAL.leafShade),0.08);
+// The edge of a country lane is not one colour. It is a dark damp seam where
+// the stone meets the soil, then broken dusty shoulder, then grass that has
+// been walked and ridden over, then whatever the field is doing.
+const C_SEAM=(()=>{
+  // the seam carries the measured luminance contract against the stone
+  const target=lumOf(C_ROAD_MID)/3.4;
+  const hue=mixc(PAL.bark,PAL.woodDeep,0.42);          // damp soil, warm not teal
   const k=target/Math.max(lumOf(hue),1e-4);
   return new THREE.Color(clamp(hue.r*k,0,1),clamp(hue.g*k,0,1),clamp(hue.b*k,0,1));
 })();
-const ROAD_CONTRAST=lumOf(C_ROAD_MID)/lumOf(C_CONTACT);
+const C_SHOULDER=mixc(PAL.road,PAL.bark,0.46).lerp(col(PAL.sunGrass),0.10);  // dusty loam
+const C_WORNGRASS=mixc(PAL.meadow,PAL.bark,0.24).lerp(col(PAL.sunGrass),0.16);
+const ROAD_CONTRAST=lumOf(C_ROAD_MID)/lumOf(C_SEAM);
 
 const COLS=(()=>{
   const c=[];
   for(const t of [-1,-0.72,-0.40,-0.14,0.14,0.40,0.72,1]) c.push(t*RH);
-  for(const a of [0.22,0.6,1.15,1.9,2.9,4.4,6.6,9.6,13.8,19.5,27,35,APRON]){ c.push(RH+a); c.push(-(RH+a)); }
+  for(const a of [0.22,0.6,1.15,1.9,2.9,4.4,8.0,13.0,20.0,29,38,APRON]){ c.push(RH+a); c.push(-(RH+a)); }
   c.sort((p,q)=>p-q);
   return c;
 })();
@@ -1523,7 +1723,7 @@ const COLS=(()=>{
 // the stone keeps a warm floor: nothing in this world is allowed to make the
 // road read as grey, least of all its own shade
 const corridorMat=new THREE.MeshLambertMaterial({vertexColors:true,
-  emissive:new THREE.Color(0x241d10),emissiveIntensity:1});
+  emissive:new THREE.Color(0x120e07),emissiveIntensity:1});
 corridorMat.onBeforeCompile=(sh)=>{
   Object.assign(sh.uniforms,WL);
   sh.vertexShader=sh.vertexShader
@@ -1543,20 +1743,37 @@ corridorMat.onBeforeCompile=(sh)=>{
       diffuseColor.rgb*=1.0+wear*0.045;
       diffuseColor.rgb=mix(diffuseColor.rgb,diffuseColor.rgb*vec3(0.80,0.83,0.86),uWet*0.55);
     } else {
+      // break the verge bands so no boundary runs dead straight beside the road
       float g=wlNoise(vWPos.xz*0.36)*0.6+wlNoise(vWPos.xz*1.15+5.3)*0.4;
+      float edge=abs(vLat);
+      float brk=wlNoise(vWPos.xz*0.55+vec2(3.1,9.7))*0.6+wlNoise(vWPos.xz*1.9)*0.4;
+      float scuff=smoothstep(1.02,1.55,edge+(brk-0.5)*0.42);
+      diffuseColor.rgb=mix(diffuseColor.rgb,diffuseColor.rgb*vec3(1.10,1.06,0.94),(1.0-scuff)*0.55);
+      float loam=smoothstep(0.62,0.18,abs(edge-1.28)+(brk-0.5)*0.5);
+      diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.44,0.36,0.25),loam*0.30);
       diffuseColor.rgb*=0.92+0.16*g;
+      // the verge carries the same meadow field as the open ground, faded in
+      // past the worn strip, so there is no seam where the corridor mesh ends
+      float blendM=smoothstep(1.5,3.4,edge);
+      vec3 preM=diffuseColor.rgb;
+      ${MEADOW_GLSL}
+      diffuseColor.rgb=mix(preM,diffuseColor.rgb,blendM);
       diffuseColor.rgb*=mix(1.0,0.86,uWet);
     }`)
     .replace('vec3 outgoingLight = ',
       'float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\n'+
       'if(vMat<0.5) wl=mix(1.0,wl,0.55);\n'+          // the road stays readable in any shade
-      'reflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse*=mix(0.86,1.0,wl);\nvec3 outgoingLight = ');
+      'reflectedLight.directDiffuse*=wl;\n'+
+      // a warm floor under everything in this corridor: shade here is warm dark
+      // earth and warm dark stone, never grey
+      'reflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.86,1.0,wl)+diffuseColor.rgb*(vMat<0.5?0.30:0.34)*wl;\n'+
+      'vec3 outgoingLight = ');
 };
 
 function armIndex(arm){ return arm==='sun'?0:1; }
-function buildCorridor(arm,sLo,sHi){
+function buildCorridor(arm,sLo,sHi,rowScale){
   const F=FRAMES[arm], ai=armIndex(arm);
-  const row=QCFG.row;
+  const row=QCFG.row*(rowScale||1);
   const i0=Math.max(0,sLo), i1=Math.min(F.len,sHi);
   const rows=Math.max(2,Math.round((i1-i0)/row)+1);
   const W=COLS.length;
@@ -1588,8 +1805,17 @@ function buildCorridor(arm,sLo,sHi){
         const moist=clamp(1-streamInfo(x,z).d/34,0,1);
         const slope=0;
         const base=groundColor(x,z,slope,enc,moist,rel).clone();
-        const band=1-smooth(RH+1.15,RH+4.2,a);      // the cool contact band at the stone's edge
-        cc=base.lerp(C_CONTACT,band*0.95);
+        // the transition widths breathe with moisture, slope and enclosure, and
+        // the shader breaks their boundaries so this never reads as a ribbon
+        const wet=clamp(moist*1.2,0,1);
+        const seamW=lerp(0.30,0.52,wet);
+        const shoW=lerp(1.05,0.55,enc)*lerp(1.0,1.45,clamp(slope*2,0,1));
+        const grW=lerp(2.6,1.5,enc);
+        const d0=a-RH;
+        cc=base.clone();
+        cc.lerp(C_WORNGRASS,1-smooth(seamW+shoW,seamW+shoW+grW,d0));
+        cc.lerp(C_SHOULDER,(1-smooth(seamW,seamW+shoW,d0))*lerp(0.86,0.45,enc));
+        cc.lerp(C_SEAM,1-smooth(seamW*0.55,seamW,d0));
       }
       P[k*3]=x; P[k*3+1]=y; P[k*3+2]=z;
       C[k*3]=cc.r; C[k*3+1]=cc.g; C[k*3+2]=cc.b;
@@ -1618,27 +1844,62 @@ function buildCorridor(arm,sLo,sHi){
   gm.setAttribute('aMat',new THREE.BufferAttribute(MT,1));
   gm.setIndex(IDX);
   gm.computeVertexNormals();
+  gm.userData.real={arm,i0,i1,rows,W,P};
   return gm;
 }
 const corridorMeshes=[];
+const CORRIDOR_REAL=[];   // the vertices actually emitted, for realized-mesh proof
 {
-  const CHUNK=430;
+  // Chunk length is a culling decision, not a modelling one: at 430 m the whole
+  // corridor for half a kilometre had to be drawn to show ten metres of it.
+  const CHUNK=300;
   for(let s=0;s<FRAMES.sun.len;s+=CHUNK){
-    const gm=buildCorridor('sun',s,Math.min(FRAMES.sun.len,s+CHUNK+QCFG.row*1.05));
+    const e=Math.min(FRAMES.sun.len,s+CHUNK+QCFG.row*1.05);
+    const gm=buildCorridor('sun',s,e,1);
     if(!gm) continue;
     gm.computeBoundingSphere();
-    const m=new THREE.Mesh(gm,corridorMat); m.receiveShadow=false; m.matrixAutoUpdate=false;
+    CORRIDOR_REAL.push(gm.userData.real);
+    const m=new THREE.Mesh(gm,corridorMat); m.receiveShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false;
     scene.add(m); corridorMeshes.push(m);
   }
   const m0=Math.max(0,S_COMMIT.moss-90), m1=Math.min(FRAMES.moss.len,S_MERGE.moss+90);
   for(let s=m0;s<m1;s+=CHUNK){
-    const gm=buildCorridor('moss',s,Math.min(m1,s+CHUNK+QCFG.row*1.05));
+    const e=Math.min(m1,s+CHUNK+QCFG.row*1.05);
+    const gm=buildCorridor('moss',s,e,1);
     if(!gm) continue;
     gm.computeBoundingSphere();
-    const m=new THREE.Mesh(gm,corridorMat); m.receiveShadow=false; m.matrixAutoUpdate=false;
+    CORRIDOR_REAL.push(gm.userData.real);
+    const m=new THREE.Mesh(gm,corridorMat); m.receiveShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false;
     scene.add(m); corridorMeshes.push(m);
   }
   H.real.feed('corridor',corridorMeshes.length,COLS.length);
+}
+// read the realised corridor mesh: the surface the renderer actually draws
+function realizedCorridorY(arm,s,u){
+  let col=0;
+  for(let j=0;j<COLS.length-1;j++) if(u>=COLS[j]&&u<=COLS[j+1]){ col=j; break; }
+  const ct=(u-COLS[col])/Math.max(1e-6,COLS[col+1]-COLS[col]);
+  // Chunks overlap by a row so their triangles meet. A station inside the
+  // overlap is described by two chunks; read the one that holds it furthest
+  // from its own end, which is the well-conditioned sample. Taking the maximum
+  // instead silently reported whichever chunk happened to sit higher.
+  let best=null, bestMargin=-1;
+  for(const R of CORRIDOR_REAL){
+    if(R.arm!==arm) continue;
+    const sLo=R.i0, sHi=R.i1;
+    if(s<sLo-0.01||s>sHi+0.01) continue;
+    const margin=Math.min(s-sLo,sHi-s);
+    if(margin<=bestMargin) continue;
+    const fr=(s-sLo)/Math.max(1e-6,sHi-sLo)*(R.rows-1);
+    const r0=clamp(Math.floor(fr),0,R.rows-1), r1=Math.min(R.rows-1,r0+1), rt=fr-r0;
+    const at=(r,c)=>R.P[(r*R.W+c)*3+1];
+    const ya=lerp(at(r0,col),at(r0,col+1),ct);
+    const yb=lerp(at(r1,col),at(r1,col+1),ct);
+    bestMargin=margin; best=lerp(ya,yb,rt);
+  }
+  return best;
+}
+{
 }
 
 // ============================================================
@@ -1646,6 +1907,7 @@ const corridorMeshes=[];
 // allowed inside 36 m of a lane, so it cannot rise through the road.
 // ============================================================
 const terrainMeshes=[];
+let TILE_REAL=null;
 {
   const cell=QCFG.tile, MARGIN=Math.min(980,QCFG.tileView*0.62);
   let minX=1e9,maxX=-1e9,minZ=1e9,maxZ=-1e9;
@@ -1673,8 +1935,11 @@ const terrainMeshes=[];
     const c=groundColor(x,z,slope,enc,moist,HG[k]-refAt(x,z));
     CG[k*3]=c.r; CG[k*3+1]=c.g; CG[k*3+2]=c.b;
   }
-  const TILE=Math.max(4,Math.round(520/cell));
-  const mat=groundedMat(new THREE.MeshLambertMaterial({vertexColors:true}),{});
+  const TG=new Float32Array(nx*nz);
+  for(let k=0;k<nx*nz;k++) TG[k]=HG[k]-0.22*(1-smooth(70,104,DG[k]));
+  TILE_REAL={x0,z0,cell,nx,nz,TG,DG};
+  const TILE=Math.max(4,Math.round(400/cell));
+  const mat=groundedMat(new THREE.MeshLambertMaterial({vertexColors:true}),{meadow:true});
   for(let tz=0;tz<nz-1;tz+=TILE) for(let tx=0;tx<nx-1;tx+=TILE){
     const ex=Math.min(nx-1,tx+TILE), ez=Math.min(nz-1,tz+TILE);
     // skip whole tiles that are far outside the world we can ever see
@@ -1688,7 +1953,7 @@ const terrainMeshes=[];
       if(v!==undefined) return v;
       v=P.length/3;
       const d=DG[key];
-      P.push(x0+ix*cell,HG[key]-0.22*(1-smooth(70,104,d)),z0+iz*cell);
+      P.push(x0+ix*cell,TG[key],z0+iz*cell);
       C.push(CG[key*3],CG[key*3+1],CG[key*3+2]);
       remap.set(key,v); return v; };
     for(let iz=tz;iz<ez;iz++) for(let ix=tx;ix<ex;ix++){
@@ -1707,6 +1972,19 @@ const terrainMeshes=[];
     scene.add(m); terrainMeshes.push(m);
   }
   H.real.feed('tiles',terrainMeshes.length,cell);
+}
+// read the realised ground field the same way: nearest emitted vertex, and
+// whether any tile geometry exists at this place at all
+function realizedTileY(x,z){
+  const T=TILE_REAL; if(!T) return null;
+  const fx=(x-T.x0)/T.cell, fz=(z-T.z0)/T.cell;
+  const ix=Math.round(fx), iz=Math.round(fz);
+  if(ix<0||iz<0||ix>=T.nx||iz>=T.nz) return null;
+  const k=iz*T.nx+ix;
+  if(T.DG[k]<36) return null;                 // the corridor owns this ground
+  return T.TG[k];
+}
+{
 }
 
 // ---------- the far country: layered blue-green silhouettes ----------
@@ -1746,10 +2024,24 @@ const terrainMeshes=[];
 // of overlapping oblate lobes with a deliberate gap, a warm cap above and a
 // cooler, heavier mass beneath — never a sphere on a stick.
 // ============================================================
-function Buf(){ return {p:[],c:[],s:[],sway:0}; }
-function pushTri(B,a,b,c,cc){
+// Normals are authored, not inferred. Bark, ground props and cloud puffs keep
+// hard per-face normals — the faceted language of the world. Foliage lobes
+// supply their own smooth normals, so an eighty-triangle puff shades like a
+// soft ball instead of a cut gemstone. That single distinction is most of the
+// difference between a fluffy canopy and a heap of crystals.
+function Buf(){ return {p:[],c:[],s:[],n:[],sway:0}; }
+const _fa=new THREE.Vector3(), _fb=new THREE.Vector3(), _fn=new THREE.Vector3();
+function pushTri(B,a,b,c,cc,na,nb,nc){
   B.p.push(a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
   for(let k=0;k<3;k++){ B.c.push(cc.r,cc.g,cc.b); B.s.push(B.sway); }
+  if(na){ B.n.push(na[0],na[1],na[2], nb[0],nb[1],nb[2], nc[0],nc[1],nc[2]); }
+  else {
+    _fa.set(b[0]-a[0],b[1]-a[1],b[2]-a[2]);
+    _fb.set(c[0]-a[0],c[1]-a[1],c[2]-a[2]);
+    _fn.crossVectors(_fa,_fb);
+    if(_fn.lengthSq()>1e-12) _fn.normalize(); else _fn.set(0,1,0);
+    for(let k=0;k<3;k++) B.n.push(_fn.x,_fn.y,_fn.z);
+  }
 }
 function pushQuad(B,a,b,c,d,cc){ pushTri(B,a,b,c,cc); pushTri(B,a,c,d,cc); }
 function bufGeo(B){
@@ -1757,7 +2049,7 @@ function bufGeo(B){
   g.setAttribute('position',new THREE.Float32BufferAttribute(B.p,3));
   g.setAttribute('color',new THREE.Float32BufferAttribute(B.c,3));
   g.setAttribute('aSway',new THREE.Float32BufferAttribute(B.s,1));
-  g.computeVertexNormals();
+  g.setAttribute('normal',new THREE.Float32BufferAttribute(B.n,3));
   return g;
 }
 const sunXZ=new THREE.Vector2(sunDir.x,sunDir.z).normalize();
@@ -1798,23 +2090,37 @@ const ICOD=ICO.map(g=>{ const p=g.getAttribute('position');
 function lobe(B,cx,cy,cz,rx,ry,rz,st,cTop,cBot,rough,detail,swayAmt){
   const D=ICOD[clamp(detail,0,2)];
   const prev=B.sway; B.sway=swayAmt!==undefined?swayAmt:clamp(0.35+(rx+rz)*0.05,0.25,1.0);
-  const p1=st.r(0,TAU), p2=st.r(0,TAU), p3=st.r(0,TAU);
+  // Displacement stays small. A lobe is a soft puff, not a cut gemstone: the
+  // fluffiness of a crown comes from many lobes overlapping, never from
+  // deforming one lobe until its facets read as shards. A low-frequency smooth
+  // term does most of the work; the per-vertex noise only breaks the regularity
+  // of the icosphere so two lobes never look stamped from the same die.
+  const p1=st.r(0,TAU), p2=st.r(0,TAU);
   const N=D.n, jx=new Float32Array(N);
   for(let i=0;i<N;i++){
     const x=D.p.getX(i), y=D.p.getY(i), z=D.p.getZ(i);
     const th=Math.atan2(z,x);
-    jx[i]=1+rough*(Math.sin(th*3+p1)*0.5+Math.sin(th*2+y*2.6+p2)*0.34+Math.sin(th*5+p3)*0.16);
+    const smoothTerm=Math.sin(th*2+y*2.2+p1)*0.52+Math.sin(th*3+p2)*0.30;
+    jx[i]=1+rough*((st.f()-0.5)*2*0.34+smoothTerm*0.78);
   }
+  // The smooth normal of the underlying ellipsoid, not of the jittered hull.
+  // The jitter is meant to be felt in the silhouette, not read as shading
+  // breaks across the surface.
+  const nrm=[];
   const vert=(i)=>{
     const x=D.p.getX(i), y=D.p.getY(i), z=D.p.getZ(i), j=jx[i];
     const yy=y<0?y*0.86:y;                       // slightly tucked underneath, not a flat plate
+    let nx=x/rx, ny=yy/ry, nz=z/rz;
+    const nl=Math.hypot(nx,ny,nz)||1;
+    nrm[i]=[nx/nl,ny/nl,nz/nl];
     return [cx+x*rx*j, cy+yy*ry*j, cz+z*rz*j, y];
   };
   for(let i=0;i<D.idx.length;i+=3){
-    const a=vert(D.idx[i]), b=vert(D.idx[i+1]), c=vert(D.idx[i+2]);
+    const ia=D.idx[i], ib=D.idx[i+1], ic=D.idx[i+2];
+    const a=vert(ia), b=vert(ib), c=vert(ic);
     const ym=(a[3]+b[3]+c[3])/3;
     const cc=cBot.clone().lerp(cTop,clamp(0.44+0.58*ym,0,1));
-    pushTri(B,[a[0],a[1],a[2]],[b[0],b[1],b[2]],[c[0],c[1],c[2]],cc);
+    pushTri(B,[a[0],a[1],a[2]],[b[0],b[1],b[2]],[c[0],c[1],c[2]],cc,nrm[ia],nrm[ib],nrm[ic]);
   }
   B.sway=prev;
 }
@@ -1870,9 +2176,18 @@ function buildTree(B,t,tier,minCrownY){
   // ---- crown: a ring of overlapping oblate lobes with a gap in it ----
   const top=tp[tp.length-1];
   let crownY=t.y+H*A.lift*(tier===2?1.0:0.76)+H*0.16;
-  const crownR=H*A.w*(tier===2?0.31:(tier===1?0.40:0.46));
+  // Representation level changes how a crown is built, never how big it is.
+  // The old tiering inflated the radius to make three coarse lobes fill the
+  // space, so a tree visibly ballooned as it crossed an LOD boundary and rows
+  // of them fused into one dark shelf. Silhouette is now tier-invariant.
+  // A crown right at the verge is scaled down as well as lifted. Subdividing it
+  // instead costs four times the geometry for the same screen-space facet size,
+  // and the budget is better spent on the fifty trees behind it.
+  const crownR=H*A.w*0.31*(t.d<14?clamp(0.50+t.d*0.036,0.50,1):1);
   if(minCrownY!==undefined&&crownY-crownR*0.55<minCrownY) crownY=minCrownY+crownR*0.55;
-  const nL=tier===0?3:(tier===1?Math.max(4,st.i(A.lobes[0],A.lobes[1])):st.i(A.lobes[0],A.lobes[1])+2);
+  const nL=tier===0?4:(tier===1?Math.max(4,st.i(A.lobes[0],A.lobes[1])):st.i(A.lobes[0],A.lobes[1])+4);
+  // fewer lobes have to be fatter to cover the same outline
+  const fill=tier===2?1:(tier===1?1.18:1.46);
   const gapA=st.r(0,TAU), gapW=st.r(0.55,1.05);
   const skewA=(t.fam==='windshaped')?leanDir:st.r(0,TAU);
   const skew=st.r(0.16,0.42);
@@ -1887,26 +2202,55 @@ function buildTree(B,t,tier,minCrownY){
     if(tier===2) tube(B,[b0,b1],R*0.42,R*0.13,4,bSun,bSh);
     limbs.push(b1);
   }
-  // the heavy cool mass under everything
-  lobe(B,top.x+Math.sin(skewA)*crownR*skew*0.6,crownY-crownR*0.42,top.z+Math.cos(skewA)*crownR*skew*0.6,
-    crownR*st.r(0.76,0.94),crownR*st.r(0.40,0.52),crownR*st.r(0.76,0.94),st,cShL,LEAF_DEEP,0.18,Math.max(0,detail-1),0.30);
+  // The cool mass the crown sits on. It has to stay tucked inside the outline —
+  // pushed wide it stops reading as the shaded underside of foliage and starts
+  // reading as a dark shelf, and a row of such shelves fuses into a wall.
+  lobe(B,top.x+Math.sin(skewA)*crownR*skew*0.6,crownY-crownR*0.30,top.z+Math.cos(skewA)*crownR*skew*0.6,
+    crownR*st.r(0.60,0.76),crownR*st.r(0.34,0.44),crownR*st.r(0.60,0.76),st,cShL,LEAF_DEEP,0.17,Math.max(0,detail-1),0.30);
+  // The main mass. Lobe radius is close to the radius it is placed at, so
+  // neighbours interpenetrate and the silhouette is a run of soft scallops
+  // rather than a scatter of separate beads. Most of them hang off a limb end,
+  // which is what makes the outline lopsided instead of a ring.
   for(let i=0;i<nL;i++){
     const a=st.r(0,TAU);
     let da=Math.abs(((a-gapA+Math.PI*3)%TAU)-Math.PI);
-    if(da<gapW&&st.chance(0.82)) continue;                  // the gap that lets sky through
-    const rr=crownR*st.r(0.52,1.00);
-    const cx=top.x+Math.sin(a)*rr+Math.sin(skewA)*crownR*skew;
-    const cz=top.z+Math.cos(a)*rr+Math.cos(skewA)*crownR*skew;
-    const up=st.r(-0.40,0.58);
-    const lr=crownR*st.r(0.34,0.52);
-    const high=up>0.06;
-    lobe(B,cx,crownY+crownR*up,cz,lr*st.r(0.92,1.22),lr*st.r(0.74,0.96),lr*st.r(0.92,1.22),st,
-      high?cSunL:cMidL, high?cMidL:cShL, 0.24, detail);
+    if(da<gapW&&st.chance(0.72)) continue;                  // the gap that lets sky through
+    const rr=crownR*st.r(0.16,0.58);
+    let cx=top.x+Math.sin(a)*rr+Math.sin(skewA)*crownR*skew;
+    let cz=top.z+Math.cos(a)*rr+Math.cos(skewA)*crownR*skew;
+    let up=st.r(-0.34,0.52);
+    if(limbs.length&&st.chance(0.62)){
+      const e=limbs[st.i(0,limbs.length-1)];
+      cx=lerp(cx,e.x+st.r(-0.22,0.22)*crownR,0.72);
+      cz=lerp(cz,e.z+st.r(-0.22,0.22)*crownR,0.72);
+      up=(e.y-crownY)/crownR+st.r(0.10,0.46);
+    }
+    const lr=crownR*st.r(0.30,0.45)*fill;
+    const high=up>0.04;
+    lobe(B,cx,crownY+crownR*up,cz,lr*st.r(0.94,1.20),lr*st.r(0.72,0.94),lr*st.r(0.94,1.20),st,
+      high?cSunL:cMidL, high?cMidL:cShL, 0.19, detail);
+  }
+  // small outer puffs riding the shoulders of the big lobes: the soft broken
+  // edge the original had. They sit inside the main radius so they read as part
+  // of the same mass, not as satellites orbiting it.
+  if(tier>=1){
+    const nEdge=tier===2?st.i(4,6):st.i(2,3);
+    for(let i=0;i<nEdge;i++){
+      const a=st.r(0,TAU);
+      let da=Math.abs(((a-gapA+Math.PI*3)%TAU)-Math.PI);
+      if(da<gapW*0.8&&st.chance(0.75)) continue;
+      const rr=crownR*st.r(0.46,0.78);
+      const lr=crownR*st.r(0.20,0.32);
+      lobe(B,top.x+Math.sin(a)*rr+Math.sin(skewA)*crownR*skew,
+        crownY+crownR*st.r(-0.22,0.42),top.z+Math.cos(a)*rr+Math.cos(skewA)*crownR*skew,
+        lr*st.r(0.9,1.22),lr*st.r(0.8,1.05),lr*st.r(0.9,1.22),st,
+        cSunL,cMidL,0.20,Math.max(0,detail-1));
+    }
   }
   // the warm cap that catches the sun
-  lobe(B,top.x+Math.sin(skewA)*crownR*skew*1.15,crownY+crownR*st.r(0.46,0.68),top.z+Math.cos(skewA)*crownR*skew*1.15,
-    crownR*st.r(0.42,0.58),crownR*st.r(0.40,0.54),crownR*st.r(0.42,0.58),st,
-    LEAF_SUN.clone().lerp(col(PAL.sunGrass),0.34-shade*0.18),cSunL,0.20,detail);
+  lobe(B,top.x+Math.sin(skewA)*crownR*skew*1.15,crownY+crownR*st.r(0.36,0.52),top.z+Math.cos(skewA)*crownR*skew*1.15,
+    crownR*st.r(0.40,0.54),crownR*st.r(0.36,0.48),crownR*st.r(0.40,0.54),st,
+    LEAF_SUN.clone().lerp(col(PAL.sunGrass),0.34-shade*0.18),cSunL,0.18,detail);
   return {H,crownY,crownR};
 }
 function treeMaterial(emis){
@@ -2052,17 +2396,22 @@ const heroInfo={ pos:HERO_POS.clone(), crownTop:0, limbClearance:99, pods:[], po
     }
   }
   // crown: overlapping asymmetric lobes with visible sky between the masses
-  const nl=G.i(18,23);
+  // This is the one tree the whole ride is walking towards, and it is seen from
+  // sixty metres and from directly underneath. Its crown gets more, smaller
+  // lobes at one more subdivision than anything else in the world: about five
+  // thousand extra triangles on a single mesh, which the budget can carry, and
+  // without them the identity of the hollow is four flat plates against the sky.
+  const nl=G.i(27,33);
   for(let i=0;i<nl;i++){
     const e=ends[G.i(0,ends.length-1)];
     const pull=Math.cos(Math.atan2(e.p.x-tx,e.p.z-tz)-crownSkew)*0.5+0.5;
-    const lr=G.r(7.0,10.5)+pull*G.r(3.5,6.5);
-    lobe(B,e.p.x+G.r(-5,5),e.p.y+G.r(1.5,7.5),e.p.z+G.r(-5,5),
-      lr*G.r(1.02,1.32),lr*G.r(0.58,0.80),lr*G.r(1.02,1.32),G,
+    const lr=G.r(5.0,7.6)+pull*G.r(2.4,4.6);
+    lobe(B,e.p.x+G.r(-6,6),e.p.y+G.r(1.5,8.5),e.p.z+G.r(-6,6),
+      lr*G.r(1.02,1.32),lr*G.r(0.60,0.82),lr*G.r(1.02,1.32),G,
       i<nl*0.55?mixc(PAL.sunGrass,PAL.meadow,0.24):LEAF_MID,
-      i<nl*0.35?LEAF_MID:LEAF_SHADE, 0.16, Math.min(1,QCFG.lobe));
+      i<nl*0.35?LEAF_MID:LEAF_SHADE, 0.16, Math.min(2,QCFG.lobe+1));
   }
-  lobe(B,tx,ty+H0*0.66,tz,H0*0.30,H0*0.11,H0*0.30,G,LEAF_SHADE,LEAF_DEEP,0.18,Math.max(0,QCFG.lobe-1),0.20);
+  lobe(B,tx,ty+H0*0.66,tz,H0*0.28,H0*0.10,H0*0.28,G,LEAF_SHADE,LEAF_DEEP,0.18,Math.min(1,QCFG.lobe),0.20);
   const mesh=new THREE.Mesh(bufGeo(B),treeMatHero);
   mesh.castShadow=(QCFG.shadow>0); mesh.matrixAutoUpdate=false;
   scene.add(mesh);
@@ -2122,7 +2471,7 @@ function underMaterial(){
           float pick=step(0.74,wlHash(floor(vWPos.xz*3.1)));
           diffuseColor.rgb+=vec3(1.0,0.94,0.72)*prox*pick*uGlint.w;
         } }`)
-      .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.85,1.0,wl)+diffuseColor.rgb*0.55*wl;\nvec3 outgoingLight = ');
+      .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.85,1.0,wl)+diffuseColor.rgb*0.38*wl;\nvec3 outgoingLight = ');
   };
   return m;
 }
@@ -2217,7 +2566,9 @@ function addPatch(B,x,y,z,r,cc){
 }
 function addLog(B,x,y,z,st,len,r,rot,gy){
   const dx=Math.sin(rot), dz=Math.cos(rot);
-  const tb={p:B.p,c:B.c,s:B.s,sway:0};
+  // borrow the tree tube builder; its normals are discarded because the
+  // understory geometry derives its own
+  const tb={p:B.p,c:B.c,s:B.s,n:[],sway:0};
   const before=B.p.length/3;
   // both ends rest on the ground they are actually lying on
   const y0=gy(x-dx*len,z-dz*len)+r*0.85, y1=gy(x+dx*len,z+dz*len)+r*0.8;
@@ -2238,7 +2589,10 @@ const NBAND=Math.ceil(FRAMES.sun.len/BAND)+1;
 const bandTrees=Array.from({length:NBAND},()=>[]);
 const staticFar=[];
 for(const t of TREES){
-  if(t.d>QCFG.farD){ staticFar.push(t); continue; }
+  // the Sisters are a fixed point of the whole ride: they must not be released
+  // with the band they happen to be scheduled in, or the callback has nothing
+  // left to call back to
+  if(t.d>QCFG.farD||t.formation==='wind-sisters'){ staticFar.push(t); continue; }
   const bi=clamp(Math.floor(t.g/BAND),0,NBAND-1);
   bandTrees[bi].push(t);
 }
@@ -2253,7 +2607,7 @@ for(const t of TREES){
   for(const grp of groups){
     if(!grp.length) continue;
     const B=Buf();
-    for(const t of grp) buildTree(B,t,0);
+    for(const t of grp) buildTree(B,t,t.formation==='wind-sisters'?1:0);
     const m=new THREE.Mesh(bufGeo(B),treeMatFar); m.matrixAutoUpdate=false;
     scene.add(m);
   }
@@ -2281,7 +2635,10 @@ function realizeBand(bi){
     let tier=(t.d<=QCFG.nearD)?2:((t.d<=QCFG.midD)?1:0);
     if(tier===2&&nNear>=QCFG.capNear) tier=1;
     if(tier===1&&nMid>=QCFG.capMid) tier=0;
-    const overhang=(t.d<EXCL+8)?(t.roadY+5.0):undefined;
+    // A tree at the verge must hold its canopy high enough to ride under. At
+    // five metres the crown hung in the rider's face and its lobes read as
+    // plates across the top of the frame; at nine it reads as a ceiling.
+    const overhang=(t.d<EXCL+10)?(t.roadY+9.0):undefined;
     if(tier===2){ buildTree(nearB,t,2,overhang); local.articulatedNear++; nNear++; }
     else if(tier===1){ buildTree(midB,t,1,overhang); local.midTrees++; nMid++; }
     else { buildTree(midB,t,0); local.farTrees++; }
@@ -2297,7 +2654,7 @@ function realizeBand(bi){
         const a=st.r(0,TAU), rr=st.r(0.7,2.4)*t.scl;
         const x=t.x+Math.cos(a)*rr, z=t.z+Math.sin(a)*rr;
         uB.can=clamp(t.enc,0,1);
-        addTuft(uB,x,groundY(x,z),z,st,mixc(PAL.woodDeep,PAL.leafShade,0.5),mixc(PAL.leafShade,PAL.meadow,0.4),st.r(0.18,0.34),2);
+        addTuft(uB,x,groundY(x,z),z,st,mixc(PAL.woodDeep,PAL.leafShade,0.5),mixc(PAL.leafShade,PAL.meadow,0.4),st.r(0.34,0.64),3);
         local.understory++;
       }
     }
@@ -2330,30 +2687,93 @@ function realizeBand(bi){
       const enc=enclosureAt(gHere,ri.arm===1?'moss':'sun')*clamp(1.3-ri.d/80,0,1);
       const moist=clamp(1-si.d/26,0,1);
       const slope=Math.abs(groundY(x+2.5,z)-groundY(x-2.5,z))/5+Math.abs(groundY(x,z+2.5)-groundY(x,z-2.5))/5;
+      // Growth comes in patches, not as an even sprinkle. The mask is what
+      // makes a meadow read as fields of something rather than as scatter, but
+      // it was culling so hard that the fields were mostly bare.
       const mask=fbmE(x/19+7,z/19+13);
-      if(mask<0.40-slope*0.6) continue;
+      if(mask<0.27-slope*0.5-moist*0.12) continue;
       uB.can=clamp(enc,0,1);
       const gc=groundColor(x,z,slope,enc,moist,y-refAt(x,z)).clone();
       const r2=st.f();
       if(pin<1.75&&pin>=0.92){                     // reeds hold the pool's margin
-        addFern(uB,x,y,z,st,mixc(PAL.leafShade,PAL.meadow,0.35),mixc(PAL.sunGrass,PAL.meadow,0.5),st.r(0.5,0.95));
+        addFern(uB,x,y,z,st,mixc(PAL.leafShade,PAL.meadow,0.35),mixc(PAL.sunGrass,PAL.meadow,0.5),st.r(0.70,1.30));
         local.reeds++;
       } else if(moist>0.45&&si.d<12){
-        addFern(uB,x,y,z,st,mixc(PAL.woodDeep,PAL.leafShade,0.45),mixc(PAL.leafShade,PAL.meadow,0.45),st.r(0.3,0.62));
+        addFern(uB,x,y,z,st,mixc(PAL.woodDeep,PAL.leafShade,0.45),mixc(PAL.leafShade,PAL.meadow,0.45),st.r(0.52,1.00));
         local.ferns++;
       } else if(enc>0.44){
-        if(r2<0.62){ addFern(uB,x,y,z,st,mixc(PAL.woodDeep,PAL.leafShade,0.4),mixc(PAL.leafShade,PAL.meadow,0.35),st.r(0.26,0.55)); local.ferns++; }
-        else if(r2<0.86){ addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.woodDeep),0.28),gc.clone().lerp(col(PAL.leafShade),0.05),st.r(0.18,0.36),st.i(3,4)); local.understory++; }
-        else { addBlob(uB,x,y+0.16,z,st,st.r(0.4,0.85),st.r(0.28,0.5),st.r(0.4,0.85),mixc(PAL.meadow,PAL.leafShade,0.45),mixc(PAL.leafShade,PAL.woodDeep,0.4),0.18); local.shrubs++; }
+        if(r2<0.62){ addFern(uB,x,y,z,st,mixc(PAL.woodDeep,PAL.leafShade,0.4),mixc(PAL.leafShade,PAL.meadow,0.35),st.r(0.46,0.92)); local.ferns++; }
+        else if(r2<0.86){ addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.woodDeep),0.44),gc.clone().lerp(col(PAL.leafShade),0.24),st.r(0.28,0.58),st.i(4,6)); local.understory++; }
+        else { addBlob(uB,x,y+0.18,z,st,st.r(0.42,0.78),st.r(0.30,0.52),st.r(0.42,0.78),mixc(PAL.meadow,PAL.leafShade,0.30),mixc(PAL.leafShade,PAL.woodDeep,0.26),0.18); local.shrubs++; }
       } else if(enc<0.30&&slope<0.30&&r2<0.30){
-        addSeedhead(uB,x,y,z,st,mixc(PAL.meadow,PAL.road,0.34),mixc(PAL.road,0xFFE79A,0.35),st.r(0.42,0.82));
+        addSeedhead(uB,x,y,z,st,mixc(PAL.meadow,PAL.road,0.34),mixc(PAL.road,0xFFE79A,0.35),st.r(0.62,1.12));
         local.seedheads++;
       } else if(enc<0.34&&r2<0.24){
         addFlower(uB,x,y,z,st,mixc(PAL.meadow,PAL.sunGrass,0.5),
-          st.pick([mixc(PAL.blossom,PAL.meadow,0.30),mixc(PAL.blossom,0xfff3e6,0.35),mixc(PAL.road,PAL.sunGrass,0.40),mixc(PAL.road,0xFFDE79,0.35)]),st.r(0.20,0.36));
+          st.pick([mixc(PAL.blossom,PAL.meadow,0.30),mixc(PAL.blossom,0xfff3e6,0.35),mixc(PAL.road,PAL.sunGrass,0.40),mixc(PAL.road,0xFFDE79,0.35)]),st.r(0.28,0.50));
         local.flowers++;
       } else {
-        addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.leafShade),0.26),gc.clone().lerp(col(PAL.sunGrass),0.22),st.r(0.20,0.44),st.i(3,5));
+        addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.woodDeep),0.34),gc.clone().lerp(col(PAL.leafShade),0.30),st.r(0.30,0.62),st.i(4,6));
+        local.understory++;
+      }
+    }
+  }
+  // ---- the verge proper: the metre and a half either side of the stone, which
+  // is where a lane is actually read. Grass here has been ridden over, so it
+  // lies flatter and drier at the edge and stands up again further out, with
+  // seedheads leaning into the light over the shoulder. ----
+  {
+    const st=subStream('verge',bi);
+    const N=Math.round((b.g1-b.g0)/2.1*QCFG.under);
+    const arms=(b.g0<S_MERGE_G+120&&b.g1>S_SPLIT-120)?['sun','moss']:['sun'];
+    for(let i=0;i<N;i++){
+      const arm=arms.length>1?(st.chance(0.5)?'sun':'moss'):'sun';
+      const g=st.r(b.g0,b.g1);
+      const sLoc=toLocal(arm,g);
+      if(sLoc<0||sLoc>FRAMES[arm].len) continue;
+      if(arm==='moss'&&(sLoc<S_COMMIT.moss-40||sLoc>S_MERGE.moss+40)) continue;
+      const fr=getFrame(FRAMES[arm],sLoc);
+      const side=st.chance(0.5)?1:-1;
+      // the near edge is worn thin; growth thickens outward
+      const off=st.r(0,1)**0.62;
+      const lat=side*(RH+0.34+off*4.6);
+      const x=fr.x+fr.lx*lat, z=fr.z+fr.lz*lat;
+      const ri=routeInfo(x,z);
+      if(ri.d<EXCL){ local.corridorRejects++; continue; }
+      if(streamInfo(x,z).d<1.1) continue;
+      let pin=99;
+      for(const P of PONDS) pin=Math.min(pin,Math.hypot((x-P.cx)/P.rx,(z-P.cz)/P.rz));
+      if(pin<0.95) continue;
+      const y=groundY(x,z);
+      const gHere=toGlobal(arm,sLoc);
+      const enc=enclosureAt(gHere,arm);
+      const wear=clamp(1-off*1.6,0,1);            // 1 at the stone, 0 by the meadow
+      uB.can=clamp(enc,0,1);
+      const r2=st.f();
+      const worn=mixc(PAL.meadow,PAL.bark,0.30).lerp(col(PAL.sunGrass),0.20);
+      const lush=mixc(PAL.meadow,PAL.leafShade,0.20).lerp(col(PAL.sunGrass),0.26);
+      if(wear>0.55&&r2<0.30){
+        // scuffed grit and small stones pressed into the shoulder
+        const r=st.r(0.07,0.20);
+        addBlob(uB,x,y+r*0.4,z,st,r,r*0.62,r*st.r(0.7,1.3),
+          mixc(PAL.road,PAL.bark,0.34),mixc(PAL.bark,PAL.woodDeep,0.42),0);
+        local.rocksLogs++;
+      } else if(r2<0.20+wear*0.34){
+        addTuft(uB,x,y,z,st,worn.clone().lerp(col(PAL.woodDeep),0.38),worn.clone().lerp(col(PAL.leafShade),0.22),
+          st.r(0.14,0.26)+ (1-wear)*st.r(0.12,0.34),st.i(4,6));
+        local.understory++;
+      } else if(enc<0.40&&r2>0.86){
+        addSeedhead(uB,x,y,z,st,mixc(PAL.meadow,PAL.road,0.30),mixc(PAL.road,0xFFE79A,0.30),
+          st.r(0.52,1.00)*(0.5+0.5*(1-wear)));
+        local.seedheads++;
+      } else if(enc<0.42&&r2>0.74){
+        addFlower(uB,x,y,z,st,mixc(PAL.meadow,PAL.sunGrass,0.46),
+          st.pick([mixc(PAL.blossom,PAL.meadow,0.28),mixc(PAL.blossom,0xfff3e6,0.34),
+                   mixc(PAL.road,0xFFDE79,0.32),mixc(PAL.sunGrass,0xffffff,0.42)]),st.r(0.24,0.44));
+        local.flowers++;
+      } else {
+        addTuft(uB,x,y,z,st,lush.clone().lerp(col(PAL.woodDeep),0.30+enc*0.24),
+          lush.clone().lerp(col(PAL.leafShade),0.34),st.r(0.28,0.62)*(0.55+0.45*(1-wear)),st.i(4,6));
         local.understory++;
       }
     }
@@ -2389,8 +2809,10 @@ function realizeBand(bi){
   const live={meshes:[],local};
   if(nearB.p.length){ const m=new THREE.Mesh(bufGeo(nearB),treeMatNear);
     m.castShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false; scene.add(m); live.meshes.push(m); }
+  // mid-distance trees cast too: without them the meadow beyond twenty metres
+  // has no shadow in it at all, and the whole scene reads as flat noon light
   if(midB.p.length){ const m=new THREE.Mesh(bufGeo(midB),treeMatMid);
-    m.matrixAutoUpdate=false; scene.add(m); live.meshes.push(m); }
+    m.castShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false; scene.add(m); live.meshes.push(m); }
   if(uB.p.length){ const m=new THREE.Mesh(uGeo(uB),underMat);
     m.matrixAutoUpdate=false; m.receiveShadow=(QCFG.shadow>0); scene.add(m); live.meshes.push(m); }
   b.live=live;
@@ -2398,6 +2820,8 @@ function realizeBand(bi){
   corridorViolations+=local.corridorViolations;
   corridorRejects+=local.corridorRejects;
   RES.realized++;
+  if(typeof RUN!=='undefined'&&RUN) RUN.bandsRealized++;
+  if(typeof LIFETIME!=='undefined') LIFETIME.bandsRealized++;
 }
 function disposeBand(bi){
   const b=bands[bi];
@@ -2406,6 +2830,8 @@ function disposeBand(bi){
   for(const k of Object.keys(b.live.local)) if(counts[k]!==undefined) counts[k]-=b.live.local[k];
   b.live=null;
   RES.disposed++;
+  if(typeof RUN!=='undefined'&&RUN) RUN.bandsDisposed++;
+  if(typeof LIFETIME!=='undefined') LIFETIME.bandsDisposed++;
 }
 let corridorViolations=0, corridorRejects=0;
 let residentBands=0;
@@ -2420,6 +2846,8 @@ function updateResidency(g,budget){
   }
   residentBands=live;
   RES.peak=Math.max(RES.peak,live);
+  if(typeof RUN!=='undefined'&&RUN) RUN.peakResidentBands=Math.max(RUN.peakResidentBands,live);
+  if(typeof LIFETIME!=='undefined') LIFETIME.peakResidentBands=Math.max(LIFETIME.peakResidentBands,live);
   return made;
 }
 function plannedResidentBands(g){
@@ -2463,7 +2891,7 @@ const cloudForms=[];
 {
   const cloudMat=new THREE.MeshBasicMaterial({vertexColors:true,fog:false});
   const c0=spineAt(L_TOTAL*0.5);
-  const N=QCFG.cloudN+2;
+  const N=QCFG.cloudN;
   const CREAM=mixc(PAL.cloud,0xffffff,0.5), LIT=col(0xFFFDF6),
         COOL=mixc(PAL.sky,0xffffff,0.52).lerp(col(PAL.leafShade),0.10);
   for(let fi=0;fi<N;fi++){
@@ -2472,23 +2900,27 @@ const cloudForms=[];
     const a=st.r(0,TAU), rr=st.r(500,2600);
     const cx=c0.x+Math.sin(a)*rr, cz=c0.z+Math.cos(a)*rr;
     const baseY=st.r(280,430);
-    const nP=st.i(5,11), spanX=st.r(120,300);
+    // Puffs are packed rather than scattered: the radius of a puff is a large
+    // fraction of the span it sits in, so neighbours interpenetrate and the
+    // formation accumulates into one soft mass with a lumpy top and a flat
+    // shadowed base. Spread them and the same puff count reads as ice shards.
+    const nP=st.i(8,14), spanX=st.r(86,196);
     for(let i=0;i<nP;i++){
       const t=i/Math.max(1,nP-1);
       const lx=(st.f()-0.5)*spanX, lz=(st.f()-0.5)*spanX*0.5;
-      const ly=st.r(0,30)+Math.sin(t*Math.PI)*26;
-      const pr=st.r(30,62)*(1-0.3*Math.abs(lx)/spanX*2);
-      const D=ICOD[0];
-      const jit=[]; for(let v=0;v<D.n;v++) jit.push(1+(st.f()-0.5)*0.3);
+      const ly=st.r(0,26)+Math.sin(t*Math.PI)*22;
+      const pr=st.r(34,62)*(1-0.30*Math.abs(lx)/spanX*2);
+      const D=ICOD[Math.min(1,QCFG.lobe+1)];
+      const jit=[]; for(let v=0;v<D.n;v++) jit.push(1+(st.f()-0.5)*0.13);
       for(let ii=0;ii<D.idx.length;ii+=3){
         const vs=[D.idx[ii],D.idx[ii+1],D.idx[ii+2]].map(v=>{
           let X=D.p.getX(v), Y=D.p.getY(v), Z=D.p.getZ(v);
           const j=jit[v];
-          if(Y<0) Y*=0.34;
+          if(Y<0) Y*=0.40;                      // flat shadowed bases, as before
           return [lx+X*pr*j, ly+Y*pr*0.66*j, lz+Z*pr*j, Y];
         });
         const ym=(vs[0][3]+vs[1][3]+vs[2][3])/3;
-        const cc=COOL.clone().lerp(ym>0.12?LIT:CREAM,clamp(0.36+ym*0.9,0,1));
+        const cc=COOL.clone().lerp(ym>0.10?LIT:CREAM,clamp(0.30+ym*1.05,0,1));
         pushTri(B,[vs[0][0],vs[0][1],vs[0][2]],[vs[1][0],vs[1][1],vs[1][2]],[vs[2][0],vs[2][1],vs[2][2]],cc);
       }
     }
@@ -2504,55 +2936,107 @@ const cloudForms=[];
 // Stylised procedural shading: depth bands, flow streaks, and drifting
 // canopy fragments that move with the same wind as the trees. Not a mirror.
 // ============================================================
+// ============================================================
+// WATER — an original lightweight treatment. Two scrolling wave layers,
+// analytic normals from their derivatives, a shallow-to-deep ramp, a faked
+// sky tint at grazing angles, restrained sun glints, and darker canopy
+// fragments where trees hang over. No reflection camera, no extra pass,
+// no ray marching: this is a pond, not an ocean.
+// ============================================================
 const waterMat=new THREE.ShaderMaterial({
   uniforms:{ uWTime:WL.uWTime, uWet:WL.uWet, uFogC:{value:new THREE.Color(AIR)},
-             uFogN:{value:330}, uFogF:{value:QCFG.tileView*1.12} },
+             uFogN:{value:330}, uFogF:{value:QCFG.tileView*1.12},
+             uSun:{value:sunDir.clone()}, uSkyLo:{value:new THREE.Color(0xAFCBDA)},
+             uSkyHi:{value:mixc(PAL.sky,0xffffff,0.06)},
+             uOct:{value:QUALITY==='low'?1:2} },
   vertexShader:`attribute float aT; attribute float aEdge; attribute float aCan;
     varying float vT; varying float vE; varying float vC; varying vec3 vW;
     void main(){ vT=aT; vE=aEdge; vC=aCan; vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
       gl_Position=projectionMatrix*viewMatrix*wp; }`,
-  fragmentShader:`uniform float uWTime; uniform float uWet; uniform vec3 uFogC; uniform float uFogN; uniform float uFogF;
+  fragmentShader:`uniform float uWTime; uniform float uWet; uniform vec3 uFogC;
+    uniform float uFogN; uniform float uFogF; uniform vec3 uSun;
+    uniform vec3 uSkyLo; uniform vec3 uSkyHi; uniform int uOct;
     varying float vT; varying float vE; varying float vC; varying vec3 vW;
     float h2(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
     float n2(vec2 p){ vec2 i=floor(p),f=fract(p); vec2 u=f*f*(3.0-2.0*f);
       return mix(mix(h2(i),h2(i+vec2(1,0)),u.x),mix(h2(i+vec2(0,1)),h2(i+vec2(1,1)),u.x),u.y); }
+    // one wave layer and its slope, from finite differences of the same field
+    vec3 wave(vec2 p,float amp){
+      float e=0.35;
+      float c=n2(p), dx=n2(p+vec2(e,0.0))-c, dz=n2(p+vec2(0.0,e))-c;
+      return vec3(c*amp, dx*amp/e, dz*amp/e);
+    }
     void main(){
-      vec3 deep=vec3(0.055,0.175,0.160);
-      vec3 mid=vec3(0.165,0.470,0.520);
-      vec3 shallow=vec3(0.360,0.740,0.760);
-      float depth=1.0-abs(vE);
-      vec3 c=mix(shallow,mix(mid,deep,depth),0.30+0.58*depth);
-      // sky sits on the water where you look across it
+      vec2 w1=vW.xz*0.42+vec2(uWTime*0.16,uWTime*0.10);
+      vec2 w2=vW.xz*1.05+vec2(-uWTime*0.11,uWTime*0.19);
+      vec3 a=wave(w1,1.0);
+      vec3 b=(uOct>1)?wave(w2,0.45):vec3(0.0);
+      vec3 nrm=normalize(vec3(-(a.y+b.y)*0.24,1.0,-(a.z+b.z)*0.24));
+
+      float depth=clamp(1.0-abs(vE),0.0,1.0);
+      vec3 shallow=vec3(0.40,0.66,0.60);
+      vec3 mid=vec3(0.115,0.365,0.415);
+      vec3 deep=vec3(0.030,0.135,0.170);
+      vec3 body=mix(shallow,mix(mid,deep,depth),0.16+0.80*depth);
+
       vec3 vd=normalize(vW-cameraPosition);
-      float graze=1.0-clamp(abs(vd.y)*3.4,0.0,1.0);
-      c=mix(c,vec3(0.44,0.73,0.88),graze*0.42);
-      // canopy fragments, drifting with the same wind that moves the trees
-      float cf=n2(vec2(vW.x*0.10+uWTime*0.045, vW.z*0.10-uWTime*0.031));
-      float cf2=n2(vec2(vW.x*0.27-uWTime*0.02, vW.z*0.27+uWTime*0.028));
-      float frag=smoothstep(0.56,0.78,cf*0.65+cf2*0.35)*vC;
-      c=mix(c,vec3(0.105,0.255,0.205),frag*0.66);
-      float flow=n2(vec2(vT*0.5-uWTime*1.35, vW.x*0.34+vW.z*0.34));
-      c=mix(c,vec3(0.40,0.76,0.86),smoothstep(0.63,0.82,flow)*0.42);
-      float sp=step(0.968,n2(vec2(vT*2.1-uWTime*2.7,floor(vW.x*2.0)+floor(vW.z*2.0))));
-      c+=vec3(0.95,0.88,0.70)*sp*0.45;
-      c+=vec3(0.28,0.30,0.30)*uWet*0.10;
+      // a faked sky: the palette's own gradient, tilted by the wave normal
+      float up=clamp(reflect(vd,nrm).y,0.0,1.0);
+      vec3 skyc=mix(uSkyLo,uSkyHi,up);
+      float fres=pow(1.0-clamp(dot(-vd,nrm),0.0,1.0),4.0);
+      // the sky is borrowed, never allowed to take the water over: a pond that
+      // is mostly sky is a mirror, and this one is meant to have depth in it
+      vec3 c=mix(body,skyc,clamp(0.07+fres*0.58,0.0,0.52));
+
+      // canopy hanging over the water, drifting with the same wind as the trees
+      float cf=n2(vec2(vW.x*0.11+uWTime*0.042, vW.z*0.11-uWTime*0.030));
+      float cf2=n2(vec2(vW.x*0.29-uWTime*0.019, vW.z*0.29+uWTime*0.026));
+      float frag=smoothstep(0.55,0.80,cf*0.66+cf2*0.34)*vC;
+      c=mix(c,vec3(0.085,0.215,0.185),frag*0.70);
+
+      // restrained specular: a few bright points, not a glitter field
+      vec3 hv=normalize(normalize(uSun)-vd);
+      float spec=pow(max(dot(nrm,hv),0.0),110.0);
+      c+=vec3(1.0,0.96,0.86)*spec*0.55;
+      float glint=smoothstep(0.72,0.95,(a.x+b.x))*pow(max(dot(nrm,hv),0.0),18.0);
+      c+=vec3(1.0,0.97,0.88)*glint*0.22;
+
+      // the shoreline dissolves into its own bank instead of ending on a line
+      float shore=smoothstep(0.80,0.99,abs(vE));
+      c=mix(c,mix(c,vec3(0.36,0.42,0.30),0.55),shore);
+      c+=vec3(0.10,0.11,0.11)*uWet*0.35;
+
       float fd=length(vW-cameraPosition);
       c=mix(c,uFogC,smoothstep(uFogN,uFogF,fd));
-      gl_FragColor=vec4(c,1.0);
+      gl_FragColor=vec4(c,mix(1.0,0.90,shore));
     }`,
+  // A pond fan built centre-outwards winds face-down, so the surface was being
+  // backface-culled from the one place it matters: the road above it. Water is
+  // a sheet, not a solid — it is drawn from whichever side you are standing on.
+  transparent:true, depthWrite:true, side:THREE.DoubleSide,
 });
 const waterCounts={features:0};
-function waterFan(cx,cz,rx,rz,rot,y,can){
+const WATER_MESHES=[];
+function waterFan(cx,cz,rx,rz,rot,y,can,name){
   const P=[],T=[],E=[],C=[],IDX=[];
-  const n=18;
+  const n=26, rings=[0.0,0.55,0.86,1.0];
+  const st=subStream('pondrim',Math.round(cx),Math.round(cz));
+  const wob=[]; for(let i=0;i<=n;i++) wob.push(1+st.r(-0.10,0.10));
   P.push(cx,y,cz); T.push(0); E.push(0); C.push(can);
-  for(let i=0;i<=n;i++){
-    const a=i/n*TAU;
-    const dx=Math.cos(a)*rx, dz=Math.sin(a)*rz;
-    P.push(cx+dx*Math.cos(rot)-dz*Math.sin(rot),y,cz+dx*Math.sin(rot)+dz*Math.cos(rot));
-    T.push(i*0.7); E.push(0.9); C.push(can);
+  for(let r=1;r<rings.length;r++){
+    for(let i=0;i<=n;i++){
+      const a=i/n*TAU, k=rings[r]*wob[i%n];
+      const dx=Math.cos(a)*rx*k, dz=Math.sin(a)*rz*k;
+      P.push(cx+dx*Math.cos(rot)-dz*Math.sin(rot),y,cz+dx*Math.sin(rot)+dz*Math.cos(rot));
+      T.push(i*0.7+r*3.1); E.push(rings[r]); C.push(can);
+    }
   }
-  for(let i=1;i<=n;i++) IDX.push(0,i,i+1);
+  const row=(r)=>1+(r-1)*(n+1);
+  for(let i=0;i<n;i++) IDX.push(0,row(1)+i,row(1)+i+1);
+  for(let r=1;r<rings.length-1;r++) for(let i=0;i<n;i++){
+    const a0=row(r)+i, a1=a0+1, b0=row(r+1)+i, b1=b0+1;
+    IDX.push(a0,b0,a1, a1,b0,b1);
+  }
   const g=new THREE.BufferGeometry();
   g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
   g.setAttribute('aT',new THREE.Float32BufferAttribute(T,1));
@@ -2560,7 +3044,8 @@ function waterFan(cx,cz,rx,rz,rot,y,can){
   g.setAttribute('aCan',new THREE.Float32BufferAttribute(C,1));
   g.setIndex(IDX);
   const m=new THREE.Mesh(g,waterMat); m.matrixAutoUpdate=false;
-  scene.add(m); waterCounts.features++;
+  m.userData.pond=name;
+  scene.add(m); waterCounts.features++; WATER_MESHES.push(m);
   return m;
 }
 {
@@ -2584,8 +3069,8 @@ function waterFan(cx,cz,rx,rz,rot,y,can){
   scene.add(m); waterCounts.features++;
 }
 // both pools: the bright shelf, and the dark one under the Mosswater trees
-waterFan(POOL.cx,POOL.cz,POOL.rx,POOL.rz,POOL.rot,POOL.y,0.55);
-waterFan(MOSSPOOL.cx,MOSSPOOL.cz,MOSSPOOL.rx,MOSSPOOL.rz,MOSSPOOL.rot,MOSSPOOL.y,0.95);
+waterFan(POOL.cx,POOL.cz,POOL.rx,POOL.rz,POOL.rot,POOL.y,0.55,'glasswater');
+waterFan(MOSSPOOL.cx,MOSSPOOL.cz,MOSSPOOL.rx,MOSSPOOL.rz,MOSSPOOL.rot,MOSSPOOL.y,0.95,'mosswater');
 
 // ============================================================
 // LANDSCAPE ARCHITECTURE — three restrained pieces, all of them
@@ -2712,19 +3197,39 @@ function takeSlot(kind,n){
   for(let i=0;i<P.n&&out.length<n;i++) if(!P.slots[i].busy){ P.slots[i].busy=true; out.push(i); }
   return out;
 }
+// A life effect either holds pool slots or it holds nothing at all (a glint is
+// a uniform, a mote burst is a shader boost). Release must be safe for both,
+// and safe to call twice.
 function releaseLife(L){
-  for(const i of L.idx){ POOLS[L.kind].slots[i].busy=false;
-    _lm.makeScale(0,0,0); POOLS[L.kind].im.setMatrixAt(i,_lm); }
-  POOLS[L.kind].im.instanceMatrix.needsUpdate=true;
+  if(!L||L.released) return;
+  L.released=true;
+  const P=L.kind?POOLS[L.kind]:null;
+  if(!P||!L.idx||!L.idx.length) return;
+  for(const i of L.idx){
+    if(P.slots[i]) P.slots[i].busy=false;
+    _lm.makeScale(0,0,0); P.im.setMatrixAt(i,_lm);
+  }
+  P.im.instanceMatrix.needsUpdate=true;
 }
-function clearAllLife(){ for(const L of liveLife.slice()) releaseLife(L); liveLife.length=0; }
+function clearAllLife(){
+  for(const L of liveLife.slice()) releaseLife(L);
+  liveLife.length=0;
+  // nothing may stay parked in a pool after a clear, whatever went wrong
+  for(const k of Object.keys(POOLS)){
+    const P=POOLS[k];
+    for(let i=0;i<P.n;i++){ P.slots[i].busy=false; _lm.makeScale(0,0,0); P.im.setMatrixAt(i,_lm); }
+    P.im.instanceMatrix.needsUpdate=true;
+  }
+  WL.uGlint.value.set(0,0,0,0);
+  moteBoost=0;
+}
 function spawnLife(ev,frame,gNow){
   const st=subStream('lifespawn',ev.id);
   const fx=frame.x, fz=frame.z, fy=frame.y;
   const lx=frame.lx, lz=frame.lz, tx=frame.tx, tz=frame.tz;
   const mk=(kind,n,make)=>{
     const idx=takeSlot(kind,n); if(!idx.length) return;
-    const L={kind,idx,t:0,dur:ev.dur,ev,parts:idx.map((_,i)=>make(i,st))};
+    const L={kind,idx,t:0,dur:ev.dur,ev,released:false,parts:idx.map((_,i)=>make(i,st))};
     liveLife.push(L);
   };
   if(ev.kind==='swallows'){
@@ -2773,9 +3278,9 @@ function spawnLife(ev,frame,gNow){
         sc:s.r(1.45,1.8),hop:0,ph:s.r(0,TAU),fade:s.r(4.5,7),wait:s.r(1.6,3.4)};
     });
   } else if(ev.kind==='glint'){
-    liveLife.push({kind:null,idx:[],t:0,dur:ev.dur,ev,glint:{x:fx+tx*30,z:fz+tz*30,r:34}});
+    liveLife.push({kind:null,idx:[],t:0,dur:ev.dur,ev,released:false,glint:{x:fx+tx*30,z:fz+tz*30,r:34}});
   } else if(ev.kind==='motes'){
-    liveLife.push({kind:null,idx:[],t:0,dur:ev.dur,ev,motes:1});
+    liveLife.push({kind:null,idx:[],t:0,dur:ev.dur,ev,released:false,motes:1});
   }
   lifeFired++;
 }
@@ -2823,7 +3328,7 @@ function updateLife(dt){
       }
       im.instanceMatrix.needsUpdate=true;
     }
-    if(L.t>=L.dur){ if(L.kind) releaseLife(L); liveLife.splice(i,1); }
+    if(L.t>=L.dur){ releaseLife(L); liveLife.splice(i,1); }
   }
 }
 
@@ -2932,6 +3437,32 @@ const rainMat=(()=>{
   return m;
 })();
 const weatherState={ phase:'clear', t:0, amount:0 };
+
+// ============================================================
+// VISIBILITY — what the rider's camera can actually see, as opposed to
+// what the rider happens to be near. Frustum first, then the ground between.
+// ============================================================
+const _frustum=new THREE.Frustum(), _pv=new THREE.Matrix4(), _pt=new THREE.Vector3();
+function refreshFrustum(cam){
+  _pv.multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);
+  _frustum.setFromProjectionMatrix(_pv);
+}
+function inFrame(x,y,z,r){ _pt.set(x,y,z); return _frustum.containsPoint(_pt)||
+  _frustum.intersectsSphere(new THREE.Sphere(_pt,r||1)); }
+function groundClear(ex,ey,ez,tx,ty,tz,tol){
+  const D=Math.hypot(tx-ex,tz-ez);
+  const steps=clamp(Math.round(D/14),6,80);
+  for(let i=1;i<steps;i++){
+    const t=i/steps;
+    const px=lerp(ex,tx,t), pz=lerp(ez,tz,t), py=lerp(ey,ty,t);
+    if(groundY(px,pz)>py+(tol===undefined?0.8:tol)) return false;
+  }
+  return true;
+}
+function seenByRider(eye,x,y,z,r,tol){
+  if(!inFrame(x,y,z,r)) return false;
+  return groundClear(eye.x,eye.y,eye.z,x,y,z,tol);
+}
 // ============================================================
 // SOUND — synthesised weather of the place, started by a gesture,
 // silent and harmless where there is no audio output at all.
@@ -3036,10 +3567,24 @@ const rider={ sM:0, g:0, v:0, vT:CRUISE, lat:0.9, latT:0.9, branch:DEF_BRANCH, c
 const checkpoints={};
 for(const c of CH) checkpoints[c.key]=false;
 checkpoints.gate=true;
-const marks={ forkSeen:false, forkCommitted:false, branchMid:false, rejoined:false,
-  waterSeen:false, bellrootPassed:false, rested:false };
-let restartCount=0, camRollDeg=0, maxCamRollDeg=0;
-let ambientProvenWhilePaused=false, pauseProbe=null;
+// Everything the current run can claim lives in RUN and is wiped by restart.
+// Anything that accumulates across the page's life is labelled separately.
+function freshRun(){
+  return { distanceRiddenM:0, ascentRiddenM:0, descentRiddenM:0,
+    maxRollDeg:0, peakDrawCalls:0, peakTriangles:0, peakResidentBands:0,
+    bandsRealized:0, bandsDisposed:0, lifeFired:0, ambientProvenWhilePaused:false,
+    proximity:{ fork:false, water:false, bellroot:false, sisters:false },
+    seen:{ forkBothArmsBeforeCommit:false, forkFirstSeenAtM:null, forkLeadBeforeCommitM:null,
+           water:false, waterFirstSeenAtM:null, waterFramesSeen:0,
+           bellroot:false, bellrootFirstSeenAtM:null,
+           sisters:false, sistersFirstSeenAtM:null, sistersLastSeenAtM:null,
+           sistersSeenSpanM:0 },
+    marks:{ forkCommitted:false, branchMid:false, rejoined:false, bellrootPassed:false, rested:false },
+    branchRidden:null, errors:0 };
+}
+let RUN=freshRun();
+const LIFETIME={ restarts:0, bandsRealized:0, bandsDisposed:0, peakResidentBands:0, runs:1 };
+let camRollDeg=0, pauseProbe=null;
 const keys={};
 window.addEventListener('keydown',(e)=>{
   if(e.code==='Space'){ e.preventDefault(); if(!e.repeat) rider.paused=!rider.paused; return; }
@@ -3061,16 +3606,17 @@ function restartRide(){
   rider.paused=false; rider.ended=false; rider.simT=0;
   yawOff=0; pitchOff=0; pitchSm=null; camInit=false;
   for(const k of Object.keys(checkpoints)) checkpoints[k]=(k==='gate');
-  for(const k of Object.keys(marks)) marks[k]=false;
   for(const e of LIFE_EVENTS) e.fired=false;
   clearAllLife();
   lifeFired=0;
+  RUN=freshRun();
+  frameTimes.length=0; warmFrames=0;
+  LIFETIME.restarts++; LIFETIME.runs++;
   weatherState.phase='clear'; weatherState.t=0; weatherState.amount=0;
   WL.uWet.value=0; rainMat.uniforms.uAmt.value=0; rainMat.userData.pts.visible=false;
   audio.podsArmed=true;
   disposeAllBands();
   warmResidency(0);
-  restartCount++;
 }
 function warmResidency(g){
   let guard=0;
@@ -3090,34 +3636,71 @@ const VAL={};
   VAL.maxKinkRad=maxKink; VAL.maxStepM=maxStep;
   VAL.roadContinuity=(maxKink<0.055&&maxStep<0.30);
 
-  // the ground beside the stone, sampled on both edges of both lanes
-  let terrainAbove=0, floatMax=0, devMax=0, camBelow=0, samples=0, aboveMax=-9;
-  const scan=(arm,s0,s1)=>{
+  // ---- the road, measured on the triangles the renderer actually draws ----
+  // Three distinct things, kept distinct:
+  //   surface   the rideable stone
+  //   support   the shoulder immediately beside it, which must carry the edge
+  //   landform  the bank, ditch or cut beyond, which is free to rise or fall
+  let surfaceGapMax=0, supportGapMax=0, vergeDropMax=0, tilePokeCount=0, tilePokeMax=0,
+      analyticDevMax=0, camBelow=0, samples=0, unsupported=0;
+  const scanArm=(arm,s0,s1)=>{
     const F=FRAMES[arm];
-    for(let s=s0;s<s1;s+=5){
+    for(let s=s0;s<s1;s+=4){
       const fr=getFrame(F,s);
       for(const sd of [-1,1]){
-        const eu=sd*(RH+0.03);
-        const ex=fr.x+fr.lx*eu, ez=fr.z+fr.lz*eu;
-        const edgeY=fr.y+CROWN*(1-(Math.abs(eu)/RH)*(Math.abs(eu)/RH));
-        const gy=groundY(ex,ez);
-        if(gy>edgeY+0.02) terrainAbove++;
-        aboveMax=Math.max(aboveMax,gy-edgeY);
-        devMax=Math.max(devMax,Math.abs(gy-edgeY));
-        const ox=fr.x+fr.lx*sd*(RH+1.3), oz=fr.z+fr.lz*sd*(RH+1.3);
-        if(Math.abs(toGlobal(arm,s)-BECK_XG)>34) floatMax=Math.max(floatMax,edgeY-groundY(ox,oz));
+        // the stone's own edge, read off the corridor mesh
+        const uEdge=sd*RH;
+        const yEdge=realizedCorridorY(arm,s,uEdge);
+        if(yEdge===null) continue;
         samples++;
+        // the support: ground immediately beside the stone, 0.22 m outboard.
+        // Further out the verge is free to fall away — that is the design.
+        const ySup=realizedCorridorY(arm,s,sd*(RH+0.22));
+        const atCrossing=Math.abs(toGlobal(arm,s)-BECK_XG)<34;   // the bridge abutment is masonry
+        if(ySup!==null&&!atCrossing){
+          const gap=yEdge-ySup;
+          supportGapMax=Math.max(supportGapMax,gap);
+          if(gap>0.08) unsupported++;
+        }
+        const yVerge=realizedCorridorY(arm,s,sd*(RH+4.4));
+        if(yVerge!==null) vergeDropMax=Math.max(vergeDropMax,yEdge-yVerge);
+        // nothing from the coarse ground field may stand through the stone
+        const ex=fr.x+fr.lx*uEdge, ez=fr.z+fr.lz*uEdge;
+        const tY=realizedTileY(ex,ez);
+        if(tY!==null&&tY>yEdge-0.02){ tilePokeCount++; tilePokeMax=Math.max(tilePokeMax,tY-yEdge); }
+        // the analytic ground the props stand on must agree with the drawn mesh
+        const yAnalytic=groundY(fr.x+fr.lx*sd*(RH+4.4),fr.z+fr.lz*sd*(RH+4.4));
+        if(yVerge!==null){
+          const dev=Math.abs(yAnalytic-yVerge);
+          if(dev>analyticDevMax){ analyticDevMax=dev;
+            VAL.analyticWorst={arm,s:Math.round(s),g:Math.round(toGlobal(arm,s)),side:sd,
+              analytic:Math.round(yAnalytic*100)/100,mesh:Math.round(yVerge*100)/100}; }
+        }
       }
+      // the road surface itself against the ground function it was built from
+      const yMid=realizedCorridorY(arm,s,0);
+      if(yMid!==null) surfaceGapMax=Math.max(surfaceGapMax,Math.abs(yMid-(fr.y+CROWN)));
       if(fr.y+1.62<groundY(fr.x,fr.z)) camBelow++;
     }
   };
-  scan('sun',0,FRAMES.sun.len);
-  scan('moss',Math.max(0,S_COMMIT.moss-40),Math.min(FRAMES.moss.len,S_MERGE.moss+40));
+  scanArm('sun',2,FRAMES.sun.len-2);
+  scanArm('moss',Math.max(2,S_COMMIT.moss-30),Math.min(FRAMES.moss.len-2,S_MERGE.moss+30));
   VAL.samples=samples;
-  VAL.terrainAboveRoad=terrainAbove; VAL.terrainAboveRoadMaxM=aboveMax;
-  VAL.roadFloatMaxM=floatMax;
-  VAL.roadTerrainDevMaxM=devMax;
+  VAL.roadSurfaceGapM=surfaceGapMax;          // mesh vs the plan it was built from
+  VAL.roadSupportGapM=supportGapMax;          // stone edge above the ground 0.22 m outboard
+  VAL.vergeDropM=vergeDropMax;                // the designed fall to the verge, 4.4 m out
+  VAL.roadUnsupportedSamples=unsupported;
+  VAL.tilePokeThroughCount=tilePokeCount;
+  VAL.tilePokeThroughMaxM=tilePokeMax;
+  // The largest divergence between the drawn triangulated corridor and the
+  // continuous ground function everything else stands on. It is not an error
+  // budget: it peaks where the two lanes' shoulders cross at the fork, which is
+  // a crease no triangulation samples exactly. Reported with its location so it
+  // can be judged rather than trusted.
+  VAL.analyticVsRealizedMaxM=analyticDevMax;
   VAL.cameraBelowTerrain=camBelow;
+  VAL.roadNeverFloats=(supportGapMax<=0.08);
+  VAL.roadNeverUnderTerrain=(tilePokeCount===0);
 
   // every planned solid object against the exclusion corridor
   let excl=0, minTreeD=1e9;
@@ -3213,23 +3796,22 @@ const VAL={};
   VAL.roadBeyondStopM=FRAMES.sun.len-toLocal('sun',S_STOP);
   VAL.roadContrastRatio=ROAD_CONTRAST;
 
-  // grades, measured on the realised line
-  let maxG=0,asc=0,desc=0;
-  for(let i=1;i<=FRAMES.sun.N;i++){
-    const d=FRAMES.sun.y[i]-FRAMES.sun.y[i-1];
-    maxG=Math.max(maxG,Math.abs(d)/FRAMES.sun.RS);
-    if(d>0) asc+=d; else desc-=d;
+  // grades and totals, measured separately on each realised line
+  VAL.arm={};
+  for(const arm of ['sun','moss']){
+    const F=FRAMES[arm];
+    let maxG=0,asc=0,desc=0,within=0,n=0;
+    for(let i=1;i<=F.N;i++){
+      const d=F.y[i]-F.y[i-1], g=Math.abs(d)/F.RS;
+      maxG=Math.max(maxG,g); n++; if(g<=0.055) within++;
+      if(d>0) asc+=d; else desc-=d;
+    }
+    VAL.arm[arm]={ ascentM:asc, descentM:desc, maxGradePct:maxG*100, within55Pct:within/n*100 };
   }
-  VAL.maxGradePct=maxG*100; VAL.ascentM=asc; VAL.descentM=desc;
-  let within=0,n=0;
-  for(let i=1;i<=FRAMES.sun.N;i++){ n++;
-    if(Math.abs(FRAMES.sun.y[i]-FRAMES.sun.y[i-1])/FRAMES.sun.RS<=0.055) within++; }
-  VAL.gradeWithin55Pct=within/n*100;
-  let mossMaxG=0;
-  for(let i=1;i<=FRAMES.moss.N;i++)
-    mossMaxG=Math.max(mossMaxG,Math.abs(FRAMES.moss.y[i]-FRAMES.moss.y[i-1])/FRAMES.moss.RS);
-  VAL.maxGradeMossPct=mossMaxG*100;
-  VAL.maxGradeAnyPct=Math.max(VAL.maxGradePct,VAL.maxGradeMossPct);
+  VAL.maxGradePct=VAL.arm.sun.maxGradePct; VAL.ascentM=VAL.arm.sun.ascentM; VAL.descentM=VAL.arm.sun.descentM;
+  VAL.gradeWithin55Pct=VAL.arm.sun.within55Pct;
+  VAL.maxGradeMossPct=VAL.arm.moss.maxGradePct;
+  VAL.maxGradeAnyPct=Math.max(VAL.arm.sun.maxGradePct,VAL.arm.moss.maxGradePct);
 }
 
 // ============================================================
@@ -3249,10 +3831,11 @@ function buildProof(){
   const fr=getFrame(F,rider.sM), fa=getFrame(F,Math.min(rider.sM+10,F.len-1));
   const budgets=lastInfo.calls<=115&&lastInfo.tris<=360000;
   return {
-    version:'summerglass-hollow-2',
+    version:'summerglass-hollow-2r',
     seed:SEED_TEXT, seedHash:SEED_HASH, quality:QUALITY,
     qualityReadsBeforePlanFrozen:QUALITY_READS_AT_PLAN,
-    planHash:PLAN_HASH,
+    planHash:PLAN_HASH, planDigest64:PLAN_DIGEST64,
+    hashNote:'deterministic repeatability checksums, not cryptographic proof',
     routeHash:H.route.hex(), elevationHash:H.elev.hex(), terrainHash:H.terrain.hex(),
     ecologyHash:H.eco.hex(), lifeHash:H.life.hex(), weatherHash:H.weather.hex(),
     realizationHash,
@@ -3274,6 +3857,10 @@ function buildProof(){
       rollerMeanAmpM:Math.round(ROLLER_STAT.meanAmpM*10)/10,
       rollerMeanWavelengthM:Math.round(ROLLER_STAT.meanWavelengthM),
       rollerCount:ROLLER_STAT.count, crestCount:CRESTS.length,
+      forkSplitAtM:Math.round(S_SPLIT),
+      forkCommitAtM:Math.round(toGlobal('sun',S_COMMIT.sun)),
+      forkCommitLeadM:FORK_COMMIT_LEAD,
+      rejoinAtM:Math.round(S_MERGE_G),
       forkMaxSeparationM:Math.round(VAL.forkMaxSeparationM*10)/10,
       forkElevationSplitM:Math.round(VAL.forkElevationSplitM*10)/10,
       rejoinErrorM:Math.round(VAL.rejoinErrorM*100)/100,
@@ -3281,10 +3868,16 @@ function buildProof(){
     },
     road:{
       contrastRatio:Math.round(VAL.roadContrastRatio*100)/100,
-      terrainDeviationMaxM:Math.round(VAL.roadTerrainDevMaxM*1000)/1000,
-      floatMaxM:Math.round(VAL.roadFloatMaxM*1000)/1000,
-      terrainAboveRoadSamples:VAL.terrainAboveRoad,
-      terrainAboveRoadMaxM:Math.round(VAL.terrainAboveRoadMaxM*1000)/1000,
+      measuredAgainst:'realized corridor + ground-field meshes',
+      surfaceGapM:Math.round(VAL.roadSurfaceGapM*1000)/1000,
+      edgeAboveSupportM:Math.round(VAL.roadSupportGapM*1000)/1000,
+      unsupportedEdgeSamples:VAL.roadUnsupportedSamples,
+      designedVergeDropM:Math.round(VAL.vergeDropM*1000)/1000,
+      analyticVsRealizedMaxM:Math.round(VAL.analyticVsRealizedMaxM*1000)/1000,
+      analyticVsRealizedWorstAt:VAL.analyticWorst||null,
+      groundFieldPokeThroughSamples:VAL.tilePokeThroughCount,
+      groundFieldPokeThroughMaxM:Math.round(VAL.tilePokeThroughMaxM*1000)/1000,
+      sampleCount:VAL.samples,
       clearanceViolations:VAL.exclusionViolations+corridorViolations,
       corridorRejectedPlacements:corridorRejects,
       beckCrossings:VAL.beckCrossings, beckUnplannedCrossings:VAL.beckUnplannedCrossings,
@@ -3319,7 +3912,7 @@ function buildProof(){
     hero:{ name:'Bellroot', position:[Math.round(HERO_POS.x),Math.round(HERO_POS.y),Math.round(HERO_POS.z)],
       routeDistanceM:Math.round(HERO_G), crownTopM:Math.round(heroInfo.crownTop*10)/10,
       limbClearanceOverLaneM:Math.round(heroInfo.limbClearance*10)/10,
-      seedPods:heroInfo.pods.length, passed:marks.bellrootPassed },
+      seedPods:heroInfo.pods.length, passed:RUN.marks.bellrootPassed },
     landmarks:{ windSisters:[Math.round(SISTERS.x),Math.round(SISTERS.y),Math.round(SISTERS.z)],
       orchardRow:Math.round(ORCHARD_ROW.g),
       sistersVisibleFromSunbank:VAL.sistersVisibleFromSunbank,
@@ -3332,7 +3925,8 @@ function buildProof(){
     water:{ poolAt:Math.round(POOL.g), poolApertureAt:Math.round(POOL.apertureG),
       beckSegments:STREAM.length, beckCrossingAt:Math.round(BECK_XG),
       bridgeAt:BRIDGE_G.dist<26?Math.round(toGlobal('sun',BRIDGE_G.sLocal)):null,
-      seen:marks.waterSeen },
+      proximityThisRun:RUN.proximity.water, seenThisRun:RUN.seen.water,
+      firstSeenAtM:RUN.seen.waterFirstSeenAtM, framesSeen:RUN.seen.waterFramesSeen },
     life:{ planned:LIFE_EVENTS.length, branchExclusive:LIFE_BRANCH_EXCLUSIVE,
       fired:lifeFired, active:liveLife.length,
       kinds:LIFE_EVENTS.reduce((a,e)=>{a[e.kind]=(a[e.kind]||0)+1;return a;},{}) },
@@ -3340,20 +3934,37 @@ function buildProof(){
       durationS:Math.round(WEATHER.dur), state:weatherState.phase,
       amount:Math.round(weatherState.amount*1000)/1000, defaultSeedDry:(SEED_TEXT==='SUMMERGLASS-8421')?!WEATHER.has:null },
     chapters:CH.map(c=>({name:c.name,endM:Math.round(c.end*L_TOTAL),endS:Math.round(c.end*L_TOTAL/CRUISE)})),
-    checkpoints:Object.assign({},checkpoints,marks),
+    checkpoints:Object.assign({},checkpoints,RUN.marks),
     render:{ dpr:renderer.getPixelRatio(), drawCalls:lastInfo.calls, triangles:lastInfo.tris,
       renderer:glR, vendor:glV, contextLost:contextLost,
       fpsMean:avg?Math.round(10000/avg)/10:0,
       frameP50Ms:Math.round(q(0.5)*10)/10, frameP95Ms:Math.round(q(0.95)*10)/10,
       frameP99Ms:Math.round(q(0.99)*10)/10, samples:ft.length, composer:'none' },
-    restartCount, maxCameraRollDeg:Math.round(maxCamRollDeg*100)/100,
+    run:{ branchRidden:RUN.branchRidden, distanceRiddenM:Math.round(RUN.distanceRiddenM),
+      ascentRiddenM:Math.round(RUN.ascentRiddenM*10)/10, descentRiddenM:Math.round(RUN.descentRiddenM*10)/10,
+      maxCameraRollDeg:Math.round(RUN.maxRollDeg*100)/100,
+      peakDrawCalls:RUN.peakDrawCalls, peakTriangles:RUN.peakTriangles,
+      peakResidentBands:RUN.peakResidentBands,
+      bandsRealized:RUN.bandsRealized, bandsDisposed:RUN.bandsDisposed,
+      lifeFired:RUN.lifeFired, ambientProvenWhilePaused:RUN.ambientProvenWhilePaused,
+      marks:Object.assign({},RUN.marks),
+      proximity:Object.assign({},RUN.proximity),
+      seen:Object.assign({},RUN.seen) },
+    lifetime:Object.assign({},LIFETIME),
+    branchTotals:{ sun:{ascentM:Math.round(VAL.arm.sun.ascentM*10)/10,
+        descentM:Math.round(VAL.arm.sun.descentM*10)/10,
+        maxGradePct:Math.round(VAL.arm.sun.maxGradePct*100)/100},
+      moss:{ascentM:Math.round(VAL.arm.moss.ascentM*10)/10,
+        descentM:Math.round(VAL.arm.moss.descentM*10)/10,
+        maxGradePct:Math.round(VAL.arm.moss.maxGradePct*100)/100} },
+    restartCount:LIFETIME.restarts, maxCameraRollDeg:Math.round(RUN.maxRollDeg*100)/100,
     assertions:{
       deterministicSeed:xmur3(SEED_TEXT)()===SEED_HASH,
       planBeforeRealization:true,
       roadContinuity:VAL.roadContinuity,
       roadContrastPass:VAL.roadContrastRatio>=3.0,
-      roadNeverUnderTerrain:VAL.terrainAboveRoad===0,
-      roadNeverFloats:VAL.roadFloatMaxM<1.25,
+      roadNeverUnderTerrain:VAL.roadNeverUnderTerrain,
+      roadEdgeSupported:VAL.roadNeverFloats,
       corridorClearance:(VAL.exclusionViolations+corridorViolations)===0&&VAL.beckUnplannedCrossings===0,
       cameraAboveTerrain:VAL.cameraBelowTerrain===0,
       branchDivergence:VAL.branchDivergence,
@@ -3367,9 +3978,14 @@ function buildProof(){
       spatialCallback:VAL.spatialCallback,
       lifeScheduleFloor:LIFE_EVENTS.length>=12&&LIFE_BRANCH_EXCLUSIVE>=2,
       boundedResidency:RES.peak<=plannedResidentBands(rider.g)+2&&liveLife.length<=12,
-      ambientContinuesWhilePaused:ambientProvenWhilePaused,
-      cameraRollWithin3Deg:maxCamRollDeg<=3.05,
+      ambientContinuesWhilePaused:RUN.ambientProvenWhilePaused,
+      cameraRollWithin3Deg:RUN.maxRollDeg<=3.05,
       performanceBudget:budgets,
+      peakBudgetThisRun:(RUN.peakDrawCalls===0)||(RUN.peakDrawCalls<=115&&RUN.peakTriangles<=360000),
+      forkVisibleBeforeCommit:RUN.seen.forkBothArmsBeforeCommit,
+      waterVisibleFromRoad:RUN.seen.water,
+      bellrootVisibleOnApproach:RUN.seen.bellroot,
+      sistersCallbackSeenTwice:RUN.seen.sistersSeenSpanM>=900,
       planIndependentOfQuality:PLAN_HASH===PLAN_HASH_CHECK&&QUALITY_READS_AT_PLAN===0,
       noRuntimeErrors:capturedErrors.length===0&&!contextLost,
     },
@@ -3413,7 +4029,7 @@ const IDENTITY_PROBE=(()=>{
   realizationHash=(H.real.hex()+h.hex()).slice(0,16);
 }
 
-let wTime=0, lastNow=performance.now(), camInit=false, pitchSm=null;
+let wTime=0, lastNow=performance.now(), camInit=false, pitchSm=null, eyePrevY=null;
 let fixedStep=0;
 const camFwd=new THREE.Vector3(0,0,1);
 const windDrift=WL.uCloudMove.value;
@@ -3445,7 +4061,7 @@ function tick(){
   const dt=fixedStep>0?fixedStep:Math.min(dtRaw,0.05);
   wTime+=dt;
   frameId++; warmFrames++;
-  if(warmFrames>60){ frameTimes.push(dtRaw*1000); if(frameTimes.length>600) frameTimes.shift(); }
+  if(warmFrames>20){ frameTimes.push(dtRaw*1000); if(frameTimes.length>600) frameTimes.shift(); }
   WL.uWTime.value=wTime;
 
   if(!rider.started){ rider.holdT+=dt; if(rider.holdT>=1.1) rider.started=true; }
@@ -3467,25 +4083,31 @@ function tick(){
     rider.sM+=rider.v*dt;
     rider.g=toGlobal(rider.branch,rider.sM);
     // ---- the Mosswater Choice: the line you are riding decides ----
-    if(!rider.committed&&rider.g>S_SPLIT-190) marks.forkSeen=true;
-    if(!rider.committed&&rider.g>=S_SPLIT+58){
+    if(!rider.committed&&rider.g>S_SPLIT-240) RUN.proximity.fork=true;
+    if(!rider.committed&&rider.g>=S_SPLIT+FORK_COMMIT_LEAD){
       let pick=DEF_BRANCH;
       if(rider.latT>0.35) pick=(FORK_SIDE>0)?'sun':'moss';
       else if(rider.latT<-0.35) pick=(FORK_SIDE>0)?'moss':'sun';
       if(pick!==rider.branch){ rider.branch=pick; rider.sM=toLocal(pick,rider.g); F=FRAMES[pick]; }
-      rider.committed=true; marks.forkCommitted=true;
+      rider.committed=true; RUN.marks.forkCommitted=true; RUN.branchRidden=rider.branch;
+      if(RUN.seen.forkFirstSeenAtM!==null)
+        RUN.seen.forkLeadBeforeCommitM=Math.round(rider.g-RUN.seen.forkFirstSeenAtM);
     }
-    if(rider.committed&&!marks.branchMid&&rider.g>(S_SPLIT+S_MERGE_G)*0.5) marks.branchMid=true;
-    if(rider.g>S_MERGE_G+10) marks.rejoined=true;
-    if(Math.abs(rider.g-POOL.apertureG)<60) marks.waterSeen=true;
-    if(Math.abs(rider.g-HERO_G)<26) marks.bellrootPassed=true;
+    if(rider.committed&&!RUN.marks.branchMid&&rider.g>(S_SPLIT+S_MERGE_G)*0.5) RUN.marks.branchMid=true;
+    if(rider.g>S_MERGE_G+10) RUN.marks.rejoined=true;
+    if(Math.abs(rider.g-POOL.apertureG)<60||Math.abs(rider.g-MOSSPOOL.g)<60) RUN.proximity.water=true;
+    if(Math.abs(rider.g-HERO_G)<160) RUN.proximity.bellroot=true;
+    if(Math.abs(rider.g-HERO_G)<26) RUN.marks.bellrootPassed=true;
+    { const dy=eyePrevY===null?0:(fr0.y-eyePrevY);
+      if(dy>0) RUN.ascentRiddenM+=dy; else RUN.descentRiddenM-=dy;
+      eyePrevY=fr0.y; RUN.distanceRiddenM=rider.g; }
     { let prev=0;
       for(const c of CH){ if(rider.g>=prev) checkpoints[c.key]=true; prev=c.end*L_TOTAL; } }
     const STOP=toLocal(rider.branch,S_STOP);
     if(rider.sM>STOP-9){
       rider.vT=Math.max(4,rider.vT-6*dt);
       rider.v=Math.min(rider.v,Math.max(0.30,(STOP-rider.sM)*0.32));
-      if(rider.sM>STOP-0.6&&rider.v<0.4){ rider.v=0; if(!rider.ended){ rider.ended=true; marks.rested=true; } }
+      if(rider.sM>STOP-0.6&&rider.v<0.4){ rider.v=0; if(!rider.ended){ rider.ended=true; RUN.marks.rested=true; } }
     }
     rider.sM=clamp(rider.sM,0,STOP);
     rider.g=toGlobal(rider.branch,rider.sM);
@@ -3503,6 +4125,7 @@ function tick(){
     if(rider.g>=e.g-2&&rider.g<e.g+50){
       e.fired=true;
       spawnLife(e,getFrame(FRAMES[rider.branch],rider.sM),rider.g);
+      RUN.lifeFired++;
     } else if(rider.g>=e.g+50) e.fired=true;
   }
   updateLife(dt);
@@ -3513,7 +4136,7 @@ function tick(){
     if(!pauseProbe) pauseProbe={t:wTime,x:cloudForms[0].mesh.position.x,z:cloudForms[0].mesh.position.z,w:wTime};
     else if(wTime-pauseProbe.t>0.7){
       const c=cloudForms[0].mesh.position;
-      if(Math.hypot(c.x-pauseProbe.x,c.z-pauseProbe.z)>0.02) ambientProvenWhilePaused=true;
+      if(Math.hypot(c.x-pauseProbe.x,c.z-pauseProbe.z)>0.02) RUN.ambientProvenWhilePaused=true;
     }
   } else pauseProbe=null;
   for(const cf of cloudForms){
@@ -3538,7 +4161,7 @@ function tick(){
   const pitch=clamp(pitchSm+pitchOff,-0.55,0.5);
   const roll=clamp(-rider.lat*0.030-steer*0.010,-0.052,0.052)*clamp(rider.v/11,0,1);
   camRollDeg=Math.abs(roll)*180/Math.PI;
-  maxCamRollDeg=Math.max(maxCamRollDeg,camRollDeg);
+  RUN.maxRollDeg=Math.max(RUN.maxRollDeg,camRollDeg);
   camera.position.copy(_eye);
   camera.quaternion.setFromEuler(new THREE.Euler(pitch,yaw,roll,'YXZ'));
 
@@ -3570,8 +4193,49 @@ function tick(){
 
   audioUpdate(dt,wTime,rider);
 
+  // ---- what the rider can actually see from where the camera now is ----
+  camera.updateMatrixWorld();
+  if((frameId&3)===0){
+    refreshFrustum(camera);
+    const eye=_eye;
+    if(!rider.committed&&rider.g>S_SPLIT-320&&rider.g<S_SPLIT+FORK_COMMIT_LEAD){
+      const a=getFrame(FRAMES.sun,clamp(toLocal('sun',S_SPLIT+170),0,FRAMES.sun.len-1));
+      const bm=getFrame(FRAMES.moss,clamp(toLocal('moss',S_SPLIT+170),0,FRAMES.moss.len-1));
+      const sa=seenByRider(eye,a.x,a.y+1.0,a.z,3,1.0);
+      const sb=seenByRider(eye,bm.x,bm.y+1.0,bm.z,3,1.0);
+      if(sa&&sb){
+        RUN.seen.forkBothArmsBeforeCommit=true;
+        if(RUN.seen.forkFirstSeenAtM===null) RUN.seen.forkFirstSeenAtM=Math.round(rider.g);
+      }
+    }
+    for(const P of PONDS){
+      if(Math.abs(rider.g-P.g)>340) continue;
+      let hit=false;
+      for(let a=0;a<TAU&&!hit;a+=TAU/7){
+        const wx=P.cx+Math.cos(a)*P.rx*0.7, wz=P.cz+Math.sin(a)*P.rz*0.7;
+        if(seenByRider(eye,wx,P.y+0.05,wz,2.5,0.35)) hit=true;
+      }
+      if(hit){ RUN.seen.water=true; RUN.seen.waterFramesSeen++;
+        if(RUN.seen.waterFirstSeenAtM===null) RUN.seen.waterFirstSeenAtM=Math.round(rider.g); }
+    }
+    if(Math.abs(rider.g-HERO_G)<520&&seenByRider(eye,HERO_POS.x,HERO_POS.y+18,HERO_POS.z,14,1.2)){
+      RUN.seen.bellroot=true;
+      if(RUN.seen.bellrootFirstSeenAtM===null) RUN.seen.bellrootFirstSeenAtM=Math.round(rider.g);
+    }
+    if(seenByRider(eye,SISTERS.x,SISTERS.y+16,SISTERS.z,20,1.0)){
+      RUN.seen.sisters=true;
+      if(RUN.seen.sistersFirstSeenAtM===null) RUN.seen.sistersFirstSeenAtM=Math.round(rider.g);
+      RUN.seen.sistersLastSeenAtM=Math.round(rider.g);
+      RUN.seen.sistersSeenSpanM=RUN.seen.sistersLastSeenAtM-RUN.seen.sistersFirstSeenAtM;
+    }
+  }
+
   renderer.render(scene,camera);
   lastInfo={calls:renderer.info.render.calls,tris:renderer.info.render.triangles};
+  if(warmFrames>30){
+    RUN.peakDrawCalls=Math.max(RUN.peakDrawCalls,lastInfo.calls);
+    RUN.peakTriangles=Math.max(RUN.peakTriangles,lastInfo.tris);
+  }
   renderer.info.reset();
 }
 renderer.setAnimationLoop(tick);
@@ -3604,6 +4268,71 @@ window.__SUMMERGLASS_TEST__={
   state(){ return {g:rider.g,sM:rider.sM,branch:rider.branch,committed:rider.committed,
     v:rider.v,paused:rider.paused,ended:rider.ended,chapter:chapterOf(rider.g)}; },
   identityProbe:IDENTITY_PROBE,
+  lifePlan(){ return LIFE_EVENTS.map(e=>({g:Math.round(e.g),kind:e.kind,arm:e.arm})); },
+  // what the triangle budget is actually being spent on, counted from the
+  // meshes the frustum accepted this frame rather than estimated
+  budgetBreakdown(){
+    camera.updateMatrixWorld(); refreshFrustum(camera);
+    const by={}; let total=0, drawn=0;
+    scene.traverse(o=>{
+      if(!o.isMesh&&!o.isPoints||!o.geometry) return;
+      const g=o.geometry, idx=g.getIndex();
+      const tris=Math.floor((idx?idx.count:(g.getAttribute('position')||{count:0}).count)/3);
+      if(!tris) return;
+      total+=tris;
+      const vis=o.frustumCulled?_frustum.intersectsObject(o):true;
+      if(!vis) return;
+      drawn+=tris;
+      const k=(o.material&&o.material.name)||
+        (o.material===corridorMat?'corridor':
+         o.material===underMat?'understory':
+         o.material===treeMatNear?'trees-near':
+         o.material===treeMatMid?'trees-mid':
+         o.material===treeMatFar?'trees-far':
+         o.material===treeMatHero?'bellroot':
+         o.material===waterMat?'water':'other');
+      by[k]=(by[k]||0)+tris;
+    });
+    return {drawn,total,by:Object.fromEntries(Object.entries(by).sort((a,b)=>b[1]-a[1]))};
+  },
+  // where the water actually lands on screen, and whether anything is standing
+  // between the rider and it
+  waterProbe(){
+    camera.updateMatrixWorld(); refreshFrustum(camera);
+    const eye=camera.position;
+    return PONDS.map(P=>{
+      const v=new THREE.Vector3(P.cx,P.y,P.cz).project(camera);
+      const mesh=WATER_MESHES.find(m=>m.userData.pond===P.name);
+      let blocked=null;
+      { // walk the sight line and find the first ground above it
+        const dx=P.cx-eye.x, dy=P.y-eye.y, dz=P.cz-eye.z, L=Math.hypot(dx,dy,dz);
+        for(let t=0.06;t<0.995;t+=0.02){
+          const px=eye.x+dx*t, py=eye.y+dy*t, pz=eye.z+dz*t;
+          if(groundY(px,pz)>py+0.05){ blocked=+(t*L).toFixed(1); break; }
+        }
+      }
+      return { name:P.name, ndc:[+v.x.toFixed(3),+v.y.toFixed(3),+v.z.toFixed(3)],
+        onScreen:Math.abs(v.x)<1&&Math.abs(v.y)<1&&v.z<1,
+        distM:+Math.hypot(P.cx-eye.x,P.cz-eye.z).toFixed(1),
+        dropM:+(eye.y-P.y).toFixed(2), blockedAtM:blocked,
+        meshVisible:mesh?mesh.visible:null,
+        meshInFrustum:mesh?_frustum.intersectsObject(mesh):null };
+    });
+  },
+  // the ground profile out across a pool shelf, so a claim that water is
+  // visible from the lane can be checked against heights rather than hoped for
+  shelfProfile(i){
+    const S=SHELVES[i||0]; if(!S) return null;
+    const prof=[];
+    for(let u=0;u<=Math.abs(S.off)+S.P.rx+12;u+=2){
+      const x=S.fr.x+S.fr.lx*u*S.side, z=S.fr.z+S.fr.lz*u*S.side;
+      prof.push([u,+groundY(x,z).toFixed(2)]);
+    }
+    return { name:S.P.name, off:+S.off.toFixed(1), uNear:+S.uNear.toFixed(1),
+      halfV:+S.halfV.toFixed(1), frY:+S.fr.y.toFixed(2), waterY:+S.P.y.toFixed(2),
+      bed:+S.P.bed.toFixed(2), rx:+S.P.rx.toFixed(1), rz:+S.P.rz.toFixed(1),
+      poolG:Math.round(S.P.g), apron:APRON, prof };
+  },
   // measurement helpers used by the verification harness
   diag(){
     const worstG=[],worstF=[],worstA=[],cross=[],kinks=[];
@@ -3660,6 +4389,8 @@ window.__SUMMERGLASS_TEST__={
       chapterElev:CH.map(c=>({n:c.name.slice(0,10),y:Math.round(spineY(c.end*L_TOTAL)*10)/10})),
       elevRange:[Math.round(Math.min.apply(null,Array.from(ELEVATION.y))*10)/10,
                  Math.round(Math.max.apply(null,Array.from(ELEVATION.y))*10)/10],
+      cols:COLS.map(c=>Math.round(c*100)/100),
+      profileAt1000:COLS.map(c=>{const y=realizedCorridorY('sun',1000,c);return y===null?null:Math.round((y-realizedCorridorY('sun',1000,0))*1000)/1000;}),
       elevMaxGradePlanPct:Math.round(ELEVATION.maxG*10000)/100,
       planAscM:Math.round(ELEVATION.asc*10)/10, planDescM:Math.round(ELEVATION.desc*10)/10,
       planLen:Math.round(ELEVATION.n*EDS), frameLen:Math.round(FRAMES.sun.len),
