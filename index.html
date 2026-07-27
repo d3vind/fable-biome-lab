@@ -1706,7 +1706,14 @@ function anchorAt(sP,arm,lat){
   props5.push({kind:'gaugeHut',x:from[0]+2.5,z:from[2]+1.5,yaw:a5.yawRoad,seed:PLACE.i(0,1e9)});
   props5.push({kind:'ladder',x:from[0],z:from[2],top:from[1],seed:PLACE.i(0,1e9)});
   props5.push({kind:'collapsedFlume',x:a5.x+a5.lx*13,z:a5.z+a5.lz*13,yaw:a5.yawRoad+0.5,seed:PLACE.i(0,1e9)});
-  overheadSpans.push({x:a5.x,z:a5.z,yMin:Math.min(from[1],to[1])-0.6,label:'aqueduct'});
+  { let worst=1e9;   // clearance measured where the flume actually crosses road
+    for(let tt=0;tt<=1.001;tt+=0.06){
+      const cx=lerp(from[0],to[0],tt), cz=lerp(from[2],to[2],tt);
+      const cy=lerp(from[1],to[1],tt)-0.35*Math.sin(Math.PI*tt)-0.55;
+      const ri5=routeInfo(cx,cz);
+      if(ri5.d<ROAD_HW+4){ const c5=cy-ri5.h; if(c5<worst) worst=c5; }
+    }
+    overheadSpans.push({x:a5.x,z:a5.z,clr:worst<1e8?worst:99,label:'aqueduct'}); }
   PLACES.push({id:'aqueduct',name:'Coldwash Aqueduct',s:s5,arm:0,x:a5.x,z:a5.z,side:1,a:a5,props:props5,r:14});
   placeClearZones.push({x:a5.x+a5.lx*18,z:a5.z+a5.lz*18,r:10});
   // P6 · Shelfline Cable Head — lift terminal on the right arm
@@ -1720,11 +1727,34 @@ function anchorAt(sP,arm,lat){
   props6.push({kind:'marker',x:a6.x+a6.lx*2,z:a6.z+a6.lz*2,seed:PLACE.i(0,1e9)});
   // the cable flies across the canyon, high over the shelf road
   const far6={x:a6.x-a6.lx*PLACE.r(220,300),z:a6.z-a6.lz*PLACE.r(220,300)};
-  props6.push({kind:'cableSpan',from:[a6.x,0,a6.z],to:[far6.x,0,far6.z],
-    h0:PLACE.r(8,10),seed:PLACE.i(0,1e9)});
-  overheadSpans.push({x:(a6.x+far6.x)/2,z:(a6.z+far6.z)/2,yMin:a6.y+8,label:'cable'});
+  let h0=PLACE.r(8,10);
+  let cableClr=99;
+  {  // the catenary must clear every road beneath it, measured, not assumed
+    const yF=terrainH(far6.x,far6.z)+26;
+    for(let pass2=0;pass2<3;pass2++){
+      let worst=1e9;
+      for(let tt=0.05;tt<=0.95;tt+=0.09){
+        const cx=lerp(a6.x,far6.x,tt), cz=lerp(a6.z,far6.z,tt);
+        const cy=lerp(a6.y+h0,yF,tt)-Math.sin(Math.PI*tt)*14+18*tt*tt;
+        const ri6=routeInfo(cx,cz);
+        if(ri6.d<ROAD_HW+4){ const clr=cy-ri6.h; if(clr<worst) worst=clr; }
+      }
+      if(worst>1e8){ cableClr=99; break; }
+      cableClr=worst;
+      if(worst>=6.2) break;
+      h0+=(6.2-worst)+0.4;
+    }
+  }
+  props6.push({kind:'cableSpan',from:[a6.x,0,a6.z],to:[far6.x,0,far6.z],h0,seed:PLACE.i(0,1e9)});
+  overheadSpans.push({x:(a6.x+far6.x)/2,z:(a6.z+far6.z)/2,clr:cableClr,label:'cable'});
   PLACES.push({id:'cablehead',name:'Shelfline Cable Head',s:s6,arm:1,x:a6.x,z:a6.z,side:-SUN_SIDE,a:a6,props:props6,r:16});
   placeClearZones.push({x:a6.x,z:a6.z,r:16});
+}
+// no place prop may drift into the corridor, whatever its offsets did
+for(const p of PLACES) for(const pr of p.props){
+  if(pr.x===undefined||pr.kind==='flumeSpan'||pr.kind==='cableSpan'||pr.kind==='pipeRun') continue;
+  const m2=pr.kind==='tank'?2.3:(pr.kind==='shadeCanopy'?2.7:(pr.kind==='windTower'?1.4:1.0));
+  pushOut(pr,m2);
 }
 // route markers — the Relay Works keeps its ledger
 const MARKERS=[];
@@ -2154,7 +2184,7 @@ function planChunk(id){
       const x=f.x+f.lx*lat, z=f.z+f.lz*lat;
       const kind=cc.pick(['sentinelLantern','sentinelLantern','yuccaGrove','deadTall','hoodooSmall']);
       const sc=kind==='sentinelLantern'?cc.r(1.4,1.8):cc.r(1.3,1.9);
-      let ex=!corridorClear(x,z,1.5)||inPlaceZone(x,z,1)||inSlotZone(x,z,1)||nearPool(x,z,1);
+      let ex=!corridorClear(x,z,kind==='hoodooSmall'?2.8*sc:1.5)||inPlaceZone(x,z,1)||inSlotZone(x,z,1)||nearPool(x,z,1);
       if(!ex) for(const e2 of vegExclude) if(Math.hypot(x-e2.x,z-e2.z)<e2.r){ex=true;break;}
       if(!ex){
         recs.plants.push({t:kind,x,z,sc,seed:cc.i(0,1e9),pr:0});
@@ -2403,35 +2433,38 @@ const MEASURE={ minTerrainClear:1e9, terrainIntrusions:0, propIntrusions:0,
   const FOOT_KIND={stone:0.6,slab:0.9,shale:0.5,root:0.7,lantern:0.6,pads:0.8,barrel:0.5,
     cholla:0.8,dead:0.7,shrub:0.7,whip:0.9,yucca:0.7,bunch:0.4,
     sentinelLantern:0.9,yuccaGrove:1.7,deadTall:1.0,hoodooSmall:2.6};
+  let _cat='';
   const checkP=(x,z,fr)=>{ const ri=routeInfo(x,z);
-    if(ri.d<ROAD_HW+fr-0.05) MEASURE.propIntrusions++; };
+    if(ri.d<ROAD_HW+fr-0.05){ MEASURE.propIntrusions++;
+      if(!MEASURE.violations) MEASURE.violations=[];
+      if(MEASURE.violations.length<6) MEASURE.violations.push({cat:_cat,x:Math.round(x),z:Math.round(z),d:Math.round(ri.d*100)/100,fr:Math.round(fr*100)/100}); } };
   for(const cp of chunkPlans){
-    for(const r of cp.recs.rocks) checkP(r.x,r.z,footRadius(r.type,r.sc)*0.5);
+    for(const r of cp.recs.rocks){ _cat='rock:'+r.type; checkP(r.x,r.z,footRadius(r.type,r.sc)*0.5); }
     for(const r of (cp.recs.walls||[])){
-      const sg2=r.side===0?1:-1;
+      const sg2=r.side===0?1:-1; _cat='wall';
       for(const ts of [0,0.25,0.5,0.75,1]){
         const fs=frameAtPrimary(clamp(lerp(r.sA,r.sB,ts),0,SP_LEN-1),0);
         checkP(fs.x+fs.lx*sg2*r.dist,fs.z+fs.lz*sg2*r.dist,7);
       }
     }
-    for(const r of (cp.recs.roadworks||[])) checkP(r.x,r.z,0.9);
-    for(const r of cp.recs.ground) checkP(r.x,r.z,(FOOT_KIND[r.t]||0.6)*r.sc);
-    for(const r of cp.recs.plants) checkP(r.x,r.z,(FOOT_KIND[r.t]||0.6)*r.sc);
-    for(const r of cp.recs.inst) checkP(r.x,r.z,(FOOT_KIND[r.t]||0.5)*r.sc);
+    for(const r of (cp.recs.roadworks||[])){ _cat='rw:'+r.t; checkP(r.x,r.z,0.9); }
+    for(const r of cp.recs.ground){ _cat='gnd:'+r.t; checkP(r.x,r.z,(FOOT_KIND[r.t]||0.6)*r.sc); }
+    for(const r of cp.recs.plants){ _cat='pl:'+r.t; checkP(r.x,r.z,(FOOT_KIND[r.t]||0.6)*r.sc); }
+    for(const r of cp.recs.inst){ _cat='inst:'+r.t; checkP(r.x,r.z,(FOOT_KIND[r.t]||0.5)*r.sc); }
   }
-  for(const m of MARKERS) checkP(m.x,m.z,0.3);
+  _cat='marker'; for(const m of MARKERS) checkP(m.x,m.z,0.3);
   for(const p of PLACES) for(const pr of p.props){
     if(pr.kind==='flumeSpan'||pr.kind==='cableSpan'||pr.kind==='pipeRun') continue;
+    _cat='place:'+p.id+':'+pr.kind;
     if(pr.x!==undefined) checkP(pr.x,pr.z,pr.kind==='tank'?2:(pr.kind==='shadeCanopy'?2.4:0.9));
   }
   for(const st of STORIES){ if(st.type==='crossingTracks'||st.type==='oddMarker') continue;
+    _cat='story:'+st.type;
     if(st.x!==undefined) checkP(st.x,st.z,0.8); }
-  // overhead spans must clear a rider by a wide margin
+  // overhead spans must clear a rider by a wide margin, at their true crossings
   for(const o of overheadSpans){
-    const ri=routeInfo(o.x,o.z);
-    const clr=o.yMin-ri.h;
-    MEASURE.overhead.push({label:o.label,clearance:Math.round(clr*100)/100});
-    if(clr<5.0) MEASURE.propIntrusions++;
+    MEASURE.overhead.push({label:o.label,clearance:Math.round(o.clr*100)/100});
+    if(o.clr<5.0) MEASURE.propIntrusions++;
   }
   // planned life anchors stay out of the corridor (crossings excepted by design)
   const lifePt=(x,z)=>{ const ri=routeInfo(x,z); if(ri.d<CLEAR_D-0.05) MEASURE.lifePathIntrusions++; };
@@ -4448,6 +4481,8 @@ window.__SUNSCAR_PROOF__={
       particleIntrusionCount:MEASURE.particleIntrusions,
       lifePathIntrusionCount:MEASURE.lifePathIntrusions,
       overheadClearances:MEASURE.overhead,
+      firstViolation:(MEASURE.violations&&MEASURE.violations[0])||null,
+      violations:MEASURE.violations||[],
       chunksActive:chunkState.built.size, chunksActivePeak:chunkState.peak,
       chunksCreated:chunkState.created, chunksReused:chunkState.reused,
       chunksDisposed:chunkState.disposed, chunksRetained:chunkState.pool.length,
