@@ -521,12 +521,49 @@ try {
   if (wanted('road'))       for (const [s, q] of [['SUMMERGLASS-8421','standard'],['1189','low'],['1189','standard'],
                                                   ['777','standard'],['GLASSWOOD-42','standard']])
                               await checkRoad(browser, s, q);
-  if (wanted('grounding'))  for (const s of SEEDS.slice(0, 3)) await checkGrounding(browser, s);
+  // Every seed, not the first three. A contact defect that only shows on the
+  // fourth seed is still a contact defect, and three seeds was a sampling budget
+  // rather than a contract. Both arms are walked inside the check itself.
+  if (wanted('grounding'))  for (const s of SEEDS) await checkGrounding(browser, s);
   if (wanted('quality'))    await checkQuality(browser);
   if (wanted('seeds'))      for (const s of SEEDS) await checkSeed(browser, s);
   if (wanted('ride'))       for (const b of ['sun', 'moss']) await checkRide(browser, b);
   if (wanted('budget'))     for (const q of ['standard', 'high']) await checkBudget(browser, q);
-  if (wanted('perf'))       await checkPerf(browser);
+  // Frame budget is a property the machine has to demonstrate REPEATEDLY. One
+  // clean run is a sample, not a gate: thermal state, what else the machine was
+  // doing, and which way the governor happened to jump all move it. PERF_RUNS
+  // (default 1, set 3 at the final gate) requires that many CONSECUTIVE clean
+  // runs — the row is a pass only if every one of them passed, and the detail
+  // carries all of them so a single lucky run cannot be quoted alone.
+  if (wanted('perf')) {
+    const N = Math.max(1, Number(process.env.PERF_RUNS || 1));
+    if (N === 1) await checkPerf(browser);
+    else {
+      const runs = [];
+      for (let i = 0; i < N; i++) {
+        const before = results.length;
+        await checkPerf(browser);
+        const r = results.pop();               // fold the individual rows into one
+        runs.push({run: i + 1, state: r.state, p95: r.detail.steady && r.detail.steady.p95,
+                   p99: r.detail.steady && r.detail.steady.p99, dpr: r.detail.dpr,
+                   dprHeld: r.detail.dprHeld, chaptersOverBudget: r.detail.chaptersOverBudget,
+                   note: r.detail.note});
+        results.length = before;
+      }
+      const allPass = runs.every(r => r.state === 'PASS');
+      const anyNoVerdict = runs.some(r => r.state === 'NO-VERDICT');
+      const detail = {consecutiveRunsRequired: N, runs,
+        worstP95Ms: Math.max(...runs.map(r => r.p95 || 0)),
+        worstP99Ms: Math.max(...runs.map(r => r.p99 || 0)),
+        allHeldTierDpr: runs.every(r => r.dprHeld)};
+      if (anyNoVerdict && !runs.some(r => r.state === 'FAIL')) {
+        recordNoVerdict('perf', {...detail,
+          note: 'at least one of the ' + N + ' runs could not be answered on this hardware'});
+      } else {
+        record('perf', allPass, detail);
+      }
+    }
+  }
 } finally {
   await browser.close();
   server.close();

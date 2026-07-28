@@ -19,12 +19,26 @@ Checks, and what each one is actually asking:
 | `provenance` | can a warped or accelerated run be relabelled as a continuous one, including by restarting? |
 | `fork` | is there drawn ground everywhere between the two lanes, and is any of it drawn twice? Fires rays at the scene rather than asking the code. |
 | `road` | is the stone supported, does anything poke through it, and is the validation reading the triangles that were actually emitted? |
-| `grounding` | does every planted trunk stand on the surface the renderer draws? Real rays at the meshes in the scene, walked along both arms — and it reports how far the analytic reconstruction disagrees with them, because a probe that reads different geometry from the renderer is not a probe. |
+| `grounding` | does every planted object stand on the surface the renderer draws? All five seeds, both arms. Real rays at the meshes in the scene, walked along both arms — and it reports how far the analytic reconstruction disagrees with them, because a probe that reads different geometry from the renderer is not a probe. |
 | `quality` | do low, standard and high plan the same world? Per-tree identity, not a count of trees — equal counts of different trees is not the same world. Seated height is realization and is reported as a distribution with a stated bound rather than asserted equal. |
 | `seeds` | does the seed matrix hold its route, grade, fork and grounding contracts? |
 | `ride` | can both fork arms be ridden end to end, and what did the rider actually see? |
 | `budget` | walking the whole route at each tier, what is the worst draw-call and triangle count the world ever asks for? Warped on purpose — it asks what is resident, not whether motion works. Each pass sets the arm outright and re-reads it from the world, because `chooseBranch` only decides what a RIDE would resolve at the fork and a warped sweep therefore scanned one arm twice. |
 | `perf` | draw calls, triangles, and frame-time percentiles — with the renderer named, so a software rasteriser is never quoted as hardware, and with the resolution the world settled on. Rides the WHOLE route at the tier's own device pixel ratio and takes the verdict per chapter; standing at the gate for twenty seconds measured the opening chapter at a DPR nobody ships. |
+
+### Environment variables
+
+| variable | effect |
+|---|---|
+| `CHROME_PATH` | use a Chromium you already have |
+| `THREE_LOCAL` | serve three.js from a local copy (no-egress sandbox) |
+| `SOFTWARE_GL=1` | force SwiftShader; `perf` then returns NO-VERDICT |
+| `PERF_DPR` | device pixel ratio to request (default 1.25, the standard tier's own) |
+| `PERF_RUNS` | require this many CONSECUTIVE clean performance runs (default 1; use 3 at the final gate) |
+| `PERF_MAX_MIN` / `RIDE_MAX_MIN` | wall-clock bounds on the full-route traversals |
+
+An unknown `--only=` selector exits 3 rather than running nothing and exiting
+zero, which used to be indistinguishable from a clean sweep.
 
 Rows are `PASS`, `FAIL`, or `NO-VERDICT`. The third exists because a check that
 runs cleanly on hardware that cannot answer the question it asks is not a pass; a
@@ -42,8 +56,9 @@ worse than no row at all. `perf` returns `NO-VERDICT` in two cases:
   corridor's own row spacing. A fixed TIMESTEP cannot bound this on its own — the
   same step covers twice the ground at twice the speed — so a run that outran the
   guard is refused rather than reported.
-* **Fewer than four chapters sampled.** A frame-time claim from part of the route
-  is not a claim about the route.
+* **A chapter never sampled.** Every planned chapter must appear by name. A
+  frame-time claim from part of the route is not a claim about the route, and the
+  chapter a run happens to skip is exactly the one that would have failed.
 * **Budget met at reduced resolution.** The world steps its own device pixel
   ratio down when it is missing frame budget. Reaching 60 fps that way is a real
   result and a different one from holding the tier's resolution, so it gets its
