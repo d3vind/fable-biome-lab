@@ -182,11 +182,19 @@ class Reedwake {
   onKey(k, a, b) {
     if (k === 'pause') { this.rider.paused = !this.rider.paused; $('paused').classList.toggle('on', this.rider.paused); }
     else if (k === 'restart') this.restart();
+    else if (k === 'mute') this.setMuted(!(this.audio && this.audio.muted));
     else if (k === 'escape') { this.rider.yawLook = 0; this.rider.pitchLook = 0; }
     else if (k === 'look') {
       this.rider.yawLook = clamp(this.rider.yawLook - a, -0.96, 0.96);
       this.rider.pitchLook = clamp(this.rider.pitchLook - b, -0.42, 0.50);
     }
+  }
+
+  setMuted(v) {
+    const on = this.audio ? this.audio.setMuted(v) : !!v;
+    const b = $('mute');
+    if (b) { b.classList.toggle('off', on); b.setAttribute('aria-pressed', String(on)); b.title = on ? 'sound off (M)' : 'sound on (M)'; }
+    return on;
   }
 
   /* ---------------- per-frame uniforms ---------------- */
@@ -593,6 +601,7 @@ class Reedwake {
     try {
       await app.boot(seed, quality, PARAMS.get('arm') || null);
       app.audio.start();
+      app.setMuted(app.audio.muted);          // reflect a remembered choice in the control
       $('boot').classList.add('gone');
       setTimeout(() => { $('boot').style.display = 'none'; }, 950);
     } catch (e) {
@@ -602,6 +611,8 @@ class Reedwake {
   };
   $('go').onclick = go;
   seedInput.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  $('mute').onclick = () => { app.setMuted(!(app.audio && app.audio.muted)); $('gl').focus(); };
+  if (Audio.mutedPref()) $('mute').classList.add('off');
 
   // read-only diagnostics
   Object.defineProperty(window, '__proof', { get: () => (app.running ? app.proof() : { ready: false, errors: app.errors.map((e) => e.msg) }) });

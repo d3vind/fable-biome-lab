@@ -709,6 +709,57 @@ function buildPlan(seedStr) {
   }
 
   /* ==================================================================
+   *  withy stakes and eel traps
+   *  Tidal reed country is worked country. Where the water stands, people put things in
+   *  it: lines of cut-willow stakes for traps and withy beds, staggered and half-rotten
+   *  and never straight. They earn their place three times over — something to pass close
+   *  to, a set of verticals to break a horizon that is otherwise one flat line, and a
+   *  reason to believe the open hand of the road is water rather than absence. So they go
+   *  only where a beat has actually released water, and never on the reed hand.
+   * ================================================================== */
+  const stakes = [];
+  {
+    const SR = new Rng(seedU, 'plan:stakes');
+    const add = (bx, bz, dir, n, kind, near) => {
+      const sp = SR.f(1.5, 2.9);
+      stakes.push({
+        x: +bx.toFixed(2), z: +bz.toFixed(2), rot: +dir.toFixed(4), n,
+        gap: +sp.toFixed(2), kind,
+        h: +SR.f(near ? 0.95 : 1.25, near ? 1.9 : 2.5).toFixed(2),
+        lean: +SR.f(0.05, 0.20).toFixed(3),
+        bow: +SR.f(-0.35, 0.35).toFixed(3),          // the line sags, it is not a ruler
+        wear: +SR.f(0.45, 1).toFixed(2), seed: SR.i(1, 1e6),
+        near: near ? 1 : 0,
+      });
+    };
+    for (const list of [beats, beatsWillow]) {
+      for (const b of list) {
+        const wet = b.digL > 0.5 ? 1 : (b.digR > 0.5 ? -1 : 0);
+        if (!wet) continue;
+        const span = b.s1 - b.s0;
+        // one worked line close enough to ride past, sometimes a second
+        const nLine = 1 + (SR.u() < 0.42 ? 1 : 0);
+        for (let i = 0; i < nLine; i++) {
+          const sg = b.s0 + span * SR.f(0.18, 0.86);
+          const rp = routePointAt(sg);
+          const nx = -Math.sin(rp.h), nz = Math.cos(rp.h);
+          const lat = SR.f(15, 62) * wet;
+          add(rp.x + nx * lat, rp.z + nz * lat, rp.h + SR.f(-1.3, 1.3),
+            SR.i(4, 11), SR.pick(['withy', 'withy', 'trap']), true);
+        }
+        // and one standing well out, for the skyline rather than for the verge
+        if (SR.u() < 0.62) {
+          const sg = b.s0 + span * SR.f(0.2, 0.8);
+          const rp = routePointAt(sg);
+          const nx = -Math.sin(rp.h), nz = Math.cos(rp.h);
+          const lat = SR.f(150, 520) * wet;
+          add(rp.x + nx * lat, rp.z + nz * lat, rp.h + SR.f(-1.5, 1.5), SR.i(6, 15), 'withy', false);
+        }
+      }
+    }
+  }
+
+  /* ==================================================================
    *  wind fronts — spatial events armed by route distance
    * ================================================================== */
   const fronts = [];
@@ -844,14 +895,14 @@ function buildPlan(seedStr) {
       tOpen: +tOpen.toFixed(1), tWillow: +tWillow.toFixed(1), vOpen, vWillow,
     },
     beats, beatsWillow, beatFeatures,
-    channels, banks, islands, landmarks, furniture, fronts, clouds, wildlife, encounters, sound, ending,
+    channels, banks, islands, landmarks, furniture, stakes, fronts, clouds, wildlife, encounters, sound, ending,
   };
 
   // checksum covers structure only; nothing quality- or renderer-dependent may enter here
   plan.checksum = checksum32(canon({
     v: plan.version, seed: seedStr, weather, habitat, chapters, forkS: plan.forkS, rejoinS: plan.rejoinS,
     handed, causeway: CAUSEWAY, beats, beatsWillow, beatFeatures,
-    channels, banks, islands, landmarks, furniture, fronts, clouds,
+    channels, banks, islands, landmarks, furniture, stakes, fronts, clouds,
     wildlife, encounters, sound, ending,
     route: { lenOpen: plan.route.lenOpen, lenWillow: plan.route.lenWillow, tOpen: plan.route.tOpen, tWillow: plan.route.tWillow },
     geom: [pre, spine, armOpen, armWillow, post].map((p) => [p.n, +p.len.toFixed(2), +p.x[p.n - 1].toFixed(2), +p.z[p.n - 1].toFixed(2), +p.y[p.n - 1].toFixed(3)]),

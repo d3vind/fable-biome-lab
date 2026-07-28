@@ -26,6 +26,15 @@
   #inst .n{font-size:23px;font-weight:300;color:rgba(232,230,221,.82)}
   #inst .u{font-size:10px;color:rgba(232,230,221,.42);margin-left:3px;letter-spacing:.14em}
   #inst .r{margin-top:2px;font-size:11px;color:rgba(232,230,221,.40);letter-spacing:.1em}
+  #mute{position:absolute;right:20px;bottom:16px;pointer-events:auto;width:30px;height:30px;padding:0;border:0;background:none;
+        cursor:pointer;color:rgba(232,230,221,.34);transition:color .25s ease;-webkit-appearance:none;appearance:none}
+  #mute:hover,#mute:focus-visible{color:rgba(232,230,221,.78);outline:none}
+  #mute svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6;
+            stroke-linecap:round;stroke-linejoin:round}
+  #mute svg path:first-child{fill:currentColor;stroke-width:1.1}
+  #mute .off{display:none}
+  #mute.off .on{display:none}
+  #mute.off .off{display:inline}
   #chap{position:absolute;left:22px;top:22px;font-size:10.5px;letter-spacing:.30em;text-transform:uppercase;
         color:rgba(232,230,221,.34);transition:color 1.4s ease}
   #chap.on{color:rgba(232,230,221,.72)}
@@ -76,7 +85,10 @@
   <div id="chap"></div>
   <div id="inst"><div><span class="n" id="spd">0</span><span class="u">KM/H</span></div><div class="r" id="dst"></div></div>
   <div id="paused">paused</div>
-  <div id="keys">W accelerate &nbsp;·&nbsp; S brake &nbsp;·&nbsp; A / D steer &amp; choose the fork &nbsp;·&nbsp; drag to look &nbsp;·&nbsp; Space pause &nbsp;·&nbsp; R restart</div>
+  <div id="keys">W accelerate &nbsp;·&nbsp; S brake &nbsp;·&nbsp; A / D steer &amp; choose the fork &nbsp;·&nbsp; drag to look &nbsp;·&nbsp; Space pause &nbsp;·&nbsp; M sound &nbsp;·&nbsp; R restart</div>
+  <button id="mute" type="button" aria-pressed="false" title="sound on (M)" aria-label="toggle sound">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.6L12 5.4v13.2L7.6 14.5H4z"/><g class="on"><path d="M15.4 9.2a4 4 0 0 1 0 5.6"/><path d="M17.8 6.8a7.4 7.4 0 0 1 0 10.4"/></g><g class="off"><path d="M16 9.6l5 4.8"/><path d="M21 9.6l-5 4.8"/></g></svg>
+  </button>
 </div>
 
 <div id="boot"><div id="bootin">
@@ -986,6 +998,57 @@ function buildPlan(seedStr) {
   }
 
   /* ==================================================================
+   *  withy stakes and eel traps
+   *  Tidal reed country is worked country. Where the water stands, people put things in
+   *  it: lines of cut-willow stakes for traps and withy beds, staggered and half-rotten
+   *  and never straight. They earn their place three times over — something to pass close
+   *  to, a set of verticals to break a horizon that is otherwise one flat line, and a
+   *  reason to believe the open hand of the road is water rather than absence. So they go
+   *  only where a beat has actually released water, and never on the reed hand.
+   * ================================================================== */
+  const stakes = [];
+  {
+    const SR = new Rng(seedU, 'plan:stakes');
+    const add = (bx, bz, dir, n, kind, near) => {
+      const sp = SR.f(1.5, 2.9);
+      stakes.push({
+        x: +bx.toFixed(2), z: +bz.toFixed(2), rot: +dir.toFixed(4), n,
+        gap: +sp.toFixed(2), kind,
+        h: +SR.f(near ? 0.95 : 1.25, near ? 1.9 : 2.5).toFixed(2),
+        lean: +SR.f(0.05, 0.20).toFixed(3),
+        bow: +SR.f(-0.35, 0.35).toFixed(3),          // the line sags, it is not a ruler
+        wear: +SR.f(0.45, 1).toFixed(2), seed: SR.i(1, 1e6),
+        near: near ? 1 : 0,
+      });
+    };
+    for (const list of [beats, beatsWillow]) {
+      for (const b of list) {
+        const wet = b.digL > 0.5 ? 1 : (b.digR > 0.5 ? -1 : 0);
+        if (!wet) continue;
+        const span = b.s1 - b.s0;
+        // one worked line close enough to ride past, sometimes a second
+        const nLine = 1 + (SR.u() < 0.42 ? 1 : 0);
+        for (let i = 0; i < nLine; i++) {
+          const sg = b.s0 + span * SR.f(0.18, 0.86);
+          const rp = routePointAt(sg);
+          const nx = -Math.sin(rp.h), nz = Math.cos(rp.h);
+          const lat = SR.f(15, 62) * wet;
+          add(rp.x + nx * lat, rp.z + nz * lat, rp.h + SR.f(-1.3, 1.3),
+            SR.i(4, 11), SR.pick(['withy', 'withy', 'trap']), true);
+        }
+        // and one standing well out, for the skyline rather than for the verge
+        if (SR.u() < 0.62) {
+          const sg = b.s0 + span * SR.f(0.2, 0.8);
+          const rp = routePointAt(sg);
+          const nx = -Math.sin(rp.h), nz = Math.cos(rp.h);
+          const lat = SR.f(150, 520) * wet;
+          add(rp.x + nx * lat, rp.z + nz * lat, rp.h + SR.f(-1.5, 1.5), SR.i(6, 15), 'withy', false);
+        }
+      }
+    }
+  }
+
+  /* ==================================================================
    *  wind fronts — spatial events armed by route distance
    * ================================================================== */
   const fronts = [];
@@ -1121,14 +1184,14 @@ function buildPlan(seedStr) {
       tOpen: +tOpen.toFixed(1), tWillow: +tWillow.toFixed(1), vOpen, vWillow,
     },
     beats, beatsWillow, beatFeatures,
-    channels, banks, islands, landmarks, furniture, fronts, clouds, wildlife, encounters, sound, ending,
+    channels, banks, islands, landmarks, furniture, stakes, fronts, clouds, wildlife, encounters, sound, ending,
   };
 
   // checksum covers structure only; nothing quality- or renderer-dependent may enter here
   plan.checksum = checksum32(canon({
     v: plan.version, seed: seedStr, weather, habitat, chapters, forkS: plan.forkS, rejoinS: plan.rejoinS,
     handed, causeway: CAUSEWAY, beats, beatsWillow, beatFeatures,
-    channels, banks, islands, landmarks, furniture, fronts, clouds,
+    channels, banks, islands, landmarks, furniture, stakes, fronts, clouds,
     wildlife, encounters, sound, ending,
     route: { lenOpen: plan.route.lenOpen, lenWillow: plan.route.lenWillow, tOpen: plan.route.tOpen, tWillow: plan.route.tWillow },
     geom: [pre, spine, armOpen, armWillow, post].map((p) => [p.n, +p.len.toFixed(2), +p.x[p.n - 1].toFixed(2), +p.z[p.n - 1].toFixed(2), +p.y[p.n - 1].toFixed(3)]),
@@ -2209,7 +2272,20 @@ vec3 groundAlbedo(vec2 wp, float h, float reed, float wet, float dist, out float
   c = mix(c, reedCol * 0.60, reed * 0.66);                   // under a stand it is litter, not lawn
   c *= 0.86 + 0.22 * mix(0.5, fine, grain) + 0.30*(broad-0.5) + 0.14*(mid-0.5);
   c = mix(c, c * vec3(0.56,0.62,0.60), wet * 0.62);          // wet ground goes dark and cool
-  gloss = wet * (0.35 + 0.4*grain);
+
+  /* Tide wrack. A spring tide leaves its high-water mark behind as a broken line of dark
+     weed, reed litter and straw lying along the contour it reached, and in this country
+     that line is the single most-seen piece of close detail there is — it runs the whole
+     length of the ride, a couple of metres off the wheel. It is a band in height, not a
+     stripe in plan, so it climbs and falls with the ground and breaks wherever the wrack
+     did not gather. Costs nothing: no geometry, one noise lookup. */
+  float wrackH = 1.0 - smoothstep(0.0, 0.18, abs(h - 0.17));
+  float wrackN = fbm2(wp*0.62 + vec2(3.7, 11.9), 3);
+  float wrack = wrackH * smoothstep(0.42, 0.78, wrackN) * (0.55 + 0.45*fine);
+  vec3 wrackCol = mix(s2l(C_REED_D)*0.42, s2l(C_STRAW)*0.44, 0.30 + 0.45*mid);
+  c = mix(c, wrackCol, wrack * 0.62 * (0.35 + 0.65*grain));
+
+  gloss = wet * (0.35 + 0.4*grain) + wrack * 0.18;
   return c;
 }
 `;
@@ -3754,6 +3830,46 @@ function buildFurniture(f, F) {
   return { geo: g, tris: B.tris };
 }
 
+/* A worked line of withy stakes standing in the water: cut willow driven into the mud for
+   trap frames and withy beds. They are never a ruler — the line bows, the heights stagger,
+   a few have rotted down to stumps and one or two have fallen over entirely. Built as one
+   geometry per line so a whole worked bed is a single draw. */
+function buildStakes(c, F) {
+  const B = new Builder();
+  const dx = Math.cos(c.rot), dz = Math.sin(c.rot);
+  const px = -dz, pz = dx;
+  const half = (c.n - 1) * 0.5;
+  let tallest = 0;
+  for (let i = 0; i < c.n; i++) {
+    const u = i / Math.max(1, c.n - 1);
+    const h1 = ihashf(c.seed, i * 7 + 1, 91), h2 = ihashf(c.seed, i * 7 + 2, 91), h3 = ihashf(c.seed, i * 7 + 3, 91);
+    if (h1 < 0.07) continue;                                   // a gap where one was pulled
+    const along = (i - half) * c.gap + (h2 - 0.5) * c.gap * 0.5;
+    const sag = Math.sin(u * PI) * c.bow * c.gap * c.n * 0.16;  // the line bows off true
+    const x = dx * along + px * sag, z = dz * along + pz * sag;
+    const gy = F.marshH(c.x + x, c.z + z);
+    const rot = ihashf(c.seed, i * 7 + 4, 91) * TAU;
+    const fallen = h1 > 0.94;
+    let h = c.h * (0.55 + 0.75 * h3);
+    if (h1 > 0.80 && !fallen) h *= 0.42;                       // rotted down to a stump
+    const lean = c.lean * (0.4 + 1.6 * (h2 - 0.5)) + (fallen ? 1.15 : 0);
+    const M = M4().makeTranslation(x, gy - 0.35, z)
+      .multiply(M4().makeRotationY(rot))
+      .multiply(M4().makeRotationZ(lean));
+    B.cyl(M, 0.055 + 0.03 * h3, 0.042 + 0.02 * h3, h + 0.35, 5, MAT_TIMBER, c.wear, 0.9, 0.6 + i * 0.4, 3.1 + i);
+    if (!fallen) tallest = Math.max(tallest, gy + h);
+    // a trap line carries a withy hoop lashed between every other pair
+    if (c.kind === 'trap' && i > 0 && i % 2 === 1 && h1 < 0.8) {
+      const hy = gy + h * 0.62;
+      B.box(M4().makeTranslation(x - dx * c.gap * 0.5, hy, z - dz * c.gap * 0.5)
+        .multiply(M4().makeRotationY(-c.rot)), c.gap * 0.92, 0.035, 0.035, MAT_TIMBER, c.wear, 0.95, 1.3 + i);
+    }
+  }
+  const g = B.geometry();
+  g.translate(c.x, 0, c.z);
+  return { geo: g, tris: B.tris, top: tallest };
+}
+
 /* ------------------------------------------------------------------ *
  *  registry: builds on demand, keeps only what is near enough to matter
  * ------------------------------------------------------------------ */
@@ -3771,6 +3887,11 @@ class Landmarks {
     this.items = [];
     for (const l of plan.landmarks) if (l.kind !== 'orchard') this.items.push({ kind: l.kind, id: l.id, x: l.x, z: l.z, lm: l, r: l.kind === 'wheel' ? 900 : l.kind === 'sluices' ? 1100 : l.far ? 800 : 340 });
     for (const f of plan.furniture) this.items.push({ kind: 'furniture', id: 'f' + f.s + f.side, x: f.x, z: f.z, lm: f, r: 190 });
+    // stakes carry further than roadside furniture: a distant line is the point of them
+    for (let i = 0; i < (plan.stakes || []).length; i++) {
+      const c = plan.stakes[i];
+      this.items.push({ kind: 'stakes', id: 'k' + i, x: c.x, z: c.z, lm: c, r: c.near ? 300 : 620 });
+    }
   }
   _make(it) {
     const F = this.F;
@@ -3795,6 +3916,9 @@ class Landmarks {
       r = buildCulvert(it.lm, F);
       obj = new THREE.Mesh(r.geo, this.mat);
       obj.position.set(it.lm.x, 0, it.lm.z); obj.rotation.y = -it.lm.rot;
+    } else if (it.kind === 'stakes') {
+      r = buildStakes(it.lm, F);
+      obj = new THREE.Mesh(r.geo, this.mat);
     } else if (it.kind === 'gauge') {
       r = buildGauge(it.lm, F); obj = new THREE.Mesh(r.geo, this.mat);
       obj.position.set(it.lm.x, 0, it.lm.z); obj.rotation.y = it.lm.rot;
@@ -4280,6 +4404,7 @@ let SHARED_CTX = null;
 class Audio {
   constructor(plan) {
     this.plan = plan; this.ok = false; this.nodes = []; this.started = false;
+    this.muted = Audio.mutedPref();
     this.t = 0; this.nextInsect = 0; this.nextBird = 0; this.nextCreak = 0;
     this.gain = 0;
   }
@@ -4367,7 +4492,7 @@ class Audio {
         this.wheel = { g, g2, o, lp };
       }
       this.ok = true;
-      this.master.gain.setTargetAtTime(0.85, ctx.currentTime, 2.2);
+      this.master.gain.setTargetAtTime(this.muted ? 0.0001 : 0.85, ctx.currentTime, this.muted ? 0.05 : 2.2);
       return true;
     } catch (e) { this.ok = false; return false; }
   }
@@ -4457,7 +4582,22 @@ class Audio {
       if (Math.random() < 0.6) this._blip(1400 + Math.random() * 1800, 0.10 + Math.random() * 0.12, 'sine', 0.035, 1.6);
     }
   }
-  setMaster(v) { if (this.ok) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.3); }
+  setMaster(v) { if (this.ok && !this.muted) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.3); }
+
+  /* Mute is a gate on the master bus, not a teardown: the whole graph keeps running and
+     keeps tracking the wind, so unmuting drops you back into the sound the country is
+     making at that moment rather than restarting it from silence. The choice is
+     remembered, because someone who rides with the sound off wants it off next time. */
+  static mutedPref() {
+    try { return localStorage.getItem('reedwake:mute') === '1'; } catch (e) { return false; }
+  }
+  setMuted(v) {
+    this.muted = !!v;
+    try { localStorage.setItem('reedwake:mute', this.muted ? '1' : '0'); } catch (e) { }
+    if (this.ok) this.master.gain.setTargetAtTime(this.muted ? 0.0001 : 0.85, this.ctx.currentTime, 0.12);
+    return this.muted;
+  }
+  toggleMute() { return this.setMuted(!this.muted); }
   stop() {
     if (!this.ok) return;
     try {
@@ -4852,8 +4992,8 @@ class Rider {
       const p = this.plan;
       const guard = smoothstep(300, 720, Math.abs(this.s - p.forkS)) * smoothstep(140, 460, Math.abs(this.s - p.rejoinS));
       const open = clamp((b.digL - b.digR) * 1.2, -1, 1) * guard;
-      this.yawComp = approach(this.yawComp, open * 0.115, 0.5, dt);
-      this.laneComp = approach(this.laneComp, -open * 0.62, 0.45, dt);
+      this.yawComp = approach(this.yawComp, open * 0.185, 0.42, dt);
+      this.laneComp = approach(this.laneComp, -open * 0.95, 0.38, dt);
     }
     this.camLat = this.camLatBase(side, dt);
     this.y = surf + EYE + this.bob;
@@ -4913,6 +5053,7 @@ class Input {
       else if (k === 'd' || k === 'arrowright') this.keys.right = true;
       else if (k === ' ') { e.preventDefault(); onKey('pause'); }
       else if (k === 'r') onKey('restart');
+      else if (k === 'm') onKey('mute');
       else if (k === 'escape') onKey('escape');
       else return;
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
@@ -5129,11 +5270,19 @@ class Reedwake {
   onKey(k, a, b) {
     if (k === 'pause') { this.rider.paused = !this.rider.paused; $('paused').classList.toggle('on', this.rider.paused); }
     else if (k === 'restart') this.restart();
+    else if (k === 'mute') this.setMuted(!(this.audio && this.audio.muted));
     else if (k === 'escape') { this.rider.yawLook = 0; this.rider.pitchLook = 0; }
     else if (k === 'look') {
       this.rider.yawLook = clamp(this.rider.yawLook - a, -0.96, 0.96);
       this.rider.pitchLook = clamp(this.rider.pitchLook - b, -0.42, 0.50);
     }
+  }
+
+  setMuted(v) {
+    const on = this.audio ? this.audio.setMuted(v) : !!v;
+    const b = $('mute');
+    if (b) { b.classList.toggle('off', on); b.setAttribute('aria-pressed', String(on)); b.title = on ? 'sound off (M)' : 'sound on (M)'; }
+    return on;
   }
 
   /* ---------------- per-frame uniforms ---------------- */
@@ -5540,6 +5689,7 @@ class Reedwake {
     try {
       await app.boot(seed, quality, PARAMS.get('arm') || null);
       app.audio.start();
+      app.setMuted(app.audio.muted);          // reflect a remembered choice in the control
       $('boot').classList.add('gone');
       setTimeout(() => { $('boot').style.display = 'none'; }, 950);
     } catch (e) {
@@ -5549,6 +5699,8 @@ class Reedwake {
   };
   $('go').onclick = go;
   seedInput.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  $('mute').onclick = () => { app.setMuted(!(app.audio && app.audio.muted)); $('gl').focus(); };
+  if (Audio.mutedPref()) $('mute').classList.add('off');
 
   // read-only diagnostics
   Object.defineProperty(window, '__proof', { get: () => (app.running ? app.proof() : { ready: false, errors: app.errors.map((e) => e.msg) }) });

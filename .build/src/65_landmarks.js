@@ -413,6 +413,46 @@ function buildFurniture(f, F) {
   return { geo: g, tris: B.tris };
 }
 
+/* A worked line of withy stakes standing in the water: cut willow driven into the mud for
+   trap frames and withy beds. They are never a ruler — the line bows, the heights stagger,
+   a few have rotted down to stumps and one or two have fallen over entirely. Built as one
+   geometry per line so a whole worked bed is a single draw. */
+function buildStakes(c, F) {
+  const B = new Builder();
+  const dx = Math.cos(c.rot), dz = Math.sin(c.rot);
+  const px = -dz, pz = dx;
+  const half = (c.n - 1) * 0.5;
+  let tallest = 0;
+  for (let i = 0; i < c.n; i++) {
+    const u = i / Math.max(1, c.n - 1);
+    const h1 = ihashf(c.seed, i * 7 + 1, 91), h2 = ihashf(c.seed, i * 7 + 2, 91), h3 = ihashf(c.seed, i * 7 + 3, 91);
+    if (h1 < 0.07) continue;                                   // a gap where one was pulled
+    const along = (i - half) * c.gap + (h2 - 0.5) * c.gap * 0.5;
+    const sag = Math.sin(u * PI) * c.bow * c.gap * c.n * 0.16;  // the line bows off true
+    const x = dx * along + px * sag, z = dz * along + pz * sag;
+    const gy = F.marshH(c.x + x, c.z + z);
+    const rot = ihashf(c.seed, i * 7 + 4, 91) * TAU;
+    const fallen = h1 > 0.94;
+    let h = c.h * (0.55 + 0.75 * h3);
+    if (h1 > 0.80 && !fallen) h *= 0.42;                       // rotted down to a stump
+    const lean = c.lean * (0.4 + 1.6 * (h2 - 0.5)) + (fallen ? 1.15 : 0);
+    const M = M4().makeTranslation(x, gy - 0.35, z)
+      .multiply(M4().makeRotationY(rot))
+      .multiply(M4().makeRotationZ(lean));
+    B.cyl(M, 0.055 + 0.03 * h3, 0.042 + 0.02 * h3, h + 0.35, 5, MAT_TIMBER, c.wear, 0.9, 0.6 + i * 0.4, 3.1 + i);
+    if (!fallen) tallest = Math.max(tallest, gy + h);
+    // a trap line carries a withy hoop lashed between every other pair
+    if (c.kind === 'trap' && i > 0 && i % 2 === 1 && h1 < 0.8) {
+      const hy = gy + h * 0.62;
+      B.box(M4().makeTranslation(x - dx * c.gap * 0.5, hy, z - dz * c.gap * 0.5)
+        .multiply(M4().makeRotationY(-c.rot)), c.gap * 0.92, 0.035, 0.035, MAT_TIMBER, c.wear, 0.95, 1.3 + i);
+    }
+  }
+  const g = B.geometry();
+  g.translate(c.x, 0, c.z);
+  return { geo: g, tris: B.tris, top: tallest };
+}
+
 /* ------------------------------------------------------------------ *
  *  registry: builds on demand, keeps only what is near enough to matter
  * ------------------------------------------------------------------ */
@@ -430,6 +470,11 @@ class Landmarks {
     this.items = [];
     for (const l of plan.landmarks) if (l.kind !== 'orchard') this.items.push({ kind: l.kind, id: l.id, x: l.x, z: l.z, lm: l, r: l.kind === 'wheel' ? 900 : l.kind === 'sluices' ? 1100 : l.far ? 800 : 340 });
     for (const f of plan.furniture) this.items.push({ kind: 'furniture', id: 'f' + f.s + f.side, x: f.x, z: f.z, lm: f, r: 190 });
+    // stakes carry further than roadside furniture: a distant line is the point of them
+    for (let i = 0; i < (plan.stakes || []).length; i++) {
+      const c = plan.stakes[i];
+      this.items.push({ kind: 'stakes', id: 'k' + i, x: c.x, z: c.z, lm: c, r: c.near ? 300 : 620 });
+    }
   }
   _make(it) {
     const F = this.F;
@@ -454,6 +499,9 @@ class Landmarks {
       r = buildCulvert(it.lm, F);
       obj = new THREE.Mesh(r.geo, this.mat);
       obj.position.set(it.lm.x, 0, it.lm.z); obj.rotation.y = -it.lm.rot;
+    } else if (it.kind === 'stakes') {
+      r = buildStakes(it.lm, F);
+      obj = new THREE.Mesh(r.geo, this.mat);
     } else if (it.kind === 'gauge') {
       r = buildGauge(it.lm, F); obj = new THREE.Mesh(r.geo, this.mat);
       obj.position.set(it.lm.x, 0, it.lm.z); obj.rotation.y = it.lm.rot;

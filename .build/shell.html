@@ -26,6 +26,15 @@
   #inst .n{font-size:23px;font-weight:300;color:rgba(232,230,221,.82)}
   #inst .u{font-size:10px;color:rgba(232,230,221,.42);margin-left:3px;letter-spacing:.14em}
   #inst .r{margin-top:2px;font-size:11px;color:rgba(232,230,221,.40);letter-spacing:.1em}
+  #mute{position:absolute;right:20px;bottom:16px;pointer-events:auto;width:30px;height:30px;padding:0;border:0;background:none;
+        cursor:pointer;color:rgba(232,230,221,.34);transition:color .25s ease;-webkit-appearance:none;appearance:none}
+  #mute:hover,#mute:focus-visible{color:rgba(232,230,221,.78);outline:none}
+  #mute svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6;
+            stroke-linecap:round;stroke-linejoin:round}
+  #mute svg path:first-child{fill:currentColor;stroke-width:1.1}
+  #mute .off{display:none}
+  #mute.off .on{display:none}
+  #mute.off .off{display:inline}
   #chap{position:absolute;left:22px;top:22px;font-size:10.5px;letter-spacing:.30em;text-transform:uppercase;
         color:rgba(232,230,221,.34);transition:color 1.4s ease}
   #chap.on{color:rgba(232,230,221,.72)}
@@ -76,7 +85,10 @@
   <div id="chap"></div>
   <div id="inst"><div><span class="n" id="spd">0</span><span class="u">KM/H</span></div><div class="r" id="dst"></div></div>
   <div id="paused">paused</div>
-  <div id="keys">W accelerate &nbsp;·&nbsp; S brake &nbsp;·&nbsp; A / D steer &amp; choose the fork &nbsp;·&nbsp; drag to look &nbsp;·&nbsp; Space pause &nbsp;·&nbsp; R restart</div>
+  <div id="keys">W accelerate &nbsp;·&nbsp; S brake &nbsp;·&nbsp; A / D steer &amp; choose the fork &nbsp;·&nbsp; drag to look &nbsp;·&nbsp; Space pause &nbsp;·&nbsp; M sound &nbsp;·&nbsp; R restart</div>
+  <button id="mute" type="button" aria-pressed="false" title="sound on (M)" aria-label="toggle sound">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.6L12 5.4v13.2L7.6 14.5H4z"/><g class="on"><path d="M15.4 9.2a4 4 0 0 1 0 5.6"/><path d="M17.8 6.8a7.4 7.4 0 0 1 0 10.4"/></g><g class="off"><path d="M16 9.6l5 4.8"/><path d="M21 9.6l-5 4.8"/></g></svg>
+  </button>
 </div>
 
 <div id="boot"><div id="bootin">

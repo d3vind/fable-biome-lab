@@ -26,7 +26,20 @@ vec3 groundAlbedo(vec2 wp, float h, float reed, float wet, float dist, out float
   c = mix(c, reedCol * 0.60, reed * 0.66);                   // under a stand it is litter, not lawn
   c *= 0.86 + 0.22 * mix(0.5, fine, grain) + 0.30*(broad-0.5) + 0.14*(mid-0.5);
   c = mix(c, c * vec3(0.56,0.62,0.60), wet * 0.62);          // wet ground goes dark and cool
-  gloss = wet * (0.35 + 0.4*grain);
+
+  /* Tide wrack. A spring tide leaves its high-water mark behind as a broken line of dark
+     weed, reed litter and straw lying along the contour it reached, and in this country
+     that line is the single most-seen piece of close detail there is — it runs the whole
+     length of the ride, a couple of metres off the wheel. It is a band in height, not a
+     stripe in plan, so it climbs and falls with the ground and breaks wherever the wrack
+     did not gather. Costs nothing: no geometry, one noise lookup. */
+  float wrackH = 1.0 - smoothstep(0.0, 0.18, abs(h - 0.17));
+  float wrackN = fbm2(wp*0.62 + vec2(3.7, 11.9), 3);
+  float wrack = wrackH * smoothstep(0.42, 0.78, wrackN) * (0.55 + 0.45*fine);
+  vec3 wrackCol = mix(s2l(C_REED_D)*0.42, s2l(C_STRAW)*0.44, 0.30 + 0.45*mid);
+  c = mix(c, wrackCol, wrack * 0.62 * (0.35 + 0.65*grain));
+
+  gloss = wet * (0.35 + 0.4*grain) + wrack * 0.18;
   return c;
 }
 `;

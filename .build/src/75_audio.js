@@ -11,6 +11,7 @@ let SHARED_CTX = null;
 class Audio {
   constructor(plan) {
     this.plan = plan; this.ok = false; this.nodes = []; this.started = false;
+    this.muted = Audio.mutedPref();
     this.t = 0; this.nextInsect = 0; this.nextBird = 0; this.nextCreak = 0;
     this.gain = 0;
   }
@@ -98,7 +99,7 @@ class Audio {
         this.wheel = { g, g2, o, lp };
       }
       this.ok = true;
-      this.master.gain.setTargetAtTime(0.85, ctx.currentTime, 2.2);
+      this.master.gain.setTargetAtTime(this.muted ? 0.0001 : 0.85, ctx.currentTime, this.muted ? 0.05 : 2.2);
       return true;
     } catch (e) { this.ok = false; return false; }
   }
@@ -188,7 +189,22 @@ class Audio {
       if (Math.random() < 0.6) this._blip(1400 + Math.random() * 1800, 0.10 + Math.random() * 0.12, 'sine', 0.035, 1.6);
     }
   }
-  setMaster(v) { if (this.ok) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.3); }
+  setMaster(v) { if (this.ok && !this.muted) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.3); }
+
+  /* Mute is a gate on the master bus, not a teardown: the whole graph keeps running and
+     keeps tracking the wind, so unmuting drops you back into the sound the country is
+     making at that moment rather than restarting it from silence. The choice is
+     remembered, because someone who rides with the sound off wants it off next time. */
+  static mutedPref() {
+    try { return localStorage.getItem('reedwake:mute') === '1'; } catch (e) { return false; }
+  }
+  setMuted(v) {
+    this.muted = !!v;
+    try { localStorage.setItem('reedwake:mute', this.muted ? '1' : '0'); } catch (e) { }
+    if (this.ok) this.master.gain.setTargetAtTime(this.muted ? 0.0001 : 0.85, this.ctx.currentTime, 0.12);
+    return this.muted;
+  }
+  toggleMute() { return this.setMuted(!this.muted); }
   stop() {
     if (!this.ok) return;
     try {

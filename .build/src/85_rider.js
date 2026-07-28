@@ -141,8 +141,8 @@ class Rider {
       const p = this.plan;
       const guard = smoothstep(300, 720, Math.abs(this.s - p.forkS)) * smoothstep(140, 460, Math.abs(this.s - p.rejoinS));
       const open = clamp((b.digL - b.digR) * 1.2, -1, 1) * guard;
-      this.yawComp = approach(this.yawComp, open * 0.115, 0.5, dt);
-      this.laneComp = approach(this.laneComp, -open * 0.62, 0.45, dt);
+      this.yawComp = approach(this.yawComp, open * 0.185, 0.42, dt);
+      this.laneComp = approach(this.laneComp, -open * 0.95, 0.38, dt);
     }
     this.camLat = this.camLatBase(side, dt);
     this.y = surf + EYE + this.bob;
@@ -202,6 +202,7 @@ class Input {
       else if (k === 'd' || k === 'arrowright') this.keys.right = true;
       else if (k === ' ') { e.preventDefault(); onKey('pause'); }
       else if (k === 'r') onKey('restart');
+      else if (k === 'm') onKey('mute');
       else if (k === 'escape') onKey('escape');
       else return;
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
