@@ -239,7 +239,7 @@ const ROUTE = (() => {
   const eRng = stream('route:elev');
   const keys = [];
   const depths = [-34, -44 + eRng() * 4, -48 + eRng() * 4, -50 + eRng() * 4, -54 + eRng() * 5,
-                  -57 + eRng() * 4, -70 + eRng() * 6, -29 - eRng() * 4];
+                  -57 + eRng() * 4, -70 + eRng() * 6, -19 - eRng() * 3];
   keys.push({ s: 0, y: depths[0] });
   for (let i = 0; i < 6; i++) keys.push({ s: chapters[i].s1, y: depths[i + 1] });
   // extra deep point mid-abyss
@@ -391,10 +391,10 @@ function terrainNatural(s, d, wx, wz) {
     const beyond = (oR - 11) - d;                        // metres past right shoulder
     if (beyond > 0) y -= (20 + nS.fbm(s * 0.006, 3.1, 2) * 6) * smoothstep(0, 42, beyond) * e;
   }
-  // beyond the final overlook the city drops away
+  // beyond the final overlook the city drops into a dark basin
   if (s > L_TOTAL - 60) {
     const past = s - (L_TOTAL - 60);
-    y -= 30 * smoothstep(55, 220, past + ad * 0.4);
+    y -= 58 * smoothstep(55, 235, past + ad * 0.4);
   }
   // terraform flats
   const bl = TF_BUCKET.get(Math.floor(s / 120));
@@ -459,10 +459,15 @@ function structWorld(rec) {
   const CH = ROUTE.chapters;
 
   // --- poster anchors (always present; the rest of the world varies) ---
+  // left: a tall broken pair with an architrave stub, one shaft leaning
   addStruct({ t: 'col', s: 18, d: 12.6, rot: 0.3, sc: 1.18, ruin: 0.35, h: 9.2 });
-  addStruct({ t: 'col', s: 21.5, d: 15.4, rot: 0.9, sc: 1.1, ruin: 0.62, h: 6.4 });
+  addStruct({ t: 'col', s: 21.5, d: 15.4, rot: 0.9, sc: 1.1, ruin: 0.62, h: 6.4, lean: 0.14, leanDir: 2.1 });
+  addStruct({ t: 'entab', s: 19.7, d: 13.9, rot: 0.25, sc: 0.9, len: 3.4, h: 5.6 });
+  // right: lower, sparser — a single stump, a toppled drum, a half-buried pediment
   addStruct({ t: 'col', s: 31, d: -11.9, rot: -0.4, sc: 1.0, ruin: 0.5, h: 7.2 });
   addStruct({ t: 'drum', s: 26, d: -14.5, rot: 1.2, sc: 1.1 });
+  addStruct({ t: 'drum', s: 34, d: -13.2, rot: 2.4, sc: 0.85 });
+  addStruct({ t: 'ped', s: 39, d: -16.5, rot: 2.6, sc: 1.05, ruin: 0.75 });
   addStruct({ t: 'stair', s: 44, d: 17, rot: -0.2, sc: 1.2, ruin: 0.4 });
   addStruct({ t: 'col', s: 47, d: 13.2, rot: 1.7, sc: 1.05, ruin: 0.2, h: 10.5 });
   addStruct({ t: 'entab', s: 49.4, d: 13.2, rot: 0, sc: 1.05, len: 4.6, h: 10.5 });
@@ -523,7 +528,7 @@ function structWorld(rec) {
       const runLen = rr(A, 55, 130);
       const side = A() < 0.5 ? 1 : -1;
       const both = A() < 0.55;
-      const dBase = rr(A, 11.5, 14.5);
+      const dBase = rr(A, 11.4, 16.5);
       const gap = rr(A, 6.2, 8.5);
       const nCols = Math.floor(runLen / gap);
       const colH = rr(A, 8.5, 12);
@@ -540,10 +545,18 @@ function structWorld(rec) {
             prevIntact = false; continue;
           }
           const broken = st > 0.45 ? rr(R, 0.35, 0.8) : (st > 0.25 ? rr(R, 0.08, 0.3) : 0);
-          addStruct({ t: 'col', s: cs, d: dRow, rot: rr(A, 0, TAU), sc: rr(A, 0.95, 1.08), ruin: broken, h: colH });
-          const intact = broken < 0.06;
+          // some ruined shafts lean, always away from the road
+          const lean = (broken > 0.2 && R() < 0.4) ? rr(R, 0.06, 0.2) : 0;
+          addStruct({ t: 'col', s: cs, d: dRow, rot: rr(A, 0, TAU), sc: rr(A, 0.95, 1.08), ruin: broken, h: colH, lean, leanDir: sd > 0 ? 0 : Math.PI });
+          const intact = broken < 0.06 && lean === 0;
           if (intact && prevIntact) addStruct({ t: 'entab', s: (cs + prevS) / 2, d: dRow, rot: 0, sc: 1, len: gap, h: colH });
           prevIntact = intact; prevS = cs;
+        }
+        // an occasional wall fragment with a doorway closes the run
+        if (A() < 0.45) {
+          const wl = rr(A, 6, 10);
+          const wrec = { t: 'wall', s: s + runLen + rr(A, 4, 14), d: (dBase + rr(A, 4, 9)) * sd, rot: rr(A, -0.3, 0.3), sc: 1, ruin: rr(R, 0.3, 0.7), len: wl, h: rr(A, 3, 4.6), door: true };
+          if (clearOK(wrec.s, wrec.d, wl / 2 + 1.8)) addStruct(wrec);
         }
         // second row deeper out sometimes
         if (A() < 0.4) {
@@ -634,11 +647,12 @@ function structWorld(rec) {
     const c = CH[4];
     const as = (c.s0 + c.s1) / 2;
     const aSide = A() < 0.5 ? 1 : -1;
-    const ad = aSide * 33;
+    const ad = aSide * 32.5;
     const aR = 26 + A() * 6;
     routeAt(as, _rf3);
     const floorY = terrainNatural(as, ad, _rf3.x + _rf3.nx * ad, _rf3.z + _rf3.nz * ad) - 1.2;
-    addStruct({ t: 'amphi', s: as, d: ad, rot: (aSide > 0 ? 0 : Math.PI) - 0.52 * aSide, sc: 1, r: aR, side: aSide, ruin: R() * 0.5 });
+    // the bowl's mouth is angled toward the approaching rider (clearance-checked rotation)
+    addStruct({ t: 'amphi', s: as, d: ad, rot: (aSide > 0 ? 0 : Math.PI) - 0.38 * aSide, sc: 1, r: aR, side: aSide, ruin: R() * 0.5 });
     TERRAFORMS.push({ s: as, d: ad, r: aR + 16, y: floorY, blend: 0.95 });
     POI.amphi = { s: as, d: ad, r: aR, side: aSide, floorY };
     // approach plaza + fragments
@@ -651,6 +665,8 @@ function structWorld(rec) {
       frec.d = fd;
       if (clearOK(fs2, fd, marginFor(kind3, frec))) addStruct(frec);
     }
+    // the orchestra floor is a mosaic, laid over the performance disc
+    addStruct({ t: 'mosaic', s: as, d: ad, rot: 0, sc: 3.6, hOff: 0.14 });
     addStruct({ t: 'mosaic', s: as - 12, d: aSide * 14, rot: 0, sc: 2.2 });
   }
 
@@ -679,6 +695,17 @@ function structWorld(rec) {
       }
     }
     const ts = c.s1 - 235;
+    // successive thresholds of the luminous climb — each gate frames the next glimpse
+    addStruct({ t: 'gate', s: ts - 330, d: 0, rot: 0, sc: 1.05, ruin: 0.42 });
+    addStruct({ t: 'gate', s: ts - 150, d: 0, rot: 0, sc: 1.2, ruin: 0.1 });
+    // layered precinct walls stepping up toward the temple terrace
+    for (let i = 0; i < 4; i++) {
+      const ws2 = ts - 250 + i * 55 + rr(A, -8, 8);
+      const wl2 = rr(A, 8, 13);
+      const wd2 = (A() < 0.6 ? Math.sign(0.5) : -1) * rr(A, 16, 21) * (i % 2 === 0 ? 1 : -1);
+      const wrec2 = { t: 'wall', s: ws2, d: wd2, rot: rr(A, -0.15, 0.15), sc: 1, ruin: rr(R, 0.15, 0.5), len: wl2, h: rr(A, 2, 3.6) };
+      if (clearOK(ws2, wd2, wl2 / 2 + 1.8)) addStruct(wrec2);
+    }
     const tSide = A() < 0.5 ? 1 : -1;
     const td = tSide * 37;
     routeAt(ts, _rf3);
@@ -706,6 +733,8 @@ function structWorld(rec) {
     }
   }
   tfIndex();
+  const amphiRec = STRUCTS.find(r => r.t === 'amphi');
+  if (amphiRec) POI.amphi.wYaw = amphiRec.yaw;
 })();
 
 // ---------- skyline (the city beyond the corridor) ----------
@@ -714,7 +743,7 @@ const SKYLINE = (() => {
   const list = [];
   // the poster dome: monumental, ahead-left of the opening frame, safely below the surface
   routeAt(0, _rf3);
-  list.push({ x: _rf3.x + _rf3.tx * 620 + _rf3.nx * 58, z: _rf3.z + _rf3.tz * 620 + _rf3.nz * 58, t: 'dome', sc: 1.45, y: -76 });
+  list.push({ x: _rf3.x + _rf3.tx * 500 + _rf3.nx * 55, z: _rf3.z + _rf3.tz * 500 + _rf3.nz * 55, t: 'dome', sc: 1.32, y: -79, hero: true });
   list.push({ x: _rf3.x + _rf3.tx * 560 - _rf3.nx * 130, z: _rf3.z + _rf3.tz * 560 - _rf3.nz * 130, t: 'towers', sc: 1.3, y: -78 });
   for (let i = 0; i < 12; i++) {
     const s = rr(A, 400, L_TOTAL - 300);
@@ -727,13 +756,18 @@ const SKYLINE = (() => {
       sc: rr(A, 0.9, 1.7), y: -72 - A() * 24
     });
   }
-  // the vista city below the final overlook
+  // the vista city below the final overlook — the whole civilization, laid out at last
   routeAt(L_TOTAL, _rf3);
-  for (let i = 0; i < 7; i++) {
-    const ahead = rr(A, 190, 560), lat = rr(A, -380, 380);
+  const vistaTypes = ['dome', 'aquesil', 'amphisil', 'colsil', 'towers', 'ziggurat', 'dome', 'colsil', 'aquesil', 'towers', 'dome', 'wall', 'colsil', 'dome', 'aquesil', 'towers'];
+  for (let i = 0; i < 16; i++) {
+    const ahead = rr(A, 80, 360), lat = rr(A, -190, 190);
+    const sc = rr(A, 1.0, 2.1);
+    // rooftops clear the parapet sightline: tops just below eye, bases lost in the basin
+    const top = -20 - A() * 8;
+    const y = top - sc * 30 * 1.65;
     list.push({
       x: _rf3.x + _rf3.tx * ahead + _rf3.nx * lat, z: _rf3.z + _rf3.tz * ahead + _rf3.nz * lat,
-      t: rpick(A, ['dome', 'towers', 'ziggurat', 'wall']), sc: rr(A, 0.9, 1.4), y: -108 - A() * 30
+      t: vistaTypes[i], sc, y, hero: true
     });
   }
   return list;
@@ -762,9 +796,40 @@ const ECO = { kelp: [], coral: [], smalls: [], jellies: [] };
       }
     }
   }
-  // kelp distribution: the Kelp Gate dominates
+  // kelp distribution: the Kelp Gate closes in with true walls, then releases
   kelpCluster(CH[0].s0 + 8, CH[0].s1, 52);
-  kelpCluster(CH[1].s0, CH[1].s1, 330);
+  {
+    const c = CH[1];
+    const wallEnd = c.s1 - 90;                 // the release: open water before the exit gate
+    let ws = c.s0 + 30, sideTogl = E() < 0.5 ? 1 : -1;
+    while (ws < wallEnd - 70) {
+      const wallLen = rr(E, 44, 80);
+      const both = E() < 0.45;
+      for (const sd of (both ? [sideTogl, -sideTogl] : [sideTogl])) {
+        // a staggered double rank: packed near curtain + deeper backdrop
+        for (let rank = 0; rank < 2; rank++) {
+          const dBase = rank === 0 ? rr(E, 10.2, 12.8) : rr(E, 15, 22);
+          const n = Math.round(wallLen / (rank === 0 ? 1.35 : 2.2));
+          for (let i = 0; i < n; i++) {
+            const s = ws + (i / n) * wallLen + rr(E, -0.9, 0.9);
+            const d = sd * (dBase + rr(E, -1.4, 2.4));
+            if (!clearOK(s, d, 1.0)) continue;
+            ECO.kelp.push({ s, d, h: rank === 0 ? rr(E, 10.5, 15.5) : rr(E, 8, 13), ph: rr(E, 0, TAU), g: rr(E, 1.25, 1.9) });
+          }
+        }
+        // understory beneath the curtain
+        for (let i = 0; i < Math.round(wallLen / 2.6); i++) {
+          const s = ws + rr(E, 0, wallLen), d = sd * rr(E, 9.8, 13);
+          if (clearOK(s, d, 0.8)) ECO.kelp.push({ s, d, h: rr(E, 2, 4.5), ph: rr(E, 0, TAU), g: rr(E, 0.9, 1.3) });
+        }
+      }
+      ws += wallLen + rr(E, 14, 34);
+      sideTogl = -sideTogl;
+      if (E() < 0.3) sideTogl = E() < 0.5 ? 1 : -1;
+    }
+    // sparse strands drifting through the middle of the chapter
+    kelpCluster(c.s0, wallEnd, 90);
+  }
   kelpCluster(CH[2].s0, CH[2].s1, 70);
   kelpCluster(FORK.s0, FORK.s1, 80);
   kelpCluster(CH[4].s0, CH[4].s1, 48);
@@ -797,7 +862,9 @@ const ECO = { kelp: [], coral: [], smalls: [], jellies: [] };
     }
   }
   coralPatch(CH[0].s0, CH[0].s1, 70, FAMS, 0.5, 9.5, 34);
-  coralPatch(CH[1].s0, CH[1].s1, 120, ['fan', 'anem', 'branch'], 0.4, 10, 30);
+  // kelp gate floor: shell beds and anemones crowd the shoulders under the curtains
+  coralPatch(CH[1].s0, CH[1].s1 - 90, 150, ['shellbed', 'anem', 'anem', 'fan'], 0.35, 9.5, 16);
+  coralPatch(CH[1].s0, CH[1].s1, 60, ['fan', 'branch'], 0.4, 14, 30);
   coralPatch(CH[2].s0, CH[2].s1, 300, ['brain', 'tube', 'anem', 'branch'], 0.45, 9.5, 40);
   // fork left: ember garden quarter, hugging the garden arm
   coralPatch(FORK.s0, FORK.s1, 330, ['branch', 'branch', 'fan', 'brain'], 0.85, 9.5, 30, 'L');
@@ -856,8 +923,8 @@ const SCHOOLS = (() => {
   arr.push(mk('silver', 58, 0.4, 7.5, 5.5, wps0));
   // dark reef fish threading the column forest
   arr.push(mk('reef', 54, 0.42, 5.2, 7, loop(CH[2].s0 + 40, CH[2].s1 - 40, 8, 3.5, 12, 22)));
-  // ribbon fish over the kelp
-  arr.push(mk('ribbon', 52, 0.55, 4.2, 9, loop(CH[1].s0, CH[1].s1 + 200, 7, 8, 20, 30)));
+  // ribbon fish threading between the kelp walls, sometimes rising above them
+  arr.push(mk('ribbon', 52, 0.55, 4.2, 7, loop(CH[1].s0, CH[1].s1 + 200, 8, 4.5, 15, 18)));
   // luminous juveniles in the dark chapters
   arr.push(mk('lumen', 62, 0.22, 5.8, 6, loop(CH[5].s0 + 60, CH[5].s1 + 250, 8, 4, 16, 28)));
   // slow ceremonial school around the temple
@@ -878,6 +945,8 @@ const CREATURES = (() => {
   const rays = [];
   // guaranteed low crossing in ch2 (shadow moment)
   rays.push({ cs: CH[1].s0 + 130, cd: 0, rad: 42, h: 8.5, sp: rr(C, 0.05, 0.07), ph: rr(C, 0, TAU), sc: 1.5 });
+  // one ray owns the void above the amphitheater seats — scale for the bowl
+  rays.push({ cs: POI.amphi.s, cd: POI.amphi.d, rad: 24, h: 17, sp: rr(C, 0.04, 0.055), ph: rr(C, 0, TAU), sc: 1.7 });
   for (let i = 0; i < 12; i++) {
     rays.push({
       cs: rr(C, 200, L_TOTAL - 300), cd: rr(C, -30, 30), rad: rr(C, 30, 70),
@@ -885,7 +954,7 @@ const CREATURES = (() => {
     });
   }
   // giant passes: opening pass + one every 50–90 s
-  const passes = [{ t: 6.5, dur: 30, side: 1, dist: 300, dh: 30, dir: -1 }];
+  const passes = [{ t: 6.5, dur: 30, side: 1, dist: 258, dh: 24, dir: -1 }];
   let t0 = 55 + C() * 25;
   while (t0 < 1500) {
     passes.push({
@@ -993,7 +1062,7 @@ const U = {
   uFogSh:     { value: new THREE.Color() },  // shallow fog (toward surface)
   uFogDp:     { value: new THREE.Color() },  // deep fog
   uFogDen:    { value: 0.011 },
-  uAbsorb:    { value: new THREE.Vector3(0.052, 0.018, 0.010) },
+  uAbsorb:    { value: new THREE.Vector3(0.06, 0.02, 0.010) },
   uDim:       { value: 1 },            // giant-shadow dimmer
   uEventPos:  { value: new THREE.Vector3(0, -9999, 0) },   // impossible-current anchor
   uEventStr:  { value: 0 },
@@ -1213,9 +1282,10 @@ function mkRoadMaterial() {
 function mkTerrainMaterial() {
   return waterMat({
     name: 'terrain',
+    uniforms: { uEndS: { value: L_TOTAL } },
     vertexHead: `attribute vec2 aSD; attribute float aBed; varying vec2 vSD; varying float vBed;`,
     vertexTail: `vSD = aSD; vBed = aBed;`,
-    fragmentHead: `varying vec2 vSD; varying float vBed;`,
+    fragmentHead: `varying vec2 vSD; varying float vBed; uniform float uEndS;`,
     fragmentBody: /* glsl */`
       float slope = 1.0 - clamp(vNrm.y, 0.0, 1.0);
       float n1 = fbm2(vWp.xz*0.11);
@@ -1229,8 +1299,12 @@ function mkTerrainMaterial() {
       col = mix(col, uOlive*0.7, algae*0.5);
       // road-bed: rippled pale sediment beside the causeway
       float bed = 1.0-smoothstep(6.0, 14.0, vBed);
+      // the terminal terrace keeps its dignity — pale sediment recedes at the overlook
+      float endFade = smoothstep(uEndS-85.0, uEndS-18.0, vSD.x);
+      bed *= 1.0 - 0.72*endFade;
       float ripple = 0.5+0.5*sin(vSD.y*3.1 + fbm2(vWp.xz*0.4)*4.0);
       col = mix(col, mix(uPetrol,uMarble,0.38)*(0.85+ripple*0.2), bed*0.38);
+      col *= 1.0 - 0.24*endFade;
       // deep zones drown toward ink
       col = mix(col, uInk*1.2, smoothstep(-58.0,-95.0,vWp.y)*0.6);
       float li = sunLight(vNrm)*uSunI*uDim;
@@ -1277,29 +1351,41 @@ function mkMarbleMaterial() {
       float rim = pow(1.0-abs(dot(vd,vNrm)), 3.0)*0.22*(0.28+0.72*uSunI);
       col = col*(0.13 + 0.16*uSunI + li*0.95) + uTurq*rim + uGold*rim*0.4;
       col += uGold*0.5*causticAt(vWp, 0.36)*0.09*clamp(vNrm.y+0.4,0.0,1.0);
-      col = applyWater(col, vWp);
+      // monumental masses keep a whisper of silhouette inside the haze
+      float distM = length(vWp - uCamPos);
+      vec3 vdM = (vWp - uCamPos)/max(distM, 0.001);
+      col *= exp(-distM*uAbsorb);
+      float fM = 1.0 - exp(-distM*uFogDen*0.8);
+      vec3 fcM = fogColorAt(vWp, vdM)*mix(0.5, 1.18, clamp(vdM.y*0.5+0.5, 0.0, 1.0));
+      col = mix(col, fcM*0.96, min(fM, 0.93));
       gl_FragColor = vec4(col, 1.0);
     `,
   });
 }
 
 /* ---------- distant skyline silhouettes ---------- */
-const matSkyline = waterMat({
-  name: 'skyline',
-  fragmentBody: /* glsl */`
-    vec3 vd = normalize(vWp - uCamPos);
-    vec3 fc = fogColorAt(vWp, vd);
-    // match the background dome's vertical grading, then sit a shade darker
-    fc *= mix(0.55, 1.15, clamp(vd.y*0.5+0.5, 0.0, 1.0));
-    vec3 col = fc*0.67;
-    float dist = length(vWp-uCamPos);
-    // silhouettes fade slower than true fog — denser shapes inside the haze
-    float f = 1.0-exp(-dist*uFogDen*0.34);
-    col = mix(col, fc, min(f,0.90));
-    col += (h21(gl_FragCoord.xy)-0.5)*0.01;
-    gl_FragColor = vec4(col, 1.0);
-  `,
-});
+function mkSkylineMaterial(dk, fogMul, fCap) {
+  return waterMat({
+    name: 'skyline',
+    uniforms: { uDk: { value: dk }, uFogMul: { value: fogMul }, uFCap: { value: fCap } },
+    fragmentHead: `uniform float uDk, uFogMul, uFCap;`,
+    fragmentBody: /* glsl */`
+      vec3 vd = normalize(vWp - uCamPos);
+      vec3 fc = fogColorAt(vWp, vd);
+      // match the background dome's vertical grading, then sit a shade darker
+      fc *= mix(0.5, 1.18, clamp(vd.y*0.5+0.5, 0.0, 1.0));
+      vec3 col = fc*uDk;
+      float dist = length(vWp-uCamPos);
+      // silhouettes fade slower than true fog — denser shapes inside the haze
+      float f = 1.0-exp(-dist*uFogDen*uFogMul);
+      col = mix(col, fc, min(f,uFCap));
+      col += (h21(gl_FragCoord.xy)-0.5)*0.01;
+      gl_FragColor = vec4(col, 1.0);
+    `,
+  });
+}
+const matSkyline = mkSkylineMaterial(0.67, 0.34, 0.90);
+const matSkylineHero = mkSkylineMaterial(0.34, 0.10, 0.78);
 
 /* ---------- kelp ---------- */
 function mkKelpMaterial() {
@@ -1556,7 +1642,8 @@ const matGiant = waterMat({
   fragmentBody: /* glsl */`
     vec3 vd = normalize(vWp-uCamPos);
     float rim = pow(1.0-abs(dot(vd,vNrm)), 2.0);
-    vec3 col = uInk*1.35 + uPetrol*rim*0.85;
+    // when the photophores are lit, the surrounding mass becomes half-readable
+    vec3 col = uInk*1.35 + uPetrol*rim*(0.85 + uGlowAmt*1.1);
     float rows = step(0.86, sin(vUvv.y*44.0)) * step(0.4, sin(vZ*0.9));
     col = applyWater(col, vWp);
     // photophores pierce the fog the way lanterns do — added after absorption
@@ -1798,10 +1885,13 @@ function gColumn(h, sc, ruin, key) {
   const rBot = 0.52 * sc, rTop = 0.42 * sc;
   const cutT = ruin > 0.04 ? (1 - ruin * 0.82) : 1;
   const shaftH = h * cutT;
-  // plinth + base
-  parts.push(xf(box(rBot * 2.7, 0.42, rBot * 2.7, 0.92, 0.95, 0.95, 1.0), 0, 0.21, 0));
-  parts.push(xf(tag(new THREE.CylinderGeometry(rBot * 1.32, rBot * 1.42, 0.3, TESS.cyl), 0.95, 0.97, 0.96, 0.9), 0, 0.55, 0));
-  // shaft with flutes + entasis + fracture
+  // stepped plinth + torus / scotia / torus base moldings
+  parts.push(xf(box(rBot * 2.9, 0.3, rBot * 2.9, 0.9, 0.93, 0.93, 1.1), 0, 0.15, 0));
+  parts.push(xf(box(rBot * 2.5, 0.22, rBot * 2.5, 0.93, 0.96, 0.95, 1.0), 0, 0.41, 0));
+  parts.push(xf(tag(new THREE.CylinderGeometry(rBot * 1.38, rBot * 1.5, 0.2, TESS.cyl), 0.95, 0.97, 0.96, 0.95), 0, 0.6, 0));
+  parts.push(xf(tag(new THREE.CylinderGeometry(rBot * 1.22, rBot * 1.3, 0.16, TESS.cyl), 0.9, 0.93, 0.93, 0.85), 0, 0.78, 0));
+  parts.push(xf(tag(new THREE.CylinderGeometry(rBot * 1.3, rBot * 1.2, 0.16, TESS.cyl), 0.96, 0.98, 0.96, 0.8), 0, 0.93, 0));
+  // shaft with deep flutes + entasis + fracture
   const shaft = new THREE.CylinderGeometry(1, 1, shaftH, TESS.cyl, Math.max(3, Math.ceil(shaftH / 1.8)), false);
   const pos = shaft.attributes.position;
   for (let i = 0; i < pos.count; i++) {
@@ -1809,21 +1899,22 @@ function gColumn(h, sc, ruin, key) {
     const t = (y + shaftH / 2) / h;                       // 0..cutT of the full order
     const th = Math.atan2(z, x);
     let rad = lerp(rBot, rTop, t) * (1 + 0.045 * Math.sin(Math.PI * clamp(t * 1.15, 0, 1)));
-    rad *= 1 - 0.038 * (0.5 + 0.5 * Math.cos(th * 20));   // flutes
+    rad *= 1 - 0.062 * (0.5 + 0.5 * Math.cos(th * 18));   // flutes, deep enough to shade
     let yy = y;
     if (cutT < 1 && y > shaftH / 2 - 0.01) {              // fracture crown
-      yy += (R() - 0.5) * 0.5;
-      rad *= 0.82 + R() * 0.15;
+      yy += (R() - 0.5) * 0.6;
+      rad *= 0.78 + R() * 0.18;
     }
     const rl = Math.hypot(x, z) || 1;
     pos.setXYZ(i, x / rl * rad, yy, z / rl * rad);
   }
   shaft.computeVertexNormals();
-  parts.push(xf(tag(shaft, 1, 1, 1, 0.75), 0, 0.7 + shaftH / 2, 0));
-  // capital only if unbroken
+  parts.push(xf(tag(shaft, 1, 1, 1, 0.75), 0, 1.0 + shaftH / 2, 0));
+  // capital only if unbroken: necking ring, echinus, abacus
   if (cutT > 0.96) {
-    parts.push(xf(tag(new THREE.CylinderGeometry(rTop * 1.5, rTop * 1.02, 0.34, TESS.cyl), 1.02, 1.03, 1.0, 0.5), 0, 0.7 + shaftH + 0.17, 0));
-    parts.push(xf(box(rTop * 3.3, 0.3, rTop * 3.3, 1.03, 1.04, 1.01, 0.45), 0, 0.7 + shaftH + 0.5, 0));
+    parts.push(xf(tag(new THREE.CylinderGeometry(rTop * 1.08, rTop * 1.0, 0.12, TESS.cyl), 0.97, 0.99, 0.97, 0.5), 0, 1.0 + shaftH + 0.06, 0));
+    parts.push(xf(tag(new THREE.CylinderGeometry(rTop * 1.5, rTop * 1.05, 0.3, TESS.cyl), 1.02, 1.03, 1.0, 0.5), 0, 1.0 + shaftH + 0.27, 0));
+    parts.push(xf(box(rTop * 3.3, 0.28, rTop * 3.3, 1.03, 1.04, 1.01, 0.45), 0, 1.0 + shaftH + 0.56, 0));
   }
   return parts;
 }
@@ -1886,8 +1977,8 @@ function gStylo(w, l, tiers) {
   return parts;
 }
 
-// ---- ruined wall with jagged crown ----
-function gWall(len, h, ruin, key) {
+// ---- ruined wall with jagged crown; optionally pierced by a doorway ----
+function gWallSeg(len, h, ruin, key) {
   const R = geoRng(key);
   const wall = new THREE.BoxGeometry(0.75, h, len, 1, 2, Math.max(2, Math.round(len / 2)));
   const pos = wall.attributes.position;
@@ -1897,7 +1988,19 @@ function gWall(len, h, ruin, key) {
     }
   }
   wall.computeVertexNormals();
-  return [xf(tag(wall, 0.9, 0.93, 0.9, 1.0), 0, h * 0.42, 0)];
+  return xf(tag(wall, 0.9, 0.93, 0.9, 1.0), 0, h * 0.42, 0);
+}
+function gWall(len, h, ruin, key, door) {
+  if (!door || len < 5.5) return [gWallSeg(len, h, ruin, key)];
+  const dw = 1.5, segL = (len - dw) / 2;
+  const parts = [
+    xf(gWallSeg(segL, h, ruin, key + 'a'), 0, 0, -(dw + segL) / 2),
+    xf(gWallSeg(segL, h, ruin * 1.2, key + 'b'), 0, 0, (dw + segL) / 2),
+  ];
+  // lintel + threshold sill make the opening read as a doorway, not a gap
+  if (ruin < 0.6) parts.push(xf(box(0.95, 0.45, dw + 1.1, 1.02, 1.04, 1.01, 0.5), 0, Math.min(h * 0.8, 2.6), 0));
+  parts.push(xf(box(0.95, 0.18, dw + 0.5, 0.88, 0.9, 0.88, 0.9), 0, 0.09, 0));
+  return parts;
 }
 
 // ---- house shell (residential quarter) ----
@@ -2060,7 +2163,7 @@ function gCourt(sc, ruin, key) {
 function gAmphi(rec) {
   const R = geoRng('amphi');
   const parts = [];
-  const r0 = 7.5, tiers = 10, rise = 0.72, depth = 1.55;
+  const r0 = 8, tiers = 12, rise = 0.7, depth = 1.55;
   const arcA = -Math.PI * 0.62, arcB = Math.PI * 0.62;      // opening faces the road
   for (let t = 0; t < tiers; t++) {
     const r = r0 + t * depth;
@@ -2069,24 +2172,32 @@ function gAmphi(rec) {
       const a = lerp(arcA, arcB, i / (segN - 1));
       if (R() < rec.ruin * 0.35) continue;                   // missing seat blocks
       const segLen = (arcB - arcA) * r / segN * 1.02;
-      parts.push(xf(box(depth * 0.96, 0.62, segLen, 0.9 + 0.06 * (t % 2), 0.94, 0.92, 1.0 - t * 0.05),
+      parts.push(xf(box(depth * 0.96, 0.62, segLen, 0.76 + 0.05 * (t % 2), 0.82, 0.81, 1.0 - t * 0.05),
         Math.cos(a) * r, 1.2 + t * rise, Math.sin(a) * r, 0, -a, 0));
     }
-    // aisle stairs every quarter
-    if (t < tiers - 1) for (const aa of [-0.9, 0, 0.9]) {
-      parts.push(xf(box(depth * 1.1, 0.3, 1.1, 1.0, 1.02, 1.0, 0.5),
+    // radial aisle stairs, brighter than the seats so the bowl reads its spokes
+    if (t < tiers - 1) for (const aa of [-1.35, -0.65, 0, 0.65, 1.35]) {
+      parts.push(xf(box(depth * 1.1, 0.34, 1.1, 1.12, 1.13, 1.08, 0.35),
         Math.cos(aa) * (r + depth / 2), 1.0 + t * rise + rise / 2, Math.sin(aa) * (r + depth / 2), 0, -aa, 0));
     }
   }
+  // scaenae: a low broken stage wall closing the mouth chord, pierced at its center
+  for (const sd of [1, -1]) {
+    const swl = r0 * 0.85;
+    const sw = gWallSeg(swl, 2.3, 0.55, 'scaenae' + sd);
+    parts.push(xf(sw, -r0 - 2.2, 0.3, sd * (swl / 2 + 1.3)));
+  }
+  parts.push(...gStatue(0.85, 0.4, 'scanst1').map(g => xf(g, -r0 - 2.6, 0.3, r0 * 0.95)));
+  parts.push(...gStatue(0.8, 0.6, 'scanst2').map(g => xf(g, -r0 - 2.6, 0.3, -r0 * 0.95, 0, 1.2, 0)));
   // retaining wall behind the top tier + buttresses
   const rw = r0 + tiers * depth + 0.6;
   const wallN = Math.max(14, Math.round(rw * 0.5 * TESS.seg));
   for (let i = 0; i < wallN; i++) {
     const a = lerp(arcA, arcB, i / (wallN - 1));
     if (R() < rec.ruin * 0.3) continue;
-    parts.push(xf(box(1.1, 4.2 + tiers * rise * 0.2, (arcB - arcA) * rw / wallN * 1.05, 0.85, 0.9, 0.9, 1.1),
+    parts.push(xf(box(1.1, 4.2 + tiers * rise * 0.2, (arcB - arcA) * rw / wallN * 1.05, 0.7, 0.76, 0.77, 1.1),
       Math.cos(a) * rw, 2 + tiers * rise, Math.sin(a) * rw, 0, -a, 0));
-    if (i % 4 === 0) parts.push(xf(box(1.8, 3.2, 1.4, 0.82, 0.87, 0.87, 1.2),
+    if (i % 4 === 0) parts.push(xf(box(1.8, 3.2, 1.4, 0.66, 0.72, 0.73, 1.2),
       Math.cos(a) * (rw + 1.2), 1.6 + tiers * rise * 0.9, Math.sin(a) * (rw + 1.2), 0, -a, 0));
   }
   // two vomitorium entrances through the seating
@@ -2096,7 +2207,7 @@ function gAmphi(rec) {
       xf(g, Math.cos(aa) * rMid, 1 + tiers * rise * 0.4, Math.sin(aa) * rMid, 0, -aa + Math.PI / 2, 0)));
   }
   // performance floor
-  parts.push(xf(tag(new THREE.CylinderGeometry(r0 - 0.5, r0 - 0.5, 0.3, Math.max(18, TESS.cyl * 2)), 0.88, 0.92, 0.9, 0.7, false), 0, 0.15, 0));
+  parts.push(xf(tag(new THREE.CylinderGeometry(r0 - 0.5, r0 - 0.5, 0.3, Math.max(18, TESS.cyl * 2)), 0.72, 0.78, 0.77, 0.7, false), 0, 0.15, 0));
   // statuary fragments among the seats
   for (let i = 0; i < 4; i++) {
     const a = rr(R, arcA, arcB), rr3 = r0 + rr(R, 2, tiers * depth - 2);
@@ -2173,15 +2284,29 @@ function gAqueductChunk(rec, sA, sB, chunkOrigin) {
       mk(xf(tag(rub, 0.78, 0.83, 0.84, 1.3, false), rr(rM, -1, 1), 0.3, rr(rM, -2, 2)));
       continue;
     }
+    // pier with a spread footing that carries weight into the sea floor
+    mk(xf(box(2.4, 1.1, 2.4, 0.8, 0.85, 0.85, 1.3), 0, 0.5, -modL / 2));
     mk(xf(box(1.6, pierH, 1.6, 0.86, 0.9, 0.9, 1.1), 0, pierH / 2, -modL / 2));
-    // arch between piers
+    mk(xf(box(2.0, 0.4, 2.0, 0.92, 0.95, 0.93, 0.8), 0, pierH - 1.6, -modL / 2));   // impost band
+    // arch between piers, with an inner archivolt ring for a layered profile
     for (const g of gVoussoirArch(modL / 2 - 0.9, pierH - 2.4, 1.35, 0.62, 'aq' + i)) {
       g.rotateY(Math.PI / 2);
       mk(xf(g, 0, 0, 0));
     }
-    // channel
+    for (const g of gVoussoirArch(modL / 2 - 1.55, pierH - 2.4, 0.8, 0.45, 'aq2' + i)) {
+      g.rotateY(Math.PI / 2);
+      mk(xf(g, 0, -0.15, 0));
+    }
+    // channel + parapet, broken in stretches
     mk(xf(box(2.2, 0.5, modL + 0.2, 0.9, 0.94, 0.92, 0.9), 0, pierH + 0.25, 0));
-    for (const sd of [1, -1]) mk(xf(box(0.4, 0.8, modL + 0.2, 0.92, 0.95, 0.93, 0.85), sd * 0.95, pierH + 0.85, 0));
+    for (const sd of [1, -1]) {
+      if (rM() < 0.75) mk(xf(box(0.4, 0.8, modL * rr(rM, 0.5, 1.0), 0.92, 0.95, 0.93, 0.85), sd * 0.95, pierH + 0.85, rr(rM, -1.5, 1.5)));
+    }
+    // a maintenance landing juts from every fourth pier
+    if (i % 4 === 0) {
+      mk(xf(box(3.6, 0.4, 2.6, 0.88, 0.92, 0.9, 0.9), 0, pierH - 0.1, -modL / 2));
+      mk(xf(box(0.3, 1.0, 2.4, 0.9, 0.93, 0.91, 0.8), 1.7, pierH + 0.5, -modL / 2));
+    }
   }
   return parts;
 }
@@ -2213,20 +2338,36 @@ function gTemple(rec) {
   for (const sd of [1, -1]) parts.push(xf(box(1.0, 6.6, 0.7, 1.02, 1.04, 1.0, 0.35), cw / 2 + 0.3, 4.3, sd * 2.35));
   // pediment over the door face
   parts.push(...gPed(1.6, rec.ruin * 0.4, 'tped').map(g => xf(g, cw / 2 + 0.2, ch2 + 1.6, 0, 0, Math.PI / 2, 0)));
-  // dome on drum above the cella, one collapse gap
-  const dr = cw * 0.52, drumH = 3.2, domeY = 1.2 + ch2 + drumH;
-  parts.push(xf(tag(new THREE.CylinderGeometry(dr, dr * 1.03, drumH, TESS.cyl * 2, 1, true), 0.9, 0.94, 0.92, 0.7), 0, 1.2 + ch2 + drumH / 2, 0));
+  // dome on a tall windowed drum above the cella — the skyline of the whole last chapter
+  const dr = cw * 0.6, drumH = 4.6, domeY = 1.2 + ch2 + drumH;
+  parts.push(xf(tag(new THREE.CylinderGeometry(dr, dr * 1.04, drumH, TESS.cyl * 2, 1, true), 0.9, 0.94, 0.92, 0.7), 0, 1.2 + ch2 + drumH / 2, 0));
+  // drum windows: dark recesses between paired mullions
+  const winN2 = 10;
+  for (let i = 0; i < winN2; i++) {
+    const a = i / winN2 * TAU;
+    parts.push(xf(box(1.3, 2.4, 0.5, 0.42, 0.5, 0.56, 0.15),
+      Math.cos(a) * (dr - 0.12), 1.2 + ch2 + drumH * 0.52, Math.sin(a) * (dr - 0.12), 0, -a + Math.PI / 2, 0));
+    parts.push(xf(box(0.28, 2.6, 0.62, 1.0, 1.02, 1.0, 0.25),
+      Math.cos(a + 0.16) * (dr - 0.05), 1.2 + ch2 + drumH * 0.52, Math.sin(a + 0.16) * (dr - 0.05), 0, -(a + 0.16) + Math.PI / 2, 0));
+  }
+  // buttresses shouldering the drum
+  for (let i = 0; i < 8; i++) {
+    const a = (i + 0.5) / 8 * TAU;
+    parts.push(xf(box(1.5, 3.4, 2.6, 0.86, 0.9, 0.89, 0.8),
+      Math.cos(a) * (dr + 0.9), 1.2 + ch2 + 1.4, Math.sin(a) * (dr + 0.9), 0, -a, 0));
+  }
   const dome = new THREE.SphereGeometry(dr, TESS.sph * 2, TESS.sph, Math.PI * 0.22, Math.PI * 1.78, 0, Math.PI * 0.5);
   parts.push(xf(tag(dome, 0.93, 0.96, 0.94, 0.55), 0, domeY, 0));
-  for (let i = 0; i < 9; i++) {
-    const a = Math.PI * 0.22 + (i / 8) * Math.PI * 1.78;
-    const rib = new THREE.TorusGeometry(dr * 1.01, 0.15, 6, TESS.cyl, Math.PI * 0.48);
+  for (let i = 0; i < 11; i++) {
+    const a = Math.PI * 0.22 + (i / 10) * Math.PI * 1.78;
+    const rib = new THREE.TorusGeometry(dr * 1.01, 0.17, 6, TESS.cyl, Math.PI * 0.48);
     rib.rotateZ(Math.PI / 2); rib.rotateX(-Math.PI / 2); rib.rotateY(a + Math.PI / 2);
     parts.push(xf(tag(rib, 0.97, 0.99, 0.97, 0.4), 0, domeY, 0));
   }
   // lantern
   if (rec.ruin < 0.5) {
-    parts.push(xf(tag(new THREE.CylinderGeometry(1.3, 1.5, 1.8, 8), 0.95, 0.97, 0.95, 0.3), 0, domeY + dr * 0.98, 0));
+    parts.push(xf(tag(new THREE.CylinderGeometry(1.3, 1.5, 2.0, 8), 0.95, 0.97, 0.95, 0.3), 0, domeY + dr * 0.97, 0));
+    parts.push(xf(tag(new THREE.SphereGeometry(0.9, 8, 6, 0, TAU, 0, Math.PI * 0.55), 0.97, 0.99, 0.96, 0.25), 0, domeY + dr * 0.97 + 1.2, 0));
   }
   // grand stair down toward the road
   parts.push(...gStair(2.6, rec.ruin * 0.5, 'tstair').map(g => xf(g, cw / 2 + 6, 0.4, 0, 0, -Math.PI / 2, 0)));
@@ -2270,7 +2411,7 @@ function gOverlook(rec) {
   const parts = [];
   const R = geoRng('overlook');
   // widened terminal plaza
-  parts.push(xf(tag(new THREE.CylinderGeometry(13, 13.6, 0.6, 24, 1), 0.55, 0.6, 0.62, 0.4, false), 0, -0.28, 6));
+  parts.push(xf(tag(new THREE.CylinderGeometry(13, 13.6, 0.6, 24, 1), 0.4, 0.46, 0.5, 0.4, false), 0, -0.28, 6));
   // balustrade arc beyond the route end
   const rB = 12.2;
   for (let i = 0; i < 17; i++) {
@@ -2297,10 +2438,10 @@ function realizeStruct(rec) {
   const key = rec.t + ':' + rec.s.toFixed(1) + ':' + rec.d.toFixed(1);
   switch (rec.t) {
     case 'col': return gColumn(rec.h || 8, rec.sc, rec.ruin || 0, key);
-    case 'entab': return gEntab(rec.len || 6, rec.sc, (rec.h || 8) + 0.68);
+    case 'entab': return gEntab(rec.len || 6, rec.sc, (rec.h || 8) + 1.05);
     case 'drum': return gDrum(rec.sc, key);
     case 'stair': return gStair(rec.sc, rec.ruin || 0.3, key);
-    case 'wall': case 'gardenwall': return gWall(rec.len || 8, rec.h || 2.5, rec.ruin || 0.5, key);
+    case 'wall': case 'gardenwall': return gWall(rec.len || 8, rec.h || 2.5, rec.ruin || 0.5, key, rec.door);
     case 'house': return gHouse(rec.sc, rec.ruin || 0.5, key);
     case 'gate': return gGate(rec.sc, rec.ruin || 0.2, key);
     case 'ped': return gPed(rec.sc, rec.ruin || 0.4, key);
@@ -2713,12 +2854,18 @@ function buildArchitecture(ci) {
       const q = new THREE.PlaneGeometry(3.2 * rec.sc, 3.2 * rec.sc, 1, 1);
       q.rotateX(-Math.PI / 2);
       q.rotateY(rec.yaw);
-      xf(q, rec.x, rec.gy + 0.06, rec.z);
+      xf(q, rec.x, rec.gy + (rec.hOff || 0.06), rec.z);
       mosaics.push(q);
       continue;
     }
     const geos = realizeStruct(rec);
     for (const g of geos) {
+      if (rec.lean) {
+        // tilt from the base, in the planned direction
+        g.rotateY(-(rec.leanDir || 0));
+        g.rotateZ(rec.lean);
+        g.rotateY(rec.leanDir || 0);
+      }
       xf(g, 0, 0, 0, 0, rec.yaw, 0);
       // rotate about origin THEN translate to world anchor
       g.translate(rec.x, rec.gy - 0.25, rec.z);
@@ -2886,11 +3033,35 @@ scene.add(surfacePlane);
 
 /* ---------- skyline silhouettes ---------- */
 (function buildSkyline() {
-  const parts = [];
+  const partsNormal = [], partsHero = [];
+  let parts = partsNormal;
   const add = (g, x, y, z, ry = 0) => { xf(g, x, y, z, 0, ry, 0); parts.push(g); };
   for (const rec of SKYLINE) {
+    parts = rec.hero ? partsHero : partsNormal;
     const S = rec.sc * 30;
-    if (rec.t === 'dome') {
+    if (rec.t === 'aquesil') {
+      // a drowned aqueduct arcade on the horizon
+      const nP = 7, span = S * 0.55;
+      for (let i = 0; i < nP; i++) {
+        add(new THREE.BoxGeometry(S * 0.14, S * 0.8, S * 0.14), rec.x + (i - nP / 2) * span, rec.y + S * 0.4, rec.z + (i - nP / 2) * span * 0.22, 0.5);
+      }
+      const lin = new THREE.BoxGeometry(nP * span * 1.02, S * 0.16, S * 0.2);
+      add(lin, rec.x, rec.y + S * 0.85, rec.z, -0.216);
+    } else if (rec.t === 'amphisil') {
+      // a stepped bowl, read as stacked arcs
+      for (let t = 0; t < 3; t++) {
+        const arc = new THREE.TorusGeometry(S * (0.5 + t * 0.22), S * 0.075, 6, 18, Math.PI * 1.15);
+        arc.rotateX(Math.PI / 2);
+        add(arc, rec.x, rec.y + S * (0.18 + t * 0.16), rec.z, rec.sc * 3.1);
+      }
+    } else if (rec.t === 'colsil') {
+      // a colonnade row with its architrave still riding the columns
+      const nC = 6, span = S * 0.34;
+      for (let i = 0; i < nC; i++) {
+        add(new THREE.CylinderGeometry(S * 0.05, S * 0.06, S * 0.62, 8), rec.x + (i - nC / 2) * span, rec.y + S * 0.31, rec.z + (i - nC / 2) * span * -0.3, 0);
+      }
+      add(new THREE.BoxGeometry(nC * span * 1.05, S * 0.09, S * 0.16), rec.x, rec.y + S * 0.66, rec.z, 0.29);
+    } else if (rec.t === 'dome') {
       const drum = new THREE.CylinderGeometry(S * 0.85, S * 0.92, S * 0.8, 18, 1);
       add(drum, rec.x, rec.y + S * 0.4, rec.z);
       const dome = new THREE.SphereGeometry(S * 0.85, 18, 10, 0, TAU, 0, Math.PI * 0.5);
@@ -2918,11 +3089,88 @@ scene.add(surfacePlane);
     }
   }
   // ensure attribute compatibility for merge (position/normal/uv only)
-  const merged = mergeGeometries(parts);
-  parts.forEach(g => g.dispose());
-  const mesh = new THREE.Mesh(merged, matSkyline);
-  mesh.frustumCulled = false;    // huge and cheap; fog does the culling
-  scene.add(mesh);
+  if (partsNormal.length) {
+    const merged = mergeGeometries(partsNormal);
+    partsNormal.forEach(g => g.dispose());
+    const mesh = new THREE.Mesh(merged, matSkyline);
+    mesh.frustumCulled = false;    // huge and cheap; fog does the culling
+    scene.add(mesh);
+  }
+  if (partsHero.length) {
+    const merged = mergeGeometries(partsHero);
+    partsHero.forEach(g => g.dispose());
+    const mesh = new THREE.Mesh(merged, matSkylineHero);
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+  }
+})();
+
+/* ---------- temple promise: a silhouette proxy that carries the dome across the fog ----------
+   It sits just inside the realized temple, so nearby chunks occlude it seamlessly. */
+(function buildTempleProxy() {
+  const trec = STRUCTS.find(r => r.t === 'temple');
+  if (!trec) return;
+  const cw = 16.1, dr = cw * 0.6 * 0.96, drumH = 4.6, ch2 = 8;
+  const baseY = trec.gy - 0.25;
+  const gs = [];
+  const cella = new THREE.BoxGeometry(cw * 0.94, ch2, 26.4 * 0.94);
+  xf(cella, 0, 1.2 + ch2 / 2, 0); gs.push(cella);
+  const drum = new THREE.CylinderGeometry(dr, dr * 1.03, drumH, 16, 1);
+  xf(drum, 0, 1.2 + ch2 + drumH / 2, 0); gs.push(drum);
+  const dome = new THREE.SphereGeometry(dr, 16, 9, 0, TAU, 0, Math.PI * 0.5);
+  xf(dome, 0, 1.2 + ch2 + drumH, 0); gs.push(dome);
+  const lant = new THREE.CylinderGeometry(1.2, 1.4, 2.0, 8);
+  xf(lant, 0, 1.2 + ch2 + drumH + dr * 0.97, 0); gs.push(lant);
+  const merged = mergeGeometries(gs);
+  gs.forEach(g => g.dispose());
+  const m = new THREE.Mesh(merged, matSkylineHero);
+  m.position.set(trec.x, baseY, trec.z);
+  m.rotation.y = trec.yaw;
+  scene.add(m);
+})();
+
+/* ---------- faint lights of the drowned capital, seen from the overlook ---------- */
+(function buildVistaLights() {
+  const V = stream('atmosphere:vista');
+  const spots = SKYLINE.filter(r => r.hero);
+  if (!spots.length) return;
+  const N = [90, 130, 170][QF];
+  const pos = new Float32Array(N * 3), seed = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const r = rpick(V, spots);
+    const S = r.sc * 30;
+    pos[i * 3] = r.x + rr(V, -S, S);
+    pos[i * 3 + 1] = r.y + rr(V, S * 1.05, S * 1.72);   // windows near the roofs, above the slope line
+    pos[i * 3 + 2] = r.z + rr(V, -S, S);
+    seed[i] = V();
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+  const mat = waterMat({
+    name: 'vistalights',
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexHead: `attribute float aSeed; varying float vS;`,
+    vertexWorld: /* glsl */`
+      vS = aSeed;
+      float dist = length(wp4.xyz - uCamPos);
+      gl_PointSize = clamp((2.2+aSeed*2.8) * (340.0/max(dist,10.0)), 1.4, 6.0);
+    `,
+    fragmentHead: `varying float vS;`,
+    fragmentBody: /* glsl */`
+      vec2 pc = gl_PointCoord*2.0-1.0;
+      float m = pow(max(0.0, 1.0-length(pc)), 2.0);
+      float tw = 0.4+0.6*(0.5+0.5*sin(uTime*(0.3+vS*0.9)+vS*47.0));
+      vec3 col = mix(uGold, uEmber, step(0.72, fract(vS*3.3)));
+      float dist = length(vWp-uCamPos);
+      float fade = exp(-dist*0.0025);
+      gl_FragColor = vec4(col*m*tw*fade*0.85, m*tw*fade*0.85);
+    `,
+  });
+  const pts = new THREE.Points(g, mat);
+  pts.frustumCulled = false;
+  pts.renderOrder = 5;
+  scene.add(pts);
 })();
 
 /* ---------- marine snow ---------- */
@@ -2947,7 +3195,11 @@ const snow = (() => {
 const BEAM_CLUSTERS = (() => {
   const B = stream('atmosphere:beams');
   const clusters = [];
-  const specs = [{ s: 62, n: 9, always: true }];             // the poster shafts
+  const specs = [
+    { s: 62, n: 9, always: true },                            // the poster shafts
+    { s: POI.temple.s, n: 8, always: true },                  // glory over the temple precinct
+    { s: L_TOTAL + 85, n: 7, always: true },                  // light falling on the drowned capital
+  ];
   const CH = ROUTE.chapters;
   const perCh = [[0, 2], [1, 2], [2, 3], [3, 2], [4, 2], [6, 3]];
   for (const [c, count] of perCh) {
@@ -3078,16 +3330,21 @@ function updateSchool(sim, dt, t, giantPos, giantActive, riderS) {
   dAnchor.normalize().multiplyScalar(plan.speed);
   sim.anchorVel.lerp(dAnchor, Math.min(1, dt * 0.6));
   sim.anchor.addScaledVector(sim.anchorVel, dt);
-  // procession override: fish file through the amphitheater seats
+  // procession override: the pale file walks the seat rows, serpentine, row by row
   let procTarget = null;
   if (sim.procession > 0.01) {
     const a = POI.amphi;
     routeAt(a.s, _rf);
     const cx2 = _rf.x + _rf.nx * a.d, cz2 = _rf.z + _rf.nz * a.d;
-    const ang = sim.procT * 0.16;
-    const rr4 = 10 + (sim.procT % 21) * 0.62;
-    procTarget = _v3.set(cx2 + Math.cos(ang) * rr4, a.floorY + 2 + rr4 * 0.35, cz2 + Math.sin(ang) * rr4);
-    sim.anchor.lerp(procTarget, Math.min(1, dt * 1.2) * sim.procession);
+    const rowT = sim.procT / 11;                       // one full sweep of a row takes ~11 s
+    const row = Math.floor(rowT) % 9;
+    let ft = rowT - Math.floor(rowT);
+    if (row % 2 === 1) ft = 1 - ft;
+    const aLoc = lerp(-Math.PI * 0.55, Math.PI * 0.55, ft);
+    const psi = aLoc - (a.wYaw || 0);
+    const rSeat = 9.5 + row * 1.55;
+    procTarget = _v3.set(cx2 + Math.cos(psi) * rSeat, a.floorY + 2.1 + row * 0.7, cz2 + Math.sin(psi) * rSeat);
+    sim.anchor.lerp(procTarget, Math.min(1, dt * 1.6) * sim.procession);
   }
   const pos = sim.pos, vel = sim.vel;
   sim.avgVel.set(0, 0, 0);
@@ -3323,7 +3580,7 @@ function updateGiant(t, riderS) {
   if (G.active) {
     const dx = G.mesh.position.x - camera.position.x, dz = G.mesh.position.z - camera.position.z;
     const hd = Math.hypot(dx, dz);
-    if (hd < 190) dimT = 0.78 + 0.22 * (hd / 190);
+    if (hd < 190) dimT = 0.68 + 0.32 * (hd / 190);   // its shadow crosses the light
   }
   return dimT;
 }
@@ -3541,8 +3798,8 @@ const doorGlow = (() => {
   routeAt(dd.s, _rf);
   const x = _rf.x + _rf.nx * dd.d, z = _rf.z + _rf.nz * dd.d;
   const gy = terrainY(dd.s, dd.d, x, z);
-  const m = mkGlowSprite(PAL.gold.clone().lerp(PAL.turquoise, 0.3), 7, 0);
-  m.position.set(x, gy + 4.5, z);
+  const m = mkGlowSprite(PAL.gold.clone().lerp(PAL.turquoise, 0.3), 7, 0.06);
+  m.position.set(x, gy + 4.5, z);   // the seal never quite goes dark
   scene.add(m);
   U.uEventPos.value.set(x, gy + 4, z);
   return m;
@@ -3560,7 +3817,7 @@ function updateImpossibleCurrent(t, riderS, dt) {
     const k = (t - currentEventT) / 20;
     const amp = k < 1 ? Math.sin(Math.min(1, k * 3) * Math.PI * 0.5) * (1 - smoothstep(0.75, 1, k)) : 0;
     U.uEventStr.value = amp;
-    doorGlow.material.uniforms.uGlowA.value = amp * 0.5;
+    doorGlow.material.uniforms.uGlowA.value = 0.06 + amp * 0.5;
     if (AUDIO.on && amp > 0.5 && !AUDIO._currentToned) { AUDIO._currentToned = true; AUDIO.currentSwell(); }
   }
 }
@@ -3675,13 +3932,13 @@ function pumpAmbient(t) {
 
 // ---------- chapter grading ----------
 const GRADES = [
-  { fogSh: '#2b6f74', fogDp: '#0a2231', den: 0.0102, sun: 1.15, caust: 1.10, edge: 0.85 }, // sunlit descent
-  { fogSh: '#20655c', fogDp: '#092028', den: 0.0128, sun: 0.92, caust: 0.95, edge: 1.0 },  // kelp gate
-  { fogSh: '#276672', fogDp: '#0a2433', den: 0.0112, sun: 1.02, caust: 1.0, edge: 0.9 },   // column forest
-  { fogSh: '#2a6a66', fogDp: '#0b2530', den: 0.0120, sun: 0.95, caust: 0.95, edge: 1.15 }, // divided current
-  { fogSh: '#2d7076', fogDp: '#0a2331', den: 0.0106, sun: 1.08, caust: 1.05, edge: 0.9 },  // amphitheater
-  { fogSh: '#0d2334', fogDp: '#03070f', den: 0.0205, sun: 0.26, caust: 0.22, edge: 2.1 },  // abyssal crossing
-  { fogSh: '#2f7871', fogDp: '#0b2836', den: 0.0092, sun: 1.28, caust: 1.30, edge: 0.95 }, // temple of the last tide
+  { fogSh: '#28686f', fogDp: '#0a2231', den: 0.0102, sun: 1.15, caust: 1.10, edge: 0.85 }, // sunlit descent
+  { fogSh: '#1b5a4e', fogDp: '#081d24', den: 0.0146, sun: 0.86, caust: 0.9, edge: 1.05 },  // kelp gate: olive enclosure
+  { fogSh: '#245f6b', fogDp: '#0a2433', den: 0.0112, sun: 1.02, caust: 1.0, edge: 0.9 },   // column forest
+  { fogSh: '#28655c', fogDp: '#0b2530', den: 0.0122, sun: 0.94, caust: 0.95, edge: 1.15 }, // divided current
+  { fogSh: '#2b6e72', fogDp: '#0a2331', den: 0.0100, sun: 1.10, caust: 1.05, edge: 0.9 },  // amphitheater: clearing
+  { fogSh: '#0b1f30', fogDp: '#020509', den: 0.0215, sun: 0.23, caust: 0.2, edge: 2.1 },   // abyssal crossing: true dark
+  { fogSh: '#2d766a', fogDp: '#0b2836', den: 0.0084, sun: 1.14, caust: 1.08, edge: 0.95 }, // temple: the luminous climb
 ];
 GRADES.forEach(g => { g.cSh = new THREE.Color(g.fogSh); g.cDp = new THREE.Color(g.fogDp); });
 function applyGrade(s, camY) {
@@ -3868,7 +4125,7 @@ function restartWorld() {
   turtle.state = 0; turtle.m.visible = false;
   bellSwing = 0; bellSwingV = 0; bellToneAt = -1;
   currentEventFired = false; U.uEventStr.value = 0;
-  doorGlow.material.uniforms.uGlowA.value = 0;
+  doorGlow.material.uniforms.uGlowA.value = 0.06;
   ambIdx = { groan: 0, click: 0, whale: 0 };
   AUDIO._currentToned = false;
   for (const sim of schoolSims) { sim.procession = 0; sim.procT = 0; sim.wpIdx = 0; }
@@ -4042,7 +4299,7 @@ window.__MERIDIAN__ = Object.freeze({
     };
   },
   qa: {
-    seek(s) { rider.s = clamp(s, 0, L_TOTAL - 1); rider.ended = false; started = true; forceChunksNow(rider.s); updateCamera(0.016); },
+    seek(s) { rider.s = clamp(s, 0, L_TOTAL - 1); rider.ended = false; started = true; document.getElementById('ending').style.opacity = 0; forceChunksNow(rider.s); updateCamera(0.016); },
     setArm(a) { if (a === 'L' || a === 'R') { rider.arm = a; rider.pref = a === 'L' ? 1 : -1; } },
     setLat(d) { rider.lat = clamp(d, -4.2, 4.2); },
     pause(p) { rider.paused = !!p; },
