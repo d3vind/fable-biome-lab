@@ -1717,22 +1717,29 @@ QUALITY_READS_AT_PLAN=QUALITY_READS;   // the plan stage never asked what tier t
 // REALIZATION — quality tiers change representation cost, never identity
 // ============================================================
 const QCFG={
-  low:      { row:5.4,  tile:18, ahead:620,  behind:230, under:0.34, nearD:13, midD:58,  farD:230, shadow:0,    part:0.5, lobe:0, tuftBand:11, capNear:3, capMid:12, bandTreeCap:36, cloudN:13, view:1500, tileView:1500, roundMid:3, dpr:1.0 },
+  low:      { row:5.0,  tile:16, ahead:620,  behind:230, under:0.34, nearD:13, midD:58,  farD:230, shadow:0,    part:0.5, lobe:0, tuftBand:11, capNear:3, capMid:12, bandTreeCap:36, cloudN:13, view:1500, tileView:1500, roundMid:3, dpr:1.0 },
   standard: { row:5.0,  tile:16, ahead:730,  behind:270, under:0.62, nearD:17, midD:70,  farD:300, shadow:1024, part:1.0, lobe:1, tuftBand:15, capNear:5, capMid:16, bandTreeCap:48, cloudN:17, view:1620, tileView:1800, roundMid:6, dpr:1.25 },
   // `lobe` is the icosphere subdivision of a foliage puff: 0=20 triangles,
   // 1=80, 2=320. Now that lobes carry smooth normals, level 2 costs four times
   // the geometry for a difference nobody can see at riding speed — so the top
   // tier spends its budget on reach, density and shadow resolution instead.
-  high:     { row:5.0,  tile:12, ahead:790,  behind:255, under:0.84, nearD:22, midD:82,  farD:340, shadow:2048, part:1.3, lobe:1, tuftBand:18, capNear:6, capMid:19, bandTreeCap:58, cloudN:21, view:1900, tileView:2100, roundMid:9, dpr:1.5 },
+  high:     { row:5.0,  tile:16, ahead:790,  behind:255, under:0.84, nearD:22, midD:82,  farD:340, shadow:2048, part:1.3, lobe:1, tuftBand:18, capNear:6, capMid:19, bandTreeCap:58, cloudN:21, view:1900, tileView:2100, roundMid:9, dpr:1.5 },
 }[readQuality()];
-// `row` is not a cost knob like the others. It is the spacing at which the
-// corridor RESAMPLES the landform, so a coarser row does not draw the same hill
-// with fewer triangles — it draws a different hill, and every tree seated on the
-// surface it produces stands somewhere else. At seven metres the low tier moved
-// trees within twenty metres of the road by three quarters of a metre at the
-// ninety-ninth percentile, against twelve centimetres for the high tier. The low
-// tier saves its budget on reach, density and shadow instead, and all three tiers
-// now sample the road's own ground at close to the same spacing.
+// `row` and `tile` are NOT cost knobs. They are the spacings at which the
+// corridor and the ground field resample the landform, so a coarser value does
+// not draw the same hill with fewer triangles — it draws a DIFFERENT hill, and
+// everything seated on the surface it produces stands somewhere else. Low tier
+// at row 7 and tile 18 moved a tree twenty metres from the road by four metres
+// vertically against the standard tier, and thirty-three more by over a quarter
+// of a metre. A cheaper tier may remove expression; it may not relocate the same
+// tree.
+//
+// So the ground's own shape is now canonical: every tier samples the corridor at
+// five metres and the field at sixteen, and the seating surface is identical at
+// all three by construction rather than by coincidence. Tiers still differ in
+// everything that is genuinely representation — how far the world reaches, how
+// dense the understory is, how many lobes a crown carries, shadow-map size, and
+// the device-pixel ceiling — which is where the cost actually lives.
 H.real.feed(QUALITY); for(const k of Object.keys(QCFG)) H.real.feed(k,QCFG[k]);
 
 const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});
@@ -3660,11 +3667,11 @@ function disposeAllBands(){ for(let i=0;i<NBAND;i++) disposeBand(i); }
 // ============================================================
 {
   const m=new THREE.ShaderMaterial({
-    uniforms:{ uSunW:{value:sunDir.clone()}, uWet:WL.uWet },
+    uniforms:{ uSunN:{value:sunDir.clone().normalize()}, uWet:WL.uWet },
     side:THREE.BackSide, depthWrite:false, fog:false,
     vertexShader:`varying vec3 vW; void main(){ vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
       gl_Position=projectionMatrix*viewMatrix*wp; }`,
-    fragmentShader:`uniform vec3 uSunW; uniform float uWet; varying vec3 vW;
+    fragmentShader:`uniform vec3 uSunN; uniform float uWet; varying vec3 vW;
     void main(){
       vec3 d=normalize(vW-cameraPosition);
       float e=max(d.y,-0.05);
@@ -3673,9 +3680,16 @@ function disposeAllBands(){ for(let i=0;i<NBAND;i++) disposeBand(i); }
       vec3 hor=vec3(0.859,0.906,0.815);          // warm pale-green horizon air
       vec3 c=mix(hor,mid,smoothstep(0.0,0.15,e));
       c=mix(c,zen,smoothstep(0.13,0.58,e));
-      float sd=acos(clamp(dot(d,normalize(uSunW)),-1.0,1.0));
-      c+=vec3(1.0,0.95,0.80)*exp(-sd*sd*34.0)*0.40;
-      c+=vec3(1.0,0.98,0.90)*smoothstep(0.048,0.011,sd)*0.80;
+      // The dome covers a third of the frame, so what it costs per pixel matters.
+      // Both sun terms are functions of the ANGLE to the sun, and the angle was
+      // being recovered with an inverse cosine on every sky pixel purely to be
+      // squared again. Near the sun — the only place either term is non-zero —
+      // the squared angle is two times one minus the cosine, so the dot product
+      // serves directly and the acos goes.
+      float cs=dot(d,uSunN);
+      float sd2=2.0*(1.0-cs);
+      c+=vec3(1.0,0.95,0.80)*exp(-sd2*34.0)*0.40;
+      c+=vec3(1.0,0.98,0.90)*smoothstep(0.0023,0.00012,sd2)*0.80;
       c=mix(c,mix(c,vec3(0.80,0.85,0.86),0.34),uWet);   // the shower cools the sky a little
       gl_FragColor=vec4(c,1.0);
     }`,
@@ -5146,6 +5160,10 @@ const windDrift=WL.uCloudMove.value;
 const worldC=spineAt(L_TOTAL*0.5);
 const _eye=new THREE.Vector3(), _fwd=new THREE.Vector3();
 const _fpa=new THREE.Vector3(), _fpb=new THREE.Vector3();
+// Two objects per frame is two objects per frame: at sixty frames a second for the
+// twelve minutes of a ride that is eighty-six thousand allocations whose only
+// purpose is to be collected again. Both are reused.
+const _lat=new THREE.Vector3(), _camE=new THREE.Euler();
 const CLOUD_SPAN=5200;
 
 function updateWeather(dt){
@@ -5290,7 +5308,8 @@ function tick(){
   _fwd.set(eyeF.tx,0,eyeF.tz);
   camFwd.lerp(_fwd,camInit?1-Math.exp(-dt*3.4):1).normalize();
   camInit=true;
-  _eye.set(eyeF.x,eyeF.y,eyeF.z).addScaledVector(new THREE.Vector3(eyeF.lx,0,eyeF.lz),rider.lat);
+  _lat.set(eyeF.lx,0,eyeF.lz);
+  _eye.set(eyeF.x,eyeF.y,eyeF.z).addScaledVector(_lat,rider.lat);
   _eye.y+=EYE_H;
   if(!dragging){ yawOff*=Math.exp(-dt*1.6); pitchOff*=Math.exp(-dt*1.6); }
   const yaw=Math.atan2(-camFwd.x,-camFwd.z)+yawOff;
@@ -5304,7 +5323,8 @@ function tick(){
   camRollDeg=Math.abs(roll)*180/Math.PI;
   RUN.maxRollDeg=Math.max(RUN.maxRollDeg,camRollDeg);
   camera.position.copy(_eye);
-  camera.quaternion.setFromEuler(new THREE.Euler(pitch,yaw,roll,'YXZ'));
+  _camE.set(pitch,yaw,roll,'YXZ');
+  camera.quaternion.setFromEuler(_camE);
 
   if(QCFG.shadow>0){
     sun.position.set(_eye.x+sunDir.x*240,_eye.y+sunDir.y*240,_eye.z+sunDir.z*240);

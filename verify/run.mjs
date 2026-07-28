@@ -409,6 +409,7 @@ async function checkPerf(browser) {
   const gov = r.dprGovernor || {held: true, rung: 0, stepCount: 0};
   const chapters = r.byChapter || {};
   const chapterNames = Object.keys(chapters);
+  const plannedChapters = (P.chapters || []).map(c => c.name);
   const worstChapter = chapterNames.reduce((w, k) =>
     (w === null || chapters[k].p95 > chapters[w].p95) ? k : w, null);
   const detail = {renderer: r.renderer, software: r.softwareRenderer, viewport: r.viewport,
@@ -430,11 +431,18 @@ async function checkPerf(browser) {
       note: `the traversal itself skipped terrain (${P.run.stepOverruns} frames over the ` +
             `${P.run.stepCeilingM} m ceiling, worst ${P.run.maxStepM} m). Not a measurement of this world.`});
   }
-  if (chapterNames.length < 4) {
-    return recordNoVerdict('perf', {...detail,
-      note: `only ${chapterNames.length} chapters were sampled — the route was not ridden through. ` +
-            'A frame-time claim from part of the route is not a claim about the route.'});
+  // Every chapter, not most of them. A frame-time claim from part of the route is
+  // not a claim about the route, and the chapter a run happens to skip is exactly
+  // the chapter that would have failed.
+  const missing = plannedChapters.filter(n => !chapters[n]);
+  if (missing.length) {
+    return recordNoVerdict('perf', {...detail, plannedChapters, missingChapters: missing,
+      note: `${missing.length} of ${plannedChapters.length} chapters were never sampled ` +
+            `(${missing.join(', ')}). The route was not ridden through.`});
   }
+  // and the verdict is per chapter, so one expensive chapter cannot hide inside a
+  // route-wide percentile
+  const chapterFails = chapterNames.filter(k => chapters[k].p95 > 16.67 || chapters[k].fps < 55);
   // This check used to gate on geometry alone while printing a framePass of false
   // beside it, so the row read PASS on a software rasteriser that had measured
   // nothing of the kind. Frame time is now part of the verdict, and where frame
@@ -455,7 +463,8 @@ async function checkPerf(browser) {
             `from ${r.dprCap} to ${r.dpr} (rung ${gov.rung}). The world runs; this GPU ` +
             `cannot hold the standard tier's resolution at 60fps.`});
   }
-  record('perf', geometry && r.framePass.ok === true, detail);
+  record('perf', geometry && r.framePass.ok === true && chapterFails.length === 0,
+    {...detail, plannedChapters, chaptersOverBudget: chapterFails});
 }
 
 const wanted = n => !ONLY || n.startsWith(ONLY);
@@ -507,4 +516,10 @@ console.log(`\n${results.filter(r => r.state === 'PASS').length}/${results.lengt
   (failed.length ? `, ${failed.length} failed` : ''));
 if (noVerdict.length) console.log('NO VERDICT: ' + noVerdict.map(n => n.name).join(', ') +
   ' — ran cleanly but on hardware that cannot answer. Not a pass.');
-if (failed.length) { console.log('FAILED: ' + failed.map(f => f.name).join(', ')); process.exitCode = 1; }
+if (failed.length) console.log('FAILED: ' + failed.map(f => f.name).join(', '));
+// A NO-VERDICT is not a pass, so the process must not exit as though it were.
+// An unanswered gate and a failed gate are different facts and get different
+// codes, but neither is zero: zero means every gate was asked and every gate
+// held, and nothing else may claim it.
+if (failed.length) process.exitCode = 1;
+else if (noVerdict.length) process.exitCode = 2;
