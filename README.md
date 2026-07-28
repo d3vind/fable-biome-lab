@@ -2,21 +2,32 @@
 
 Single-file procedural world experiments. Each branch is one world.
 
-## Summerglass Hollow (`phase-3-summerglass-hollow-v2-quiet-cut`)
+## Summerglass Hollow (`phase-3-summerglass-hollow-v2-final-repair`)
 
 A seeded bicycle passage through one remembered summer afternoon: a pale road
 travelling over grassy rises, down into cool woodland hollows, around a ridge
 that divides it in two, past water, and up to an ancient tree above a broad
 final valley.
 
-This branch is a subtractive editorial pass over
-`phase-3-summerglass-hollow-v2-reconcile`. The journey, the route, the rolling
-terrain, the fork, Glasswater, Bellroot and the streaming architecture are
-unchanged. What changed is what was taken away: two thirds of the airborne
-particles, half the scattered grass, ten of the twenty-one cloud formations, and
-a tenth of the frame the road was occupying. What was added is grounding — every
-tree now stands on the surface the renderer actually draws, not on the function
-the plan used to place it.
+This branch is a repair pass over `phase-3-summerglass-hollow-v2-quiet-cut`. The
+journey, the route, the rolling terrain, the fork, Glasswater, Bellroot and the
+streaming architecture are unchanged. Four things changed:
+
+* **The fork no longer tears.** The ground field and the road corridor disagreed
+  about how close to a lane the open country was allowed to come, and the gap
+  between the two answers was a ring of nothing around every lane. One ring is
+  invisible — the corridor covers it. At the fork, where two lanes run side by
+  side, the two rings met in the middle and the world opened onto the sky.
+* **The clouds are accumulations again**, not plates. Each formation is built
+  from overlapping smooth-shaded puffs with a bright crown, a cool flank and one
+  flat shadowed base, so it reads as vapour lit from above rather than as a
+  low-poly mountain hung in the air.
+* **Trees are visually connected to the ground**, not merely numerically seated
+  on it. A trunk widens into a root collar, its thickness is derived from the
+  crown it carries, the crown descends far enough to overlap the trunk, and a
+  contact shadow is laid on the surface the renderer actually draws.
+* **The ground is quieter still**, and the road occupies about a quarter of the
+  lower frame rather than a third.
 
 Open `index.html` over any HTTP server. No build step, no assets, no
 dependencies beyond the pinned Three.js module in the import map.
@@ -45,16 +56,23 @@ Two stages, in this order:
 1. **Plan.** The seed is expanded through named, independent PRNG streams into
    the complete identity of the world — chapters, route centreline, elevation
    profile, both fork arms, terrain regions, groves, grove windows, landmarks,
-   water, ecology zones, the wildlife schedule, the sound schedule and the
-   weather schedule. No geometry exists yet. The result is summarised by
-   `planHash`, which does not depend on quality, and by `planDigest64`, a 64-bit
-   digest of a canonical serialisation of the frozen plan.
+   water, ecology zones, the wildlife schedule, the sound schedule, the weather
+   schedule, the cloud formations and the airborne pockets. No geometry exists
+   yet. The result is summarised by `planHash`, which does not depend on quality,
+   and by `planDigest64`, a 64-bit digest of a canonical serialisation of the
+   frozen plan.
 2. **Realization.** The frozen plan is spent as geometry for the chosen quality
    tier. Vegetation, growth and ground contact stream in and out of residency in
    200 m bands keyed to global route distance; the road, the ground field and the
    far country are bounded static geometry. Object identity comes from position,
    never from the order bands happened to be realised, so a band that leaves and
    re-enters residency comes back as itself.
+
+Quality decides how much of the plan is drawn and how finely, and nothing else.
+It cannot change what exists: the counts of planned trees, cloud formations,
+scheduled life events and declined seatings are identical at all three tiers, the
+plan hash and digest are identical, and the realization hash differs at each —
+which is the whole claim, checked as `quality` in the verification runner.
 
 The route is generated before anything stands on it. The land is then written
 around the realised route with cut, fill, shoulder and drainage relationships,
@@ -72,11 +90,70 @@ and the near bank so the rider looks down onto water instead of at a bank. The
 far bank is deliberately left high, because water needs something dark behind it
 to read against.
 
-Foliage lobes carry their own smooth normals while bark, ground props and cloud
-puffs keep hard per-face normals. That one distinction is most of the difference
-between a fluffy canopy and a heap of crystals: it lets an eighty-triangle puff
-shade like a soft ball, so a crown can be built from many small overlapping
-lobes instead of a few large faceted ones.
+Foliage lobes and cloud puffs carry their own smooth normals while bark and
+ground props keep hard per-face normals. That one distinction is most of the
+difference between a fluffy canopy and a heap of crystals: it lets an
+eighty-triangle puff shade like a soft ball, so a crown can be built from many
+small overlapping lobes instead of a few large faceted ones, and a cloud from
+many overlapping puffs instead of a few flat plates.
+
+### Two surfaces meeting at the fork
+
+At the fork, three meshes want the same ground: the Sunpath corridor, the
+Mosswater corridor, and the coarse field beyond both. Ground drawn by nobody is
+a hole; ground drawn twice, differently, is a shelf hanging in the air. Four
+rules keep them apart, and each one is there because its absence was visible.
+
+* **Ownership is decided by the most-owning corner of a quad, not by the average
+  of four.** Take any point between the lanes: whichever lane is nearer to it is
+  at least as near to the nearest corner of the quad around it, so that lane's
+  test clears and the quad is drawn. Coverage is a property of the rule, not a
+  hope. Averaging instead let two grids sampling different quad centres both
+  decline the same ground — a strip fifteen to forty-five metres long and about
+  five wide, running beside the lane. That was the tear.
+* **A ground tile is dropped only when the whole tile is inside the corridor's
+  reach, and that reach is the corridor's own apron** rather than an unrelated
+  number. Dropping on any corner retreated the field a cell further than the
+  corridor extended, leaving an annulus nothing drew. Holding off at
+  thirty-six metres while the corridor reached sixty-six had both surfaces
+  drawing the same thirty metres and disagreeing by up to five.
+* **Between the lanes, the corridor draws a shared bank.** Both corridors
+  necessarily reach the ground between the arms, and each triangulates it from
+  its own lane's direction at its own column spacing — five metres near the
+  road, twelve out at the apron. Whatever the land does in there, two grids
+  reading it differently means one of them ends five metres above the other. So
+  in the wedge the height comes from a straight ramp between the two lanes'
+  beds, evaluated from the place and not from the lane doing the reading. Both
+  grids interpolate the same nearly-linear function and land on each other. The
+  ramp fades out well before either shoulder, so each lane keeps its own bed,
+  cut and drainage.
+* **Where a point could lie between the arms, both lanes' distances are measured
+  properly.** The scan radius is normally sized from a coarse field that knows
+  only the nearest lane, so a point close to one arm stopped searching before
+  reaching the other and reported it as infinitely far — and the two corridors,
+  disagreeing about where they were, drew the same ground two different ways.
+  The radius is floored inside the ring where the shared bank can be non-zero,
+  and only there: outside it, a lane reported as merely "farther than the scan"
+  gives the same answer as a lane reported exactly, and the scan is not worth
+  paying for.
+* **Where the lanes have converged, one mesh draws the ground.** Through the
+  split and the rejoin the Sunpath owns the country beside the road and the
+  Mosswater arm keeps only its own stone and the shoulder holding it up. Two
+  aprons a few metres apart triangulate the same ground differently, and the step
+  where the shorter one ended ran dead straight beside the stone at the rejoin.
+* **The designed lift that separates the two arms vertically rides on the
+  stone**, and fades laterally across the shoulder that carries it, so the verge
+  arrives at open ground at open-ground height. Lifting the road without fading
+  the lift is what left unsupported edges in an earlier pass.
+
+Whether it worked is not asserted from those rules. `forkIntegrity()` fires rays
+down through the fork region from above and reports three things: how many find
+no surface at all, how large the biggest *connected* group of those misses is,
+and how far apart the top two surfaces are wherever a ray finds more than one. A
+lone ray slipping between two triangles is invisible; a contiguous block of them
+is a window onto the sky, and a percentage cannot tell the two apart. That is a
+measurement of the scene the renderer holds, taken after realization, and it is
+what the verification runner gates on.
 
 ### The editorial rules
 
@@ -101,6 +178,15 @@ whole design:
   disagree by more than a tree can be seated through, realization declines to
   build the tree and says so; the plan keeps it, so the world's identity is the
   same at every quality.
+
+Seating a trunk is not the same as connecting it. A trunk that ends exactly at
+the terrain height still reads as a pole pushed into a lawn. Three further things
+are what make the contact look real: the trunk flares into a root collar over its
+lowest metre, its radius is scaled by the mass of the crown it is carrying — so a
+wide crown never arrives on a broomstick — and the crown is grown down to overlap
+the trunk rather than resting on top of it. The contact shadow is then laid on
+the height the renderer draws, not the height the plan used, which is why it
+stays under the tree when the ground beneath is coarse.
 
 ### Proof surface
 
@@ -128,26 +214,62 @@ Every run reports its **provenance**: `continuous`, `accelerated`, `warped` or
 `debug`. It only ever escalates, and it resets with the ride. `continuous` and
 `accelerated` both mean every metre was travelled and every frame rendered —
 accelerated only fixes the timestep, which is how a ride is verified on a
-software rasteriser. `warped` and `debug` mean the rider was moved by something
-other than riding: such a run can be inspected, but `continuousRideEligible` is
-false and the visibility assertions refuse to pass. A teleport cannot be
-mistaken for a ride.
+software rasteriser, and the fixed step is bounded so it cannot be widened until
+a frame skips terrain. A restart clears the ladder because it clears the run; it
+cannot be used to launder a warped run into a clean one, because a restart also
+clears the distance, the ascent, the fired events and the marks that a claim
+would have to be made from. `warped` and `debug` mean the rider was moved by
+something other than riding: such a run can be inspected, but
+`continuousRideEligible` is false and the visibility assertions refuse to pass. A
+teleport cannot be mistaken for a ride.
 
 Frame time is reported twice — raw, and with harness stalls removed — together
 with the count of stalls, the threshold used, the viewport, the device pixel
 ratio, the renderer string, whether that renderer is software, and percentiles
-per route chapter. Neither number can be quoted without the other.
+per route chapter. Neither number can be quoted without the other. The
+`performanceBudget` assertion is not satisfied by draw calls and triangles alone:
+it also requires measured frame time inside budget, and it refuses outright on a
+software rasteriser, where a frame-time measurement is not evidence about
+hardware. On this branch that assertion is therefore expected to read false in a
+sandbox and says why in `framePass.note`.
 
 Road validation is measured against the **triangles actually emitted to the
-renderer**. A vertex can sit in the position buffer and be referenced by no
-triangle — the fork culls exactly such vertices where one lane owns the other's
-ground — and validating those is validating geometry nobody sees: surface gap, edge-above-support, unsupported edge samples, ground-field
-poke-through, and the designed verge drop reported separately as design rather
-than as error.
+renderer** — the exact indexed triangle a sample falls in, resolved by which side
+of the shared diagonal it lies on, not a bilinear blend of four corners that
+belongs to no triangle at all. A vertex can sit in the position buffer and be
+referenced by no triangle — the fork culls exactly such vertices where one lane
+owns the other's ground — and validating those is validating geometry nobody
+sees. `emittedTrianglesOnly` is not a constant: it is set from a probe that asks
+the reader for heights it should refuse, and is true only because the reader
+refused them. What is then measured: surface gap, edge-above-support, unsupported
+edge samples, ground-field poke-through, and the designed verge drop reported
+separately as design rather than as error.
+
+The same applies to the coarse field beyond the corridor. Its reader mirrors the
+emitter's retention rule exactly — testing one corner declared "no geometry
+here" for every tile that straddles the hold-off line, tiles that are in fact
+drawn — and it resolves the exact triangle rather than blending four corners. A
+reader that disagrees with the emitter is worse than no reader at all, because
+everything that stands on the world reads it.
 
 `window.__SUMMERGLASS_TEST__` is a small test-control surface used by the
 verification harness (fixed-step simulation, branch selection, accelerated
-traversal to a chapter, pause, restart, diagnostics, pool shelf profiles, water
-screen-space probe, and a per-category triangle breakdown). Accelerated
-traversal is a way to reach a chapter quickly; it is not evidence that motion
-works.
+traversal to a chapter, pause, restart, fork integrity raycasts, grounding
+probes, road frame share, per-category triangle breakdown, pool shelf profiles
+and a water screen-space probe). Accelerated traversal is a way to reach a
+chapter quickly; it is not evidence that motion works.
+
+### Verification
+
+`verify/` holds the runner that produces the evidence quoted for this branch. It
+serves the shipped `index.html` unmodified and drives it in Chromium.
+
+```
+npm i -D playwright && npx playwright install chromium
+node verify/run.mjs                 # everything
+node verify/run.mjs --only=fork     # one group
+```
+
+See `verify/README.md` for what each check asks and for the two environment
+variables (`CHROME_PATH`, `THREE_LOCAL`) that let it run against a browser you
+already have, or without egress to the CDN.
