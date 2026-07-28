@@ -1331,8 +1331,12 @@ class Fields {
           const raised = smoothstep(1.95, 3.30, bestY);
           // the basin starts at the toe of the embankment: from a 1.4 m eye the far country
           // is compressed into a few degrees, so water only reads if it comes up close
-          const dig = smoothstep(14, 42, best) * (1 - smoothstep(560, 800, best));
-          rec.drop = 1.28 * raised * dig;
+          const dig = smoothstep(11, 36, best) * (1 - smoothstep(560, 800, best));
+          /* A raised causeway digs the basin it crosses; a low reed road still has water
+             lying against whichever hand the beat has opened, or the first minutes of the
+             ride cannot say what country this is. The beat's own per-side factor decides
+             how much of this each hand actually gets. */
+          rec.drop = (0.58 + 0.86 * raised) * dig;
           // a reed bank still builds against a raised causeway, just less of one
           rec.bank = (0.32 + 0.68 * (1 - raised)) * smoothstep(300, 58, best);
           rec.target = clamp(bestY - 1.05, -0.08, 0.30);
@@ -5503,6 +5507,7 @@ class Reedwake {
     const s = seed || this.seed, q = quality || this.qualityName;
     this.teardown();
     this.restarts++;
+    this.subSteps = 1; this.subDt = 0.016;      // a fresh ride runs at real time
     this.errors.length = 0; $('err').classList.remove('on');
     this.peak = { calls: 0, tris: 0, veg: 0 };
     this.chapterShown = null;
