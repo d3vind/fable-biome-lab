@@ -2,7 +2,7 @@
 
 Single-file procedural world experiments. Each branch is one world.
 
-## Summerglass Hollow (`phase-3-summerglass-hollow-v2-final-repair`)
+## Summerglass Hollow (`claude/summerglass-hollow-v2-mt6zus`)
 
 A seeded bicycle passage through one remembered summer afternoon: a pale road
 travelling over grassy rises, down into cool woodland hollows, around a ridge
@@ -28,6 +28,39 @@ streaming architecture are unchanged. Four things changed:
   contact shadow is laid on the surface the renderer actually draws.
 * **The ground is quieter still**, and the road occupies about a quarter of the
   lower frame rather than a third.
+
+A later pass, from field testing on hardware, changed five more things and
+nothing about the composition — every landmark, road, cloud, seed and chapter
+decision is where it was:
+
+* **The spiked vegetation is gone.** A tussock was four to six triangles twice
+  as tall as they were wide, fanned from a point. At the distance they are
+  actually seen from that is not grass, it is a scatter of dark needles standing
+  on a clean field. Blades are now about as wide as they are tall and lean
+  further off vertical, so a handful overlaps into one soft mass; and growth out
+  in the open field has to be in a genuinely strong patch, so when it appears it
+  appears as a group instead of one lonely spike in ten metres of sward.
+* **The trunks are trees again.** Girth had been tuned up until a seventeen-metre
+  beech carried a bole nearly two metres across that barely tapered — a concrete
+  column with foliage resting on it. That, not thinness, was the pole. The bole
+  is now about a fourteenth of the tree's height at the root and narrows to a
+  quarter of that, and a parallel-transported frame runs the bark unbroken
+  instead of stepping at every bend.
+* **The crowns are softer**: the shaded underside is held nearer the mid green,
+  so it reads as foliage seen from below rather than a dark disc slung under the
+  tree, and it sits a little lower on the trunk.
+* **The per-pixel cost is much lower.** The world light — cloud shadow, canopy
+  dapple, and the meadow's own paint — evaluated a value noise up to thirteen
+  times per fragment on every lit surface, and each evaluation needed four
+  `sin`-based hashes. That is fifty-odd transcendentals per ground pixel, and it,
+  not geometry, was the frame budget. The four corner hashes of a noise cell are
+  now baked into one texel and fetched in a single tap.
+* **The world sizes itself to the machine.** The device pixel ratio is no longer
+  a fixed guess per quality tier; it is the top of a ladder the world walks down
+  from its own measured frame time, and back up when it has headroom. The proof
+  surface reports which rung it settled on, and a run that only met budget by
+  spending resolution cannot report a clean pass without saying so.
+* **A rabbit, and a squirrel** on a trunk the renderer actually drew.
 
 Open `index.html` over any HTTP server. No build step, no assets, no
 dependencies beyond the pinned Three.js module in the import map.
@@ -205,6 +238,15 @@ truth, and keeps three kinds of claim apart:
   bands realised and disposed), labelled separately so they are never mistaken
   for run evidence.
 
+`render.framePass` is the frame-time gate: p95 ≤ 16.67 ms, p99 ≤ 25 ms, and no
+chapter under 55 fps. It refuses to claim anything on a software rasteriser, and
+it now also reports `dprHeld` — whether that budget was met at the quality tier's
+own device pixel ratio, or reached only after the resolution governor stepped
+down. `render.dprGovernor` carries the ladder, the rung, and every step it took
+with the distance and chapter it took it at. Meeting budget by spending
+resolution is a real result and a different one, so the verification runner gives
+it its own row rather than a green `perf`.
+
 Proximity and visibility are distinct throughout. `proximity.fork` means the
 rider came near the fork; `seen.forkBothArmsBeforeCommit` means both arms were
 inside the frustum with a clear ground line before the choice was locked.
@@ -270,6 +312,15 @@ node verify/run.mjs                 # everything
 node verify/run.mjs --only=fork     # one group
 ```
 
-See `verify/README.md` for what each check asks and for the two environment
-variables (`CHROME_PATH`, `THREE_LOCAL`) that let it run against a browser you
-already have, or without egress to the CDN.
+See `verify/README.md` for what each check asks and for the environment variables
+(`CHROME_PATH`, `THREE_LOCAL`) that let it run against a browser you already
+have, or without egress to the CDN.
+
+The runner answers the performance question on **whatever GPU the machine has**.
+It used to force SwiftShader unconditionally and then gate `perf` on geometry
+alone, so the row printed `PASS` beside its own `framePass: false` — a check that
+could neither fail nor be true. Frame time is now part of the verdict, and a
+software rasteriser yields `NO-VERDICT` rather than a green row: it is measured
+honestly and then explicitly refused as evidence about hardware. `SOFTWARE_GL=1`
+forces software for environments that have no GPU at all, and gets the same
+`NO-VERDICT`. **`perf` can only be answered on the target hardware.**

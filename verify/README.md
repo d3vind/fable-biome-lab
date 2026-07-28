@@ -24,11 +24,27 @@ Checks, and what each one is actually asking:
 | `seeds` | does the seed matrix hold its route, grade, fork and grounding contracts? |
 | `ride` | can both fork arms be ridden end to end, and what did the rider actually see? |
 | `budget` | walking the whole route at each tier, what is the worst draw-call and triangle count the world ever asks for? Warped on purpose — it asks what is resident, not whether motion works. |
-| `perf` | draw calls, triangles, and frame-time percentiles — with the renderer named, so a software rasteriser is never quoted as hardware. |
+| `perf` | draw calls, triangles, and frame-time percentiles — with the renderer named, so a software rasteriser is never quoted as hardware, and with the resolution the world settled on. |
 
-Frame-time results are only claimed as a pass on hardware. On SwiftShader or any
-other software renderer the numbers are still reported, and the performance
-assertion deliberately reads false.
+Rows are `PASS`, `FAIL`, or `NO-VERDICT`. The third exists because a check that
+runs cleanly on hardware that cannot answer the question it asks is not a pass; a
+row that reads green while its own detail says the measurement is meaningless is
+worse than no row at all. `perf` returns `NO-VERDICT` in two cases:
+
+* **Software rasteriser.** The runner uses whatever GPU the machine has
+  (`--ignore-gpu-blocklist`); `SOFTWARE_GL=1` forces SwiftShader for environments
+  with no GPU. Either way the frame time is measured and reported, and then
+  explicitly refused as evidence about hardware. It used to force SwiftShader
+  unconditionally *and* gate the row on geometry alone, so `perf` printed `PASS`
+  beside its own `framePass: false`: a check that could neither fail nor be true.
+* **Budget met at reduced resolution.** The world steps its own device pixel
+  ratio down when it is missing frame budget. Reaching 60 fps that way is a real
+  result and a different one from holding the tier's resolution, so it gets its
+  own row rather than a green `perf`. `dprHeld`, `dprRung` and `dprSteps` in the
+  detail say what happened.
+
+The performance question can only be answered on the hardware the world is meant
+to run on. Nothing this runner prints on a software rasteriser is a substitute.
 
 The `ride` check rides the whole route in real time; on a software rasteriser one
 arm can take an hour. It is bounded by wall clock rather than by a poll count —

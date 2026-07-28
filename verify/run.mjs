@@ -27,8 +27,15 @@ const serve = () => new Promise(res => {
 
 const results = [];
 const record = (name, pass, detail) => {
-  results.push({name, pass, detail});
+  results.push({name, state: pass ? 'PASS' : 'FAIL', detail});
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name}  ${JSON.stringify(detail)}`);
+};
+// A third state, for a check that ran cleanly on hardware that cannot answer the
+// question it asks. It is not a pass: a row that reads green while its own detail
+// says the measurement is meaningless is worse than no row at all.
+const recordNoVerdict = (name, detail) => {
+  results.push({name, state: 'NO-VERDICT', detail});
+  console.log(`NO-VERDICT  ${name}  ${JSON.stringify(detail)}`);
 };
 
 // The page loads three.js from a CDN. In a sandbox without egress, point
@@ -245,10 +252,34 @@ async function checkPerf(browser) {
   const P = await proof(p);
   await p.close();
   const r = P.render;
-  record('perf', r.drawCalls <= 115 && r.triangles <= 360000,
-    {renderer: r.renderer, software: r.softwareRenderer, viewport: r.viewport, dpr: r.dpr,
-     drawCalls: r.drawCalls, triangles: r.triangles, steady: r.steady,
-     stallSamples: r.stallSamples, framePass: r.framePass, byChapter: r.byChapter});
+  const geometry = r.drawCalls <= 115 && r.triangles <= 360000;
+  const gov = r.dprGovernor || {held: true, rung: 0, stepCount: 0};
+  const detail = {renderer: r.renderer, software: r.softwareRenderer, viewport: r.viewport,
+    dpr: r.dpr, dprCap: r.dprCap, dprHeld: gov.held, dprRung: gov.rung,
+    dprSteps: gov.stepCount, drawCalls: r.drawCalls, triangles: r.triangles,
+    geometryWithinBudget: geometry, steady: r.steady, stallSamples: r.stallSamples,
+    framePass: r.framePass, byChapter: r.byChapter};
+  // This check used to gate on geometry alone while printing a framePass of false
+  // beside it, so the row read PASS on a software rasteriser that had measured
+  // nothing of the kind. Frame time is now part of the verdict, and where frame
+  // time cannot mean anything the row refuses to be a verdict at all.
+  if (r.softwareRenderer) {
+    return recordNoVerdict('perf', {...detail,
+      note: `software renderer — geometry ${geometry ? 'within' : 'OVER'} budget; ` +
+            'frame time measured but not evidence about hardware. Re-run on the target GPU.'});
+  }
+  // The world can now step its own resolution down to hold frame budget. That is
+  // a legitimate way to reach sixty frames a second and an illegitimate way to
+  // claim the tier's resolution was affordable, so the two outcomes get different
+  // rows: a full pass only when budget was met at the tier's own device pixel
+  // ratio, and a distinct row when it was met by spending pixels instead.
+  if (geometry && r.framePass.ok === true && !gov.held) {
+    return recordNoVerdict('perf', {...detail,
+      note: `frame budget met, but only after the governor stepped device pixel ratio ` +
+            `from ${r.dprCap} to ${r.dpr} (rung ${gov.rung}). The world runs; this GPU ` +
+            `cannot hold the standard tier's resolution at 60fps.`});
+  }
+  record('perf', geometry && r.framePass.ok === true, detail);
 }
 
 const wanted = n => !ONLY || n.startsWith(ONLY);
@@ -257,10 +288,18 @@ const server = await serve();
 const {chromium} = await import('playwright');
 // CHROME_PATH lets you point at a Chromium you already have; otherwise
 // Playwright's own download is used.
+// The performance question can only be answered by the GPU the world is meant to run
+// on, so the runner uses whatever GPU the machine has. SOFTWARE_GL=1 forces
+// SwiftShader for environments that have no GPU at all — and then `perf` returns
+// NO-VERDICT instead of a green row. Forcing software unconditionally, as this file
+// used to, meant the performance check could never fail and never be true.
+const SOFTWARE_GL = process.env.SOFTWARE_GL === '1';
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH || undefined,
-  args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
-         '--no-sandbox', '--disable-dev-shm-usage'],
+  args: ['--no-sandbox', '--disable-dev-shm-usage',
+    ...(SOFTWARE_GL
+      ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
+      : ['--ignore-gpu-blocklist'])],
 });
 try {
   if (wanted('restart'))    for (const [l, g, twice] of [['early', 380, false], ['fork', 2300, false],
@@ -285,6 +324,11 @@ try {
   await browser.close();
   server.close();
 }
-const failed = results.filter(r => !r.pass);
-console.log(`\n${results.length - failed.length}/${results.length} passed`);
+const failed = results.filter(r => r.state === 'FAIL');
+const noVerdict = results.filter(r => r.state === 'NO-VERDICT');
+console.log(`\n${results.filter(r => r.state === 'PASS').length}/${results.length} passed` +
+  (noVerdict.length ? `, ${noVerdict.length} no-verdict (${noVerdict.map(n => n.name).join(', ')})` : '') +
+  (failed.length ? `, ${failed.length} failed` : ''));
+if (noVerdict.length) console.log('NO VERDICT: ' + noVerdict.map(n => n.name).join(', ') +
+  ' — ran cleanly but on hardware that cannot answer. Not a pass.');
 if (failed.length) { console.log('FAILED: ' + failed.map(f => f.name).join(', ')); process.exitCode = 1; }
