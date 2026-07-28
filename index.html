@@ -3953,10 +3953,21 @@ waterFan(MOSSPOOL.cx,MOSSPOOL.cz,MOSSPOOL.rx,MOSSPOOL.rz,MOSSPOOL.rot,MOSSPOOL.y
     const c0=cor(-w/2,-d/2),c1=cor(w/2,-d/2),c2=cor(w/2,d/2),c3=cor(-w/2,d/2);
     const b=(p)=>[p[0],cy,p[1]], t=(p)=>[p[0],cy+h,p[1]];
     const cTop=mossy?STONE_MOSS:STONE, cSide=mossy?mixc(PAL.leafShade,PAL.woodDeep,0.38):STONE_SH;
-    pushQuad(B,b(c0),b(c1),t(c1),t(c0),cSide);
-    pushQuad(B,b(c1),b(c2),t(c2),t(c1),STONE);
-    pushQuad(B,b(c2),b(c3),t(c3),t(c2),cSide);
-    pushQuad(B,b(c3),b(c0),t(c0),t(c3),STONE);
+    // Every face of this box was wound the wrong way round. `pushTri` takes the
+    // normal from cross(b-a,c-a), and with the corners walked bottom-then-top
+    // that cross product points INTO the block on all five faces — the stone was
+    // inside-out. Front-face culling then discarded the near wall and left the
+    // rider looking at the inside of the far one, lit by a normal aimed away from
+    // the sun. Three hundred and fifty-four of the five hundred and ninety
+    // triangles at the bridge had N-dot-L below zero, and the parapet rendered at
+    // a luminance of 28 against 87 for the grass beside it and 121 for the road.
+    // That is the black angular cut along the shoulder at the beck crossing.
+    // Walking each face top-then-bottom turns both the winding and the normal
+    // outward, and the blocks read as stone with a lit top and shaded sides.
+    pushQuad(B,t(c0),t(c1),b(c1),b(c0),cSide);
+    pushQuad(B,t(c1),t(c2),b(c2),b(c1),STONE);
+    pushQuad(B,t(c2),t(c3),b(c3),b(c2),cSide);
+    pushQuad(B,t(c3),t(c0),b(c0),b(c3),STONE);
     pushQuad(B,t(c0),t(c1),t(c2),t(c3),cTop);
   }
   function wallRun(F,s0,s1,lat,mossy,st){
