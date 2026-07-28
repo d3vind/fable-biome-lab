@@ -1717,7 +1717,7 @@ QUALITY_READS_AT_PLAN=QUALITY_READS;   // the plan stage never asked what tier t
 // REALIZATION — quality tiers change representation cost, never identity
 // ============================================================
 const QCFG={
-  low:      { row:7.0,  tile:18, ahead:620,  behind:230, under:0.34, nearD:13, midD:58,  farD:230, shadow:0,    part:0.5, lobe:0, tuftBand:11, capNear:3, capMid:12, bandTreeCap:36, cloudN:13, view:1500, tileView:1500, roundMid:3, dpr:1.0 },
+  low:      { row:5.4,  tile:18, ahead:620,  behind:230, under:0.34, nearD:13, midD:58,  farD:230, shadow:0,    part:0.5, lobe:0, tuftBand:11, capNear:3, capMid:12, bandTreeCap:36, cloudN:13, view:1500, tileView:1500, roundMid:3, dpr:1.0 },
   standard: { row:5.0,  tile:16, ahead:730,  behind:270, under:0.62, nearD:17, midD:70,  farD:300, shadow:1024, part:1.0, lobe:1, tuftBand:15, capNear:5, capMid:16, bandTreeCap:48, cloudN:17, view:1620, tileView:1800, roundMid:6, dpr:1.25 },
   // `lobe` is the icosphere subdivision of a foliage puff: 0=20 triangles,
   // 1=80, 2=320. Now that lobes carry smooth normals, level 2 costs four times
@@ -1725,6 +1725,14 @@ const QCFG={
   // tier spends its budget on reach, density and shadow resolution instead.
   high:     { row:5.0,  tile:12, ahead:790,  behind:255, under:0.84, nearD:22, midD:82,  farD:340, shadow:2048, part:1.3, lobe:1, tuftBand:18, capNear:6, capMid:19, bandTreeCap:58, cloudN:21, view:1900, tileView:2100, roundMid:9, dpr:1.5 },
 }[readQuality()];
+// `row` is not a cost knob like the others. It is the spacing at which the
+// corridor RESAMPLES the landform, so a coarser row does not draw the same hill
+// with fewer triangles — it draws a different hill, and every tree seated on the
+// surface it produces stands somewhere else. At seven metres the low tier moved
+// trees within twenty metres of the road by three quarters of a metre at the
+// ninety-ninth percentile, against twelve centimetres for the high tier. The low
+// tier saves its budget on reach, density and shadow instead, and all three tiers
+// now sample the road's own ground at close to the same spacing.
 H.real.feed(QUALITY); for(const k of Object.keys(QCFG)) H.real.feed(k,QCFG[k]);
 
 const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});
@@ -1971,6 +1979,9 @@ const C_SHOULDER=mixc(PAL.road,PAL.bark,0.46).lerp(col(PAL.sunGrass),0.10);  // 
 const C_WORNGRASS=mixc(PAL.meadow,PAL.bark,0.24).lerp(col(PAL.sunGrass),0.16);
 const ROAD_CONTRAST=lumOf(C_ROAD_MID)/lumOf(C_SEAM);
 
+// The distance inside which a coarse tile is split into four. It is shared by
+// the emitter and by the reader below, because the two must never disagree.
+const FINE_TILE=104;
 const COLS=(()=>{
   const c=[];
   for(const t of [-1,-0.72,-0.40,-0.14,0.14,0.40,0.72,1]) c.push(t*RH);
@@ -2328,7 +2339,7 @@ let TILE_REAL=null;
     // cell eighty metres away is a facet the size of a hillside; an eight-metre
     // one is a slope. Beyond that band the coarse cell is a few pixels and the
     // extra geometry would be spent on nothing.
-    const FINE=104;
+    const FINE=FINE_TILE;
     const sub=(ix,iz)=>{
       const x=x0+ix*cell, z=z0+iz*cell;
       const pts=[], cols=[], dd=[];
@@ -2415,13 +2426,30 @@ function realizedTileY(x,z){
   const dA=T.DG[k], dB=T.DG[k+1], dC=T.DG[k+T.nx], dD=T.DG[k+T.nx+1];
   if(Math.max(Math.max(dA,dB),Math.max(dC,dD))<FIELD_HOLD) return null;
   const tx=fx-ix, tz=fz-iz;
-  const a=T.TG[k], b=T.TG[k+1], c=T.TG[k+T.nx], d=T.TG[k+T.nx+1];
+  const cell=T.cell;
+  // Where the emitter SUBDIVIDED a cell, this used to read the parent quad and
+  // justify it by claiming the subdivided surface always sits above it. That is
+  // only true on convex ground. Over a hollow the subdivided surface follows the
+  // ground DOWN while the parent quad stays up as a chord across it, so the
+  // reader answered a metre and a half too high and every tree seated there was
+  // left hovering in the air over the hole its own reading had invented. A reader
+  // that disagrees with the emitter is worse than no reader at all, so this now
+  // walks the same 2x2 sub-grid, from the same `groundY`, with the same sink.
+  if(cell>12&&Math.max(Math.max(dA,dB),Math.max(dC,dD))<FINE_TILE){
+    const x0=T.x0+ix*cell, z0=T.z0+iz*cell, hc=cell*0.5;
+    const a2=tx<0.5?0:1, b2=tz<0.5?0:1;      // which sub-quad the sample is in
+    const sx=x0+a2*hc, sz=z0+b2*hc;
+    const sy=(px,pz)=>groundY(px,pz)-0.40*(1-smooth(70,104,routeInfo(px,pz).d));
+    const sa=sy(sx,sz), sb=sy(sx+hc,sz), sc=sy(sx,sz+hc), sd=sy(sx+hc,sz+hc);
+    const ux=(fx-ix-a2*0.5)*2, uz=(fz-iz-b2*0.5)*2;
+    // same winding as the parent: (a,c,b) then (b,c,d)
+    return (ux+uz<=1) ? sa+(sb-sa)*ux+(sc-sa)*uz
+                      : sd+(sc-sd)*(1-ux)+(sb-sd)*(1-uz);
+  }
   // The exact triangle, chosen by which side of the shared diagonal the sample
   // falls on — the quads are indexed (a,c,b),(b,c,d), so this is the plane the
-  // renderer drew, not a bilinear blend belonging to neither triangle. Where a
-  // coarse cell was subdivided this reads the parent quad, which sits at or
-  // below the subdivided surface, so anything seated on it beds in rather than
-  // hovers.
+  // renderer drew, not a bilinear blend belonging to neither triangle.
+  const a=T.TG[k], b=T.TG[k+1], c=T.TG[k+T.nx], d=T.TG[k+T.nx+1];
   return (tx+tz<=1) ? a+(b-a)*tx+(c-a)*tz
                     : d+(c-d)*(1-tx)+(b-d)*(1-tz);
 }
@@ -2638,19 +2666,26 @@ const BIRCH_SUN=mixc(PAL.road,0xFFF6E0,0.30).lerp(col(PAL.bark),0.30), BIRCH_SHA
 const LEAF_SUN=mixc(PAL.sunGrass,PAL.meadow,0.16), LEAF_MID=col(PAL.meadow),
       LEAF_SHADE=col(PAL.leafShade), LEAF_DEEP=mixc(PAL.leafShade,PAL.woodDeep,0.62);
 
+// `lift` is where the crown sits on the trunk, as a fraction of tree height. At
+// 0.47-0.56 the foliage began around two fifths of the way up and the tree read
+// as a crown ON a stake rather than a crown OF a trunk: the bare bole was still
+// nearly two fifths of the whole silhouette after the girth was corrected. A
+// broadleaf in the open carries its lowest branches at about a third of its
+// height, so every family drops by eight hundredths and trunk and crown now
+// share a good deal more of their length.
 const ARCH={
-  oak:       {h:[11,15.5],r:[0.40,0.56],w:1.52,lift:0.47,lobes:[5,7],limbs:[3,4],lean:[0,0.05],bark:0},
+  oak:       {h:[11,15.5],r:[0.40,0.56],w:1.52,lift:0.39,lobes:[5,7],limbs:[3,4],lean:[0,0.05],bark:0},
   // Crown diameter is H*w*0.62. Beech at w 0.98 and birch at w 0.82 gave crowns
   // 0.61 and 0.51 of their own height — a birch stood 1.97 times as tall as its
   // crown was wide, on the thinnest trunk of the six, with the foliage starting
   // at 8.5 m. That is a pole carrying a bush, and it is what read as a telephone
   // pole. Both are still the slender families; they are no longer poles. The
   // crowns also start lower, so trunk and foliage share more of their length.
-  beech:     {h:[15,20],  r:[0.34,0.48],w:1.16,lift:0.55,lobes:[4,6],limbs:[2,3],lean:[0,0.04],bark:0},
-  birch:     {h:[9,13],   r:[0.21,0.30],w:1.12,lift:0.56,lobes:[3,5],limbs:[2,3],lean:[0,0.07],bark:1},
-  leaning:   {h:[10,14],  r:[0.32,0.46],w:1.22,lift:0.54,lobes:[4,6],limbs:[2,4],lean:[0.13,0.21],bark:0},
-  windshaped:{h:[9,13.5], r:[0.30,0.44],w:1.18,lift:0.54,lobes:[3,6],limbs:[2,4],lean:[0.09,0.15],bark:0},
-  orchard:   {h:[5.5,8],  r:[0.22,0.34],w:1.34,lift:0.44,lobes:[3,5],limbs:[3,4],lean:[0,0.08],bark:0},
+  beech:     {h:[15,20],  r:[0.34,0.48],w:1.16,lift:0.46,lobes:[4,6],limbs:[2,3],lean:[0,0.04],bark:0},
+  birch:     {h:[9,13],   r:[0.21,0.30],w:1.12,lift:0.47,lobes:[3,5],limbs:[2,3],lean:[0,0.07],bark:1},
+  leaning:   {h:[10,14],  r:[0.32,0.46],w:1.22,lift:0.45,lobes:[4,6],limbs:[2,4],lean:[0.13,0.21],bark:0},
+  windshaped:{h:[9,13.5], r:[0.30,0.44],w:1.18,lift:0.45,lobes:[3,6],limbs:[2,4],lean:[0.09,0.15],bark:0},
+  orchard:   {h:[5.5,8],  r:[0.22,0.34],w:1.34,lift:0.36,lobes:[3,5],limbs:[3,4],lean:[0,0.08],bark:0},
 };
 const FAM_BUILT={}; for(const f of FAMS) FAM_BUILT[f]=0;
 // tier 2 close and articulated, 1 reduced, 0 a silhouette mass
@@ -3073,22 +3108,50 @@ function uGeo(B){
   g.computeVertexNormals();
   return g;
 }
-// A blade was a triangle twice as tall as it was wide, and four to six of them
-// fanned from one point. At the fifteen to forty metres these are actually seen
-// from that is not a tussock, it is a scatter of thin dark spikes standing on a
-// clean field. The blade is now roughly as wide as it is tall and leans further
-// off vertical, so the handful of them overlaps into one soft mass with a ragged
-// top edge — a clump of grass — instead of a starburst of needles.
+// A blade was a TRIANGLE, and a triangle standing on the ground is a spike no
+// matter what colour it is or how wide its base — it converges to a point, and a
+// point against open sward is exactly the silhouette that reads as a thorn.
+// Widening the base and lifting the colour did not change that, which is why
+// they kept reading as spikes after both.
+//
+// A blade is now a quad: wide at the root, still a third of that width at the
+// tip, cut off flat and leaning. It has a SHOULDER instead of an apex, so where
+// blades overlap the clump has a broken horizontal top edge rather than a row of
+// converging needles. One low cross-blade is laid through the middle of the
+// clump so the mass reads as a tussock sitting in the grass rather than as a
+// bundle of separate leaves standing in a ring.
+// a blade: four corners, base rooted and still, top free to move in the wind
+function blade(B,ax,ay,az,bx,by,bz,cx,cy,cz,dx2,dy,dz2,cBase,cTop,swayTop){
+  const P=[[ax,ay,az,cBase,0],[bx,by,bz,cBase,0],[cx,cy,cz,cTop,swayTop],[dx2,dy,dz2,cTop,swayTop]];
+  for(const [i0,i1,i2] of [[0,1,2],[0,2,3]]){
+    for(const k of [i0,i1,i2]){
+      const v=P[k];
+      B.p.push(v[0],v[1],v[2]); B.c.push(v[3].r,v[3].g,v[3].b);
+      B.s.push(v[4]); B.k.push(0); B.a.push(B.can); B.u.push(1);
+    }
+  }
+}
+// A clump of grass at the fifteen to forty metres these are actually seen from
+// is a MASS with a ragged top, not a bundle of leaves. Both previous shapes tried
+// to draw the leaves: pointed triangles read as thorns, and blunting them into
+// quads only turned the thorns into little dark flags. What already reads
+// correctly at this scale in this world is the low shrub mound, so a tussock is
+// now built the same way — a small dome carrying the ground's own colour, with
+// two or three short blades breaking its outline so it does not read as a pebble.
 function addTuft(B,x,y,z,st,cLo,cHi,h,blades){
-  B.kind=0;
-  for(let i=0;i<blades;i++){
-    const a=st.r(0,TAU), w=h*st.r(0.28,0.46), hh=h*st.r(0.58,0.94);
+  B.kind=0; B.sway=0;
+  addBlob(B,x,y+h*0.13,z,st,h*st.r(0.50,0.68),h*st.r(0.34,0.46),h*st.r(0.50,0.68),
+    cHi,cLo,h*0.20);
+  const n=Math.max(2,Math.min(3,blades-2));
+  for(let i=0;i<n;i++){
+    const a=st.r(0,TAU), w=h*st.r(0.20,0.32), hh=h*st.r(0.62,0.98);
     const dx=Math.cos(a)*w, dz=Math.sin(a)*w;
-    const bx=Math.sin(a)*h*st.r(0.14,0.40), bz=Math.cos(a)*h*st.r(0.14,0.40);
-    B.sway=0;
-    B.p.push(x-dx,y,z-dz, x+dx,y,z+dz, x+bx,y+hh,z+bz);
-    for(let k=0;k<3;k++){ const c=(k===2)?cHi:cLo; B.c.push(c.r,c.g,c.b); B.k.push(0); B.a.push(B.can); B.u.push(1); }
-    B.s.push(0,0,hh);
+    const lean=h*st.r(0.18,0.42);
+    const bx=Math.sin(a)*lean, bz=Math.cos(a)*lean;
+    const tipW=w*st.r(0.22,0.36);
+    blade(B,x-dx,y+h*0.06,z-dz, x+dx,y+h*0.06,z+dz,
+            x+bx+Math.cos(a)*tipW,y+hh,z+bz+Math.sin(a)*tipW,
+            x+bx-Math.cos(a)*tipW,y+hh,z+bz-Math.sin(a)*tipW, cLo,cHi,hh);
   }
 }
 function addFern(B,x,y,z,st,cLo,cHi,h){
@@ -4443,6 +4506,7 @@ function markProvenance(kind){
 function freshRun(){
   return { distanceRiddenM:0, ascentRiddenM:0, descentRiddenM:0,
     maxRollDeg:0, peakDrawCalls:0, peakTriangles:0, peakResidentBands:0,
+    maxStepM:0, stepOverruns:0,
     bandsRealized:0, bandsDisposed:0, lifeFired:0, ambientProvenWhilePaused:false, pauseExercised:false,
     proximity:{ fork:false, water:false, bellroot:false, sisters:false },
     seen:{ forkBothArmsBeforeCommit:false, forkFirstSeenAtM:null, forkLeadBeforeCommitM:null,
@@ -4486,7 +4550,7 @@ function restartRide(){
   // elevation tracker is the one that bit: left holding the last frame's height,
   // the first step of a restarted ride booked the whole route as descent.
   disposeAllBands();
-  eyePrevY=null; pauseProbe=null; camRollDeg=0;
+  eyePrevY=null; gPrevFrame=null; pauseProbe=null; camRollDeg=0;
   RUN=freshRun();
   // A fixed timestep that is still in force after a restart still applies to the
   // new ride, so the new ride is still accelerated. Restarting must not be a way
@@ -4958,10 +5022,18 @@ function buildProof(){
       stallSamples:frameTimes.filter(v=>v>STALL_MS).length, stallThresholdMs:STALL_MS,
       byChapter:chapterFrameStats(), composer:'none' },
     run:{ provenance:RUN.provenance,
+      // the largest distance the rider covered between two rendered frames this
+      // run, and how many frames exceeded the corridor's own row spacing. A ride
+      // with any overrun has already been marked debug; these say by how much.
+      maxStepM:RUN.maxStepM, stepOverruns:RUN.stepOverruns, stepCeilingM:QCFG.row,
       // The single field that decides whether anything else in `run` may be
       // quoted as ride evidence. A warped run can still be inspected; it can
       // never be presented as a ride.
-      continuousRideEligible:(RUN.provenance==='continuous'||RUN.provenance==='accelerated'),
+      // A run that stepped over the road it was riding along is not a ride of this
+      // world however its timestep was labelled, so the overrun count is part of
+      // the condition and not merely reported beside it.
+      continuousRideEligible:(RUN.provenance==='continuous'||RUN.provenance==='accelerated')&&
+        RUN.stepOverruns===0,
       branchRidden:RUN.branchRidden, distanceRiddenM:Math.round(RUN.distanceRiddenM),
       ascentRiddenM:Math.round(RUN.ascentRiddenM*10)/10, descentRiddenM:Math.round(RUN.descentRiddenM*10)/10,
       maxCameraRollDeg:Math.round(RUN.maxRollDeg*100)/100,
@@ -4974,6 +5046,7 @@ function buildProof(){
       proximity:Object.assign({},RUN.proximity),
       seen:Object.assign({},RUN.seen),
       completedContinuousRide:(RUN.provenance==='continuous'||RUN.provenance==='accelerated')&&
+        RUN.stepOverruns===0&&
         RUN.marks.rested&&RUN.marks.rejoined&&RUN.distanceRiddenM>L_TOTAL*0.985 },
     lifetime:Object.assign({},LIFETIME),
     branchTotals:{ sun:{ascentM:Math.round(VAL.arm.sun.ascentM*10)/10,
@@ -5066,6 +5139,7 @@ const IDENTITY_PROBE=(()=>{
 }
 
 let wTime=0, lastNow=performance.now(), camInit=false, pitchSm=null, eyePrevY=null;
+let gPrevFrame=null;   // where the rider was on the previous rendered frame
 let fixedStep=0;
 const camFwd=new THREE.Vector3(0,0,1);
 const windDrift=WL.uCloudMove.value;
@@ -5150,6 +5224,17 @@ function tick(){
     { const dy=eyePrevY===null?0:(fr0.y-eyePrevY);
       if(dy>0) RUN.ascentRiddenM+=dy; else RUN.descentRiddenM-=dy;
       eyePrevY=fr0.y; RUN.distanceRiddenM=rider.g; }
+    // How far the rider actually moved between two rendered frames, which is the
+    // only thing that decides whether a ride skipped terrain. Bounding the fixed
+    // TIMESTEP does not bound this: the same step at eighteen metres a second
+    // covers twice the ground it does at nine, so a step declared safe at cruise
+    // becomes a skip the moment the ride speeds up. The bound is the corridor's
+    // own row spacing — past that a frame steps over a row of the road it is
+    // supposed to be riding along, and the run is no longer a ride of this world.
+    { const adv=Math.abs(rider.g-gPrevFrame);
+      if(gPrevFrame!==null&&adv>RUN.maxStepM) RUN.maxStepM=Math.round(adv*1000)/1000;
+      if(gPrevFrame!==null&&adv>QCFG.row){ RUN.stepOverruns++; markProvenance('debug'); }
+      gPrevFrame=rider.g; }
     { let prev=0;
       for(const c of CH){ if(rider.g>=prev) checkpoints[c.key]=true; prev=c.end*L_TOTAL; } }
     const STOP=toLocal(rider.branch,S_STOP);
@@ -5343,6 +5428,10 @@ window.__SUMMERGLASS_TEST__={
     if(target>S_SPLIT+58) rider.committed=true;
     rider.sM=toLocal(rider.branch,target); rider.g=target;
     rider.started=true; rider.ended=false; rider.v=CRUISE;
+    // A teleport is not a frame in which the rider travelled a kilometre. The
+    // step guard measures riding, so the jump itself is not offered to it —
+    // the warp is already recorded as a warp, which is the stronger statement.
+    gPrevFrame=null; eyePrevY=null;
     for(const e of LIFE_EVENTS) if(e.g<target-40) e.fired=true;
     warmResidency(target);
     return rider.g;
@@ -5559,6 +5648,90 @@ window.__SUMMERGLASS_TEST__={
         maxDropAnyM:Math.round(GROUND_STAT.maxDropM*1000)/1000,
         maxDropKeptM:Math.round(GROUND_STAT.maxKeptDropM*1000)/1000,
         plannedTotal:GROUND_STAT.trees}};
+  },
+  // The probe above asks `realizedGroundY`, which is a RECONSTRUCTION of the
+  // drawn surface — the same arithmetic the emitter used, run again. If that
+  // reconstruction is wrong anywhere, the probe and the renderer are looking at
+  // two different worlds and the probe will report contact that is not there.
+  // This one fires real rays at the meshes in the scene, which is the only
+  // surface a rider can actually stand on, and reports how far the two answers
+  // differ. It can only see trees whose band is currently resident, so it takes
+  // a station and returns what it covered; the caller walks the route.
+  groundingCast(){
+    const rc=new THREE.Raycaster(); rc.far=400;
+    const targets=corridorMeshes.concat(terrainMeshes);
+    const dir=new THREE.Vector3(0,-1,0), org=new THREE.Vector3();
+    const out={station:Math.round(rider.g),cast:0,noHit:0,floating:0,buried:0,
+      worstAbove:null,worstBelow:null,maxAboveM:-1e9,deepestBelowM:0,
+      analyticDisagreeMax:0,analyticDisagreeAt:null,analyticNull:0,ids:[]};
+    for(let bi=0;bi<bands.length;bi++){
+      if(!bands[bi].live) continue;
+      for(const t of (bandTrees[bi]||[])){
+        if(t.unseatable) continue;
+        org.set(t.x,t.y+180,t.z); rc.set(org,dir);
+        const hits=rc.intersectObjects(targets,false);
+        out.cast++;
+        if(!hits.length){ out.noHit++; continue; }
+        const drawn=hits[0].point.y, above=t.y-drawn;
+        out.ids.push(Math.round(t.x*4)*100000+Math.round(t.z*4));
+        if(above>out.maxAboveM){ out.maxAboveM=Math.round(above*1000)/1000;
+          out.worstAbove={what:'tree:'+t.fam,x:Math.round(t.x),z:Math.round(t.z),
+            aboveM:Math.round(above*1000)/1000,hit:hits[0].object.name||'?'}; }
+        if(above>0.05) out.floating++;
+        const under=-above;
+        if(under>0.9) out.buried++;
+        if(under>out.deepestBelowM){ out.deepestBelowM=Math.round(under*1000)/1000;
+          out.worstBelow={what:'tree:'+t.fam,x:Math.round(t.x),z:Math.round(t.z),
+            underM:Math.round(under*1000)/1000,hit:hits[0].object.name||'?'}; }
+        // and the question the old probe could never ask of itself
+        const an=realizedGroundY(t.x,t.z);
+        if(an===null){ out.analyticNull++; }
+        else {
+          const dd=Math.abs(an-drawn);
+          if(dd>out.analyticDisagreeMax){ out.analyticDisagreeMax=Math.round(dd*1000)/1000;
+            out.analyticDisagreeAt={x:Math.round(t.x),z:Math.round(t.z),
+              analyticY:Math.round(an*100)/100,drawnY:Math.round(drawn*100)/100}; }
+        }
+      }
+    }
+    if(out.maxAboveM<-1e8) out.maxAboveM=null;
+    return out;
+  },
+  // Identity of the realized world, tree by tree, so "the tiers plan the same
+  // world" can be checked against the trees themselves rather than against a
+  // count of them. Position, family, scale and lean are PLAN and must be
+  // identical at every tier. Seated height is REALIZATION and legitimately moves
+  // with tessellation, so it is digested separately and never conflated.
+  identityDigest(){
+    const hi=fnv(), hy=fnv();
+    let n=0, minY=1e9, maxY=-1e9;
+    for(const t of TREES){
+      hi.feed(Math.round(t.x*100),Math.round(t.z*100),t.fam,
+        Math.round(t.scl*1000),Math.round(t.lean*1000),t.unseatable?1:0);
+      hy.feed(Math.round(t.y*100));
+      n++; if(t.y<minY) minY=t.y; if(t.y>maxY) maxY=t.y;
+    }
+    return {trees:n,identity:hi.hex(),elevation:hy.hex(),
+      minSeatedY:Math.round(minY*100)/100,maxSeatedY:Math.round(maxY*100)/100};
+  },
+  // Every seated height, so two tiers can be compared element by element rather
+  // than by a digest that only says "different".
+  seatedHeights(){ const a=new Array(TREES.length);
+    // height AND lateral distance from the route, because where a tree stands
+    // decides whether a difference in how high it stands is visible at all
+    for(let i=0;i<TREES.length;i++) a[i]=[Math.round(TREES[i].y*100)/100,Math.round(TREES[i].d*10)/10];
+    return a; },
+  // Which arm a warped inspection is looking at. Riding decides the branch for a
+  // player; a warp never reaches the fork, so without this a two-arm sweep
+  // silently scans the default arm twice. Warped by construction, and it says so.
+  setBranch(which){
+    markProvenance('warped');
+    const arm=(which==='moss')?'moss':'sun';
+    rider.branch=arm; rider.forceBranch=arm; rider.committed=true;
+    rider.sM=toLocal(arm,rider.g);
+    gPrevFrame=null; eyePrevY=null;
+    warmResidency(rider.g);
+    return rider.branch;
   },
   // anything that reaches past the controls into world state is debug-grade
   markDebug(){ markProvenance('debug'); return RUN.provenance; },

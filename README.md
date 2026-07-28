@@ -29,7 +29,7 @@ streaming architecture are unchanged. Four things changed:
 * **The ground is quieter still**, and the road occupies about a quarter of the
   lower frame rather than a third.
 
-A later pass, from field testing on hardware, changed five more things and
+A later pass, from field testing on hardware, changed five things and
 nothing about the composition — every landmark, road, cloud, seed and chapter
 decision is where it was:
 
@@ -61,6 +61,41 @@ decision is where it was:
   surface reports which rung it settled on, and a run that only met budget by
   spending resolution cannot report a clean pass without saying so.
 * **A rabbit, and a squirrel** on a trunk the renderer actually drew.
+
+A final pass repaired the proof surface itself, because a report that reads all
+green is worse than a report that reads red if the checks are not asking what
+they claim to ask. Six of them were not:
+
+* **An accelerated ride could skip terrain and still call itself eligible.**
+  Bounding the fixed timestep does not bound the distance covered — the same step
+  covers twice the ground at twice the speed. The world now measures how far the
+  rider actually moved between two rendered frames and marks the run debug the
+  moment that exceeds the corridor's own row spacing, and eligibility depends on
+  it rather than merely reporting it.
+* **The restart check contradicted itself.** It commanded a quarter-second
+  accelerated step, restarted, waited four wall-clock seconds and then asserted
+  the new run had ridden under sixty metres. That holds on a five-frame-a-second
+  rasteriser and fails on real hardware for no reason but speed. The accelerant is
+  cleared and the run held before measuring, and the assertion is now exact.
+* **The grounding probe read different geometry from the renderer.** It asked a
+  reconstruction of the drawn surface rather than the surface. It now fires real
+  rays at the meshes in the scene, walked along both arms, and reports how far the
+  reconstruction disagrees with them.
+* **Quality tiers were compared by counting.** Equal counts of different trees is
+  not the same world. Per-tree identity — position, family, scale, lean — is now
+  hashed and must be identical; seated height is realization, follows the surface
+  each tier draws, and is reported as a distribution against a stated bound. That
+  measurement immediately found the low tier resampling the landform at seven
+  metres where the others use five, moving trees near the road by three quarters
+  of a metre at the ninety-ninth percentile. `row` is no longer a cost knob.
+* **The budget sweep scanned one arm twice.** `chooseBranch` sets what a RIDE
+  would resolve at the fork; the sweep warps and never reaches it, so both passes
+  stayed on the default arm. The arm is set outright and re-read from the world
+  every sample.
+* **The performance check measured two hundred metres at the wrong resolution.**
+  It stood at the gate for twenty seconds on a page that had never been asked for
+  the device pixel ratio the tier ships. It now rides the whole route at the
+  tier's own DPR and takes its verdict per chapter.
 
 Open `index.html` over any HTTP server. No build step, no assets, no
 dependencies beyond the pinned Three.js module in the import map.
