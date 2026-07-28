@@ -645,18 +645,20 @@ function structWorld(rec) {
   // --- ch5: the Amphitheater of Echoes ---
   {
     const c = CH[4];
-    const as = (c.s0 + c.s1) / 2;
+    // the bowl sits ahead of the chapter's midpoint, inside the forward field of view,
+    // far enough out that its tiers never loom overhead
+    const as = (c.s0 + c.s1) / 2 + 80;
     const aSide = A() < 0.5 ? 1 : -1;
-    const ad = aSide * 32.5;
+    const ad = aSide * 41;
     const aR = 26 + A() * 6;
     routeAt(as, _rf3);
     const floorY = terrainNatural(as, ad, _rf3.x + _rf3.nx * ad, _rf3.z + _rf3.nz * ad) - 1.2;
-    // the bowl's mouth is angled toward the approaching rider (clearance-checked rotation)
-    addStruct({ t: 'amphi', s: as, d: ad, rot: (aSide > 0 ? 0 : Math.PI) - 0.38 * aSide, sc: 1, r: aR, side: aSide, ruin: R() * 0.5 });
+    // the mouth opens up-route: approaching riders look straight into the bowl
+    addStruct({ t: 'amphi', s: as, d: ad, rot: (aSide > 0 ? 0 : Math.PI) - 1.1 * aSide, sc: 1, r: aR, side: aSide, ruin: R() * 0.5 });
     TERRAFORMS.push({ s: as, d: ad, r: aR + 16, y: floorY, blend: 0.95 });
     POI.amphi = { s: as, d: ad, r: aR, side: aSide, floorY };
-    // approach plaza + fragments
-    addStruct({ t: 'gate', s: as - aR - 40, d: 0, rot: 0, sc: 0.9, ruin: 0.6 });
+    // approach plaza + fragments — the gate stands well before the reveal
+    addStruct({ t: 'gate', s: as - aR - 130, d: 0, rot: 0, sc: 0.9, ruin: 0.6 });
     for (let i = 0; i < 5; i++) {
       const fs2 = rr(A, c.s0 + 30, c.s1 - 30);
       const kind3 = rpick(A, ['statue', 'drum', 'ped', 'col']);
@@ -688,13 +690,14 @@ function structWorld(rec) {
   {
     const c = CH[6];
     addStruct({ t: 'gate', s: c.s0 + 50, d: 0, rot: 0, sc: 1.35, ruin: 0.15 });
-    // processional colonnade
-    for (let s = c.s0 + 90; s < c.s1 - 320; s += rr(A, 9, 12)) {
+    // processional colonnade — carried all the way to the temple forecourt
+    for (let s = c.s0 + 90; s < c.s1 - 225; s += rr(A, 9, 12)) {
       for (const sd of [1, -1]) {
         if (R() < 0.72) addStruct({ t: 'col', s: s + rr(A, -0.6, 0.6), d: sd * rr(A, 11.4, 12.4), rot: rr(A, 0, TAU), sc: 0.92, ruin: rr(R, 0, 0.55), h: 9 });
       }
     }
-    const ts = c.s1 - 235;
+    // the temple stands late and close: a forward landmark from the threshold to the terrace
+    const ts = c.s1 - 150;
     // successive thresholds of the luminous climb — each gate frames the next glimpse
     addStruct({ t: 'gate', s: ts - 330, d: 0, rot: 0, sc: 1.05, ruin: 0.42 });
     addStruct({ t: 'gate', s: ts - 150, d: 0, rot: 0, sc: 1.2, ruin: 0.1 });
@@ -707,14 +710,14 @@ function structWorld(rec) {
       if (clearOK(ws2, wd2, wl2 / 2 + 1.8)) addStruct(wrec2);
     }
     const tSide = A() < 0.5 ? 1 : -1;
-    const td = tSide * 37;
+    const td = tSide * 31;
     routeAt(ts, _rf3);
     const platY = terrainNatural(ts, td, _rf3.x + _rf3.nx * td, _rf3.z + _rf3.nz * td);
     addStruct({ t: 'temple', s: ts, d: td, rot: tSide > 0 ? Math.PI : 0, sc: 1, side: tSide, ruin: R() * 0.4 });
     TERRAFORMS.push({ s: ts, d: td, r: 46, y: platY, blend: 0.92 });
     POI.temple = { s: ts, d: td, side: tSide };
     // sealed door faces the road — anchor of the Impossible Current
-    POI.sealedDoor = { s: ts, d: tSide * 28.5 };
+    POI.sealedDoor = { s: ts, d: tSide * 22.5 };
     addStruct({ t: 'obelisk', s: ts - 46, d: tSide * 16, rot: 0, sc: 1.2, ruin: 0.1 });
     addStruct({ t: 'obelisk', s: ts + 46, d: tSide * 16, rot: 0, sc: 1.2, ruin: 0.4 });
     // final overlook
@@ -768,6 +771,16 @@ const SKYLINE = (() => {
     list.push({
       x: _rf3.x + _rf3.tx * ahead + _rf3.nx * lat, z: _rf3.z + _rf3.tz * ahead + _rf3.nz * lat,
       t: vistaTypes[i], sc, y, hero: true
+    });
+  }
+  // a third depth band: the far capital dissolving into the haze beyond the civic city
+  for (let i = 0; i < 6; i++) {
+    const ahead = rr(A, 430, 760), lat = rr(A, -320, 320);
+    const sc = rr(A, 1.3, 2.4);
+    const top = -25 - A() * 12;
+    list.push({
+      x: _rf3.x + _rf3.tx * ahead + _rf3.nx * lat, z: _rf3.z + _rf3.tz * ahead + _rf3.nz * lat,
+      t: rpick(A, ['dome', 'towers', 'ziggurat', 'aquesil']), sc, y: top - sc * 30 * 1.65
     });
   }
   return list;
@@ -2410,26 +2423,33 @@ function gColossus(rec) {
 function gOverlook(rec) {
   const parts = [];
   const R = geoRng('overlook');
-  // widened terminal plaza
-  parts.push(xf(tag(new THREE.CylinderGeometry(13, 13.6, 0.6, 24, 1), 0.4, 0.46, 0.5, 0.4, false), 0, -0.28, 6));
-  // balustrade arc beyond the route end
-  const rB = 12.2;
+  // terminal plaza: smaller, darker, weathered — a frame, not a stage
+  parts.push(xf(tag(new THREE.CylinderGeometry(11, 11.6, 0.6, 24, 1), 0.3, 0.36, 0.4, 0.6, false), 0, -0.28, 6));
+  // balustrade: two broken arcs of weathered posts with a fallen middle
+  const rB = 11.4;
   for (let i = 0; i < 17; i++) {
     const a = -Math.PI * 0.42 + (i / 16) * Math.PI * 0.84;
     const bx = Math.sin(a) * rB, bz = 6 + Math.cos(a) * rB;
-    if (R() < 0.12) continue;
-    parts.push(xf(tag(new THREE.CylinderGeometry(0.14, 0.2, 1.1, 6), 0.96, 0.98, 0.96, 0.4, false), bx, 0.55, bz));
-    if (i % 4 === 0) parts.push(xf(box(0.5, 1.4, 0.5, 0.94, 0.96, 0.94, 0.5), bx, 0.7, bz));
+    if (R() < 0.28) continue;                                  // missing posts
+    const tilt = R() < 0.2 ? rr(R, -0.12, 0.12) : 0;
+    parts.push(xf(tag(new THREE.CylinderGeometry(0.14, 0.2, 1.1, 6), 0.8, 0.84, 0.82, 0.7, false), bx, 0.55, bz, tilt, 0, tilt));
+    if (i % 4 === 0) parts.push(xf(box(0.5, 1.4, 0.5, 0.78, 0.82, 0.8, 0.8), bx, 0.7, bz));
   }
-  // rail — a horizontal arc capping the balustrade
-  const rail = new THREE.TorusGeometry(rB, 0.16, 6, 28, Math.PI * 0.84);
-  rail.rotateZ(Math.PI / 2 - Math.PI * 0.42);   // center the arc before laying it flat
-  rail.rotateX(Math.PI / 2);
-  parts.push(xf(tag(rail, 0.97, 0.99, 0.97, 0.35), 0, 1.15, 6));
-  // twin pharos columns flanking the arrival
+  for (const [a0, a1, sag] of [[-0.42, -0.06, 0], [0.1, 0.42, 0.05]]) {
+    const rail = new THREE.TorusGeometry(rB, 0.15, 6, 20, Math.PI * (a1 - a0));
+    rail.rotateZ(Math.PI / 2 - Math.PI * a1);
+    rail.rotateX(Math.PI / 2 + sag);
+    parts.push(xf(tag(rail, 0.82, 0.86, 0.84, 0.6), 0, 1.15, 6));
+  }
+  // a rail section lies fallen on the paving where the arc is broken
+  parts.push(xf(tag(new THREE.CylinderGeometry(0.15, 0.15, 3.4, 6), 0.78, 0.82, 0.8, 1.0, false), 0.6, 0.12, 6 + rB - 1.6, Math.PI / 2, 0.5, 0));
+  // flanking foreground ruins: broken stumps and a tilted slab frame the vista
   for (const sd of [1, -1]) {
     parts.push(...gColumn(8.5, 1.05, 0.06, 'pharos' + sd).map(g => xf(g, sd * 10.5, 0, -6)));
+    parts.push(...gColumn(4.2, 0.8, 0.72, 'ovstump' + sd).map(g => xf(g, sd * 11.6, 0, 3.5)));
   }
+  parts.push(xf(box(2.6, 0.35, 1.7, 0.72, 0.76, 0.74, 1.1), -10.4, 0.2, 8.5, 0.12, 0.7, 0.2));
+  parts.push(...gDrum(0.9, 'ovdrum').map(g => xf(g, 10.8, 0, 7.5, 0, 1.1, 0)));
   return parts;
 }
 
@@ -3062,17 +3082,27 @@ scene.add(surfacePlane);
       }
       add(new THREE.BoxGeometry(nC * span * 1.05, S * 0.09, S * 0.16), rec.x, rec.y + S * 0.66, rec.z, 0.29);
     } else if (rec.t === 'dome') {
-      const drum = new THREE.CylinderGeometry(S * 0.85, S * 0.92, S * 0.8, 18, 1);
-      add(drum, rec.x, rec.y + S * 0.4, rec.z);
-      const dome = new THREE.SphereGeometry(S * 0.85, 18, 10, 0, TAU, 0, Math.PI * 0.5);
-      add(dome, rec.x, rec.y + S * 0.8, rec.z);
-      const lant = new THREE.CylinderGeometry(S * 0.1, S * 0.13, S * 0.3, 8);
-      add(lant, rec.x, rec.y + S * 1.68, rec.z);
+      const drum = new THREE.CylinderGeometry(S * 0.85, S * 0.92, S * 0.72, 18, 1);
+      add(drum, rec.x, rec.y + S * 0.36, rec.z);
+      const drum2 = new THREE.CylinderGeometry(S * 0.7, S * 0.78, S * 0.16, 18, 1);
+      add(drum2, rec.x, rec.y + S * 0.8, rec.z);
+      const dome = new THREE.SphereGeometry(S * 0.8, 18, 10, 0, TAU, 0, Math.PI * 0.5);
+      add(dome, rec.x, rec.y + S * 0.86, rec.z);
+      // a slender lantern crowned by a finial — never a chimney
+      const lant = new THREE.CylinderGeometry(S * 0.05, S * 0.068, S * 0.15, 8);
+      add(lant, rec.x, rec.y + S * 1.7, rec.z);
+      const fin = new THREE.SphereGeometry(S * 0.045, 8, 6);
+      add(fin, rec.x, rec.y + S * 1.8, rec.z);
     } else if (rec.t === 'towers') {
       for (let i = 0; i < 4; i++) {
         const h = S * (0.85 + ((i * 37) % 10) / 12);
-        const t = new THREE.BoxGeometry(S * 0.28, h, S * 0.28);
-        add(t, rec.x + ((i % 2) * 2 - 1) * S * 0.5, rec.y + h / 2, rec.z + (i > 1 ? 1 : -1) * S * 0.45, i * 0.4);
+        const bx = rec.x + ((i % 2) * 2 - 1) * S * 0.5, bz = rec.z + (i > 1 ? 1 : -1) * S * 0.45;
+        // tapered campanile: broad base, narrow upper stage, pyramidal cap
+        add(new THREE.BoxGeometry(S * 0.3, h * 0.62, S * 0.3), bx, rec.y + h * 0.31, bz, i * 0.4);
+        add(new THREE.BoxGeometry(S * 0.2, h * 0.38, S * 0.2), bx, rec.y + h * 0.81, bz, i * 0.4);
+        const cap = new THREE.CylinderGeometry(S * 0.015, S * 0.15, S * 0.16, 4);
+        cap.rotateY(Math.PI / 4 + i * 0.4);
+        add(cap, bx, rec.y + h + S * 0.07, bz);
       }
     } else if (rec.t === 'wall') {
       const w = new THREE.BoxGeometry(S * 2.6, S * 0.85, S * 0.5);
@@ -3557,6 +3587,7 @@ function updateGiant(t, riderS) {
           G.p0.set(_rf.x + _rf.nx * p.side * dist - _rf.tx * p.dir * travel * 0.5, _rf.y + dh, _rf.z + _rf.nz * p.side * dist - _rf.tz * p.dir * travel * 0.5);
           G.v.set(_rf.tx * p.dir, 0, _rf.tz * p.dir).multiplyScalar(travel / p.dur);
         }
+        G.p0.y = Math.min(G.p0.y, -12);   // the giant never breaches the surface
         G.tStart = t; G.tEnd = t + p.dur;
         G.curPass = p;
         G.active = true;
@@ -3936,7 +3967,7 @@ const GRADES = [
   { fogSh: '#1b5a4e', fogDp: '#081d24', den: 0.0146, sun: 0.86, caust: 0.9, edge: 1.05 },  // kelp gate: olive enclosure
   { fogSh: '#245f6b', fogDp: '#0a2433', den: 0.0112, sun: 1.02, caust: 1.0, edge: 0.9 },   // column forest
   { fogSh: '#28655c', fogDp: '#0b2530', den: 0.0122, sun: 0.94, caust: 0.95, edge: 1.15 }, // divided current
-  { fogSh: '#2b6e72', fogDp: '#0a2331', den: 0.0100, sun: 1.10, caust: 1.05, edge: 0.9 },  // amphitheater: clearing
+  { fogSh: '#2b6e72', fogDp: '#0a2331', den: 0.0091, sun: 1.10, caust: 1.05, edge: 0.9 },  // amphitheater: clearing
   { fogSh: '#0b1f30', fogDp: '#020509', den: 0.0215, sun: 0.23, caust: 0.2, edge: 2.1 },   // abyssal crossing: true dark
   { fogSh: '#2d766a', fogDp: '#0b2836', den: 0.0084, sun: 1.14, caust: 1.08, edge: 0.95 }, // temple: the luminous climb
 ];
