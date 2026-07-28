@@ -96,7 +96,7 @@ const PAL={
 // One eye height for the whole world: the riding camera, the sight lines the
 // plan uses to decide what is visible from the road, and the validator that
 // checks the camera never ends up inside the terrain.
-const EYE_H=1.74, PITCH_BIAS=0.036;
+const EYE_H=1.86, PITCH_BIAS=0.052;
 const col=(h)=>new THREE.Color(h);
 const mixc=(a,b,t)=>col(a).lerp(col(b),t);
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -548,7 +548,15 @@ const S_STOP=L_TOTAL;                                 // the rest; the road keep
 H.route.feed(FRAMES.sun.len,FRAMES.moss.len,S_COMMIT.sun,S_COMMIT.moss,S_MERGE.sun,S_MERGE.moss);
 
 const ROAD_W=ROUTE.r(4.62,4.94), RH=ROAD_W/2, SHOULDER=3.0, EXCL=RH+SHOULDER;
-const APRON=46;                                       // conformal corridor half-width
+// Conformal corridor half-width. The coarse ground field beyond it is fifteen
+// metres to a cell, which reads as faceted pyramids on a near hillside; pushing
+// the fine mesh out to sixty-six metres moves that coarseness far enough away
+// that its facets are a few pixels instead of a landform.
+const APRON=66;
+// Where the coarse field is allowed to begin. It must be the corridor's own
+// reach: any smaller number and the two surfaces draw the same ground and
+// disagree about its height, any larger and neither draws it.
+const FIELD_HOLD=APRON-3;
 H.route.feed(ROAD_W);
 // ============================================================
 // PLAN — ENCLOSURE AND RELEASE
@@ -652,15 +660,57 @@ function cfSample(x,z,arr){
   const a=arr[iz*CF.nx+ix], b=arr[iz*CF.nx+ix+1], c=arr[(iz+1)*CF.nx+ix], d=arr[(iz+1)*CF.nx+ix+1];
   return lerp(lerp(a,b,tx),lerp(c,d,tx),tz);
 }
-const _ri={d:0,y:0,s:0,arm:0,dA:[0,0],yA:[0,0]};
+// `laneGapM` is how far apart the two lanes actually are here, measured
+// between the nearest point on each. Zero outside the fork, where they are
+// the same road. It is what tells a point between the lanes apart from a
+// point out on the perpendicular bisector, which is equidistant too.
+const _ri={d:0,y:0,s:0,arm:0,dA:[0,0],yA:[0,0],laneGapM:0};
+// Inside the fork BOTH lanes' distances have to be trustworthy, not only the
+// nearer one's: the ground between the arms is derived from both. The scan
+// radius is sized from the coarse field, which knows only the nearest lane, so
+// a point close to one arm would stop searching before reaching the other and
+// report it as infinitely far. Two grids disagreeing about that drew the same
+// ground two different ways. Inside the fork's own bounding box the radius is
+// floored instead.
+const FORK_MAX_GAP=(()=>{
+  let m=0;
+  for(let g=S_SPLIT;g<S_MERGE_SPINE;g+=6){
+    const a=getFrame(FRAMES.sun,clamp(toLocal('sun',g),0,FRAMES.sun.len-1));
+    const b=getFrame(FRAMES.moss,clamp(toLocal('moss',g),0,FRAMES.moss.len-1));
+    m=Math.max(m,Math.hypot(a.x-b.x,a.z-b.z));
+  }
+  return m*1.15;
+})();
+// The floor is only worth paying for where a point could actually lie between
+// the arms. The shared bank fades out once the two distances sum to more than
+// 1.22 of the gap, so once the NEARER lane is already 0.61 of a gap away the
+// mix is zero whatever the far lane's distance turns out to be — and outside
+// the mix, a lane reported as merely "farther than the scan" gives the same
+// ownership answer as a lane reported exactly. Inside that ring the scan must
+// still reach 1.61 gaps to be sure of finding the far lane.
+const FORK_NEAR=FORK_MAX_GAP*0.61;
+const FORK_R=Math.ceil((FORK_NEAR+FORK_MAX_GAP)/rCell);
+const FORK_BOX=(()=>{
+  let x0=1e9,x1=-1e9,z0=1e9,z1=-1e9;
+  for(const [F,a,b] of [[FRAMES.sun,S_SPLIT-90,S_MERGE_SPINE+90],
+                        [FRAMES.moss,S_COMMIT.moss-90,S_MERGE.moss+90]]){
+    for(let s=Math.max(0,a);s<Math.min(F.len,b);s+=8){
+      const p=getFrame(F,s);
+      x0=Math.min(x0,p.x); x1=Math.max(x1,p.x); z0=Math.min(z0,p.z); z1=Math.max(z1,p.z);
+    }
+  }
+  const M=FORK_NEAR+8;
+  return {x0:x0-M,x1:x1+M,z0:z0-M,z1:z1+M};
+})();
 function routeInfo(x,z){
   const approx=cfSample(x,z,CF.d);
   if(approx>190){ _ri.d=approx; _ri.y=cfSample(x,z,CF.y); _ri.s=cfSample(x,z,CF.s); _ri.arm=0;
-    _ri.dA[0]=approx; _ri.dA[1]=approx+80; _ri.yA[0]=_ri.y; _ri.yA[1]=_ri.y; return _ri; }
+    _ri.dA[0]=approx; _ri.dA[1]=approx+80; _ri.yA[0]=_ri.y; _ri.yA[1]=_ri.y; _ri.laneGapM=0; return _ri; }
   const gx=Math.floor(x/rCell), gz=Math.floor(z/rCell);
   let R=1; if(approx>18) R=2; if(approx>44) R=3; if(approx>68) R=4; if(approx>110) R=6;
+  if(approx<FORK_NEAR&&x>FORK_BOX.x0&&x<FORK_BOX.x1&&z>FORK_BOX.z0&&z<FORK_BOX.z1) R=Math.max(R,FORK_R);
   let bd=1e18,by=0,bs=0,ba=0;
-  const dA0=[1e18,1e18], yA0=[0,0];
+  const dA0=[1e18,1e18], yA0=[0,0], pA0=[0,0,0,0];
   for(let ax=gx-R;ax<=gx+R;ax++) for(let az=gz-R;az<=gz+R;az++){
     const c=rGrid.get(rKey(ax,az)); if(!c) continue;
     for(let i=0;i<c.length;i+=8){
@@ -673,14 +723,15 @@ function routeInfo(x,z){
       const d=ex*ex+ez*ez;
       const yy=c[i+1]+c[i+7]*t;
       if(d<bd){ bd=d; by=yy; bs=c[i+3]+t; ba=a; }
-      if(d<dA0[a]){ dA0[a]=d; yA0[a]=yy; }
+      if(d<dA0[a]){ dA0[a]=d; yA0[a]=yy; pA0[a*2]=c[i]+c[i+5]*t; pA0[a*2+1]=c[i+2]+c[i+6]*t; }
     }
   }
   if(bd>1e17){ _ri.d=approx; _ri.y=cfSample(x,z,CF.y); _ri.s=cfSample(x,z,CF.s); _ri.arm=0;
-    _ri.dA[0]=approx; _ri.dA[1]=approx+80; _ri.yA[0]=_ri.y; _ri.yA[1]=_ri.y; return _ri; }
+    _ri.dA[0]=approx; _ri.dA[1]=approx+80; _ri.yA[0]=_ri.y; _ri.yA[1]=_ri.y; _ri.laneGapM=0; return _ri; }
   _ri.d=Math.sqrt(bd); _ri.y=by; _ri.s=bs; _ri.arm=ba;
   _ri.dA[0]=Math.sqrt(dA0[0]); _ri.dA[1]=Math.sqrt(dA0[1]);
   _ri.yA[0]=yA0[0]; _ri.yA[1]=yA0[1];
+  _ri.laneGapM=(dA0[0]>1e17||dA0[1]>1e17)?0:Math.hypot(pA0[0]-pA0[2],pA0[1]-pA0[3]);
   return _ri;
 }
 
@@ -969,10 +1020,20 @@ function surfaceY(x,z){
   let y=base;
   if(w0>1e-4||w1>1e-4){
     const d0=Math.max(ri.dA[0],0.6), d1=Math.max(ri.dA[1],0.6);
-    const p0=1/Math.pow(d0,10), p1=1/Math.pow(d1,10);
     const e0=ri.yA[0]+corridorProfile(ri.dA[0],base-ri.yA[0]);
     const e1=ri.yA[1]+corridorProfile(ri.dA[1],base-ri.yA[1]);
-    let eng=(p0*e0+p1*e1)/(p0+p1);
+    // The two beds used to swap over an inverse-tenth-power weighting, which
+    // put the whole height difference between the lanes — up to nineteen metres
+    // at the fork — into a band a few metres wide. That is a cliff, not a bank,
+    // and no corridor grid can draw a cliff consistently from two directions:
+    // the two aprons landed on opposite sides of it and disagreed by five
+    // metres, which is the shelf that appeared to hang in the air between the
+    // arms. Blending on the normalised medial coordinate instead spreads the
+    // change across the span between the lanes, so the wedge is a graded bank
+    // and both grids draw the same one. Each lane still owns the ground beside
+    // it outright — that is the `own` term below, not this weighting.
+    const t=clamp(d0/(d0+d1),0,1);
+    let eng=lerp(e0,e1,smooth(0.16,0.84,t));
     // inside the shoulder the nearest lane owns the ground outright: nothing
     // from the other lane is allowed to lift the ground beside this one
     const own=1-smooth(RH+3.0,RH+9.5,ri.d);
@@ -1645,13 +1706,13 @@ QUALITY_READS_AT_PLAN=QUALITY_READS;   // the plan stage never asked what tier t
 // REALIZATION — quality tiers change representation cost, never identity
 // ============================================================
 const QCFG={
-  low:      { row:7.0,  tile:18, ahead:620,  behind:230, under:0.34, nearD:13, midD:58,  farD:230, shadow:0,    part:0.5, lobe:0, tuftBand:18, capNear:3, capMid:14, bandTreeCap:40, cloudN:13, view:1500, tileView:1500, dpr:1.0 },
-  standard: { row:5.0,  tile:16, ahead:800,  behind:270, under:0.62, nearD:17, midD:78,  farD:300, shadow:1024, part:1.0, lobe:1, tuftBand:24, capNear:5, capMid:20, bandTreeCap:56, cloudN:17, view:1620, tileView:1800, dpr:1.25 },
+  low:      { row:7.0,  tile:18, ahead:620,  behind:230, under:0.34, nearD:13, midD:58,  farD:230, shadow:0,    part:0.5, lobe:0, tuftBand:11, capNear:3, capMid:12, bandTreeCap:36, cloudN:13, view:1500, tileView:1500, roundMid:3, dpr:1.0 },
+  standard: { row:5.0,  tile:16, ahead:730,  behind:270, under:0.62, nearD:17, midD:70,  farD:300, shadow:1024, part:1.0, lobe:1, tuftBand:15, capNear:5, capMid:16, bandTreeCap:48, cloudN:17, view:1620, tileView:1800, roundMid:6, dpr:1.25 },
   // `lobe` is the icosphere subdivision of a foliage puff: 0=20 triangles,
   // 1=80, 2=320. Now that lobes carry smooth normals, level 2 costs four times
   // the geometry for a difference nobody can see at riding speed — so the top
   // tier spends its budget on reach, density and shadow resolution instead.
-  high:     { row:5.0,  tile:15, ahead:960,  behind:300, under:0.84, nearD:22, midD:94,  farD:340, shadow:2048, part:1.3, lobe:1, tuftBand:29, capNear:7, capMid:26, bandTreeCap:68, cloudN:21, view:1900, tileView:2100, dpr:1.5 },
+  high:     { row:5.0,  tile:12, ahead:790,  behind:255, under:0.84, nearD:22, midD:82,  farD:340, shadow:2048, part:1.3, lobe:1, tuftBand:18, capNear:6, capMid:19, bandTreeCap:58, cloudN:21, view:1900, tileView:2100, roundMid:9, dpr:1.5 },
 }[readQuality()];
 H.real.feed(QUALITY); for(const k of Object.keys(QCFG)) H.real.feed(k,QCFG[k]);
 
@@ -1816,7 +1877,10 @@ const ROAD_CONTRAST=lumOf(C_ROAD_MID)/lumOf(C_SEAM);
 const COLS=(()=>{
   const c=[];
   for(const t of [-1,-0.72,-0.40,-0.14,0.14,0.40,0.72,1]) c.push(t*RH);
-  for(const a of [0.22,0.6,1.15,1.9,2.9,4.4,8.0,13.0,20.0,29,38,APRON]){ c.push(RH+a); c.push(-(RH+a)); }
+  // The outer columns were ten to eighteen metres apart, which on a hillside
+  // makes triangles long enough to read as a facet rather than a slope. Closer
+  // spacing out here costs a few thousand triangles and buys the far bank back.
+  for(const a of [0.22,0.6,1.15,1.9,2.9,4.4,8.0,12.5,18,25,33,43,54,APRON]){ c.push(RH+a); c.push(-(RH+a)); }
   c.sort((p,q)=>p-q);
   return c;
 })();
@@ -1872,25 +1936,67 @@ corridorMat.onBeforeCompile=(sh)=>{
 };
 
 function armIndex(arm){ return arm==='sun'?0:1; }
+// Between the two lanes of the fork both corridors necessarily reach the same
+// ground, and each triangulates it from its own lane's direction at its own
+// column spacing — five and a half metres near the road, twelve out at the
+// apron. Whatever the land does in there, if the two grids read it differently
+// then the place they disagree is the place one of them ends, and an edge that
+// ends five metres above the surface under it is a shelf hanging in the air.
+// That is what was between the arms.
+//
+// So between the lanes the corridor does not draw the land's own answer. It
+// draws a shared bank: a straight ramp from one lane's bed to the other's,
+// evaluated from the place and not from the lane doing the reading. Both grids
+// interpolate the same nearly-linear function, so they land on each other to
+// within a few centimetres, and the wedge reads as one graded slope instead of
+// two arguing ones. The ramp is faded out well before either shoulder, so each
+// lane still keeps its own bed, its own cut and its own drainage.
+function forkBankMix(ri){
+  const gap=ri.laneGapM;
+  if(gap<14||gap>170) return 0;              // one road, or not the fork at all
+  const d0=ri.dA[0], d1=ri.dA[1];
+  // Strictly between the lanes. Every point on the perpendicular bisector is
+  // equidistant, including points far out to the side with no bank under them
+  // at all; only points between the two have d0+d1 equal to the gap itself.
+  const between=1-smooth(1.04,1.22,(d0+d1)/gap);
+  const off=smooth(RH+4.0,RH+13.0,Math.min(d0,d1));
+  return between*off;
+}
+function forkBankGround(x,z,ri){
+  const g=groundY(x,z);
+  const w=forkBankMix(ri);
+  if(w<=1e-3) return g;
+  const t=clamp(ri.dA[0]/Math.max(1e-3,ri.dA[0]+ri.dA[1]),0,1);
+  return lerp(g,lerp(ri.yA[0],ri.yA[1],smooth(0.06,0.94,t)),w);
+}
+// the lift the plan asks of a lane at this station, so validation can tell a
+// designed offset apart from a defect
+function designedLift(arm,sLoc){
+  if(arm!=='moss') return 0;
+  return 0.055*smooth(S_COMMIT.moss-30,S_COMMIT.moss+34,sLoc)
+              *(1-smooth(S_MERGE.moss-52,S_MERGE.moss-4,sLoc));
+}
 function buildCorridor(arm,sLo,sHi,rowScale){
   const F=FRAMES[arm], ai=armIndex(arm);
+  // Both lanes use the same threshold, and it is applied to the most-owning
+  // corner of a quad rather than to the average of four. See the emission loop:
+  // that is what makes coverage provable instead of merely likely.
+  const OWN_EDGE=-1.0;
   const row=QCFG.row*(rowScale||1);
   const i0=Math.max(0,sLo), i1=Math.min(F.len,sHi);
   const rows=Math.max(2,Math.round((i1-i0)/row)+1);
   const W=COLS.length;
   const P=new Float32Array(rows*W*3), C=new Float32Array(rows*W*3);
   const CA=new Float32Array(rows*W), SS=new Float32Array(rows*W), LT=new Float32Array(rows*W), MT=new Float32Array(rows*W);
-  const ok=new Uint8Array(rows*W);
+  const ok=new Float32Array(rows*W);
   const IDX=[];
-  // The Mosswater lane is lifted a few centimetres so it wins the depth test
-  // where it runs beside the Sunpath — but that lift has to be gone by the time
-  // the two become one road, or the rejoin is a doubled surface with a visible
-  // shelf along it. It fades in after the split and out before the merge.
-  const liftAt=(sLoc)=>{
-    if(ai!==1) return 0;
-    return 0.055*smooth(S_COMMIT.moss-30,S_COMMIT.moss+34,sLoc)
-                *(1-smooth(S_MERGE.moss-52,S_MERGE.moss-4,sLoc));
-  };
+  // The Mosswater lane's stone is lifted a few centimetres so it wins the depth
+  // test where it runs beside the Sunpath, and the lift fades in after the split
+  // and out before the merge, because the rejoin must not be a doubled surface
+  // with a shelf along it. The GROUND is never lifted: both corridors sample the
+  // same ground function, so where they overlap at the ownership seam their
+  // verges are coincident by construction rather than a few centimetres apart.
+  const liftAt=(sLoc)=>designedLift(arm,sLoc);
   for(let r=0;r<rows;r++){
     const s=i0+(i1-i0)*r/(rows-1);
     const lift=liftAt(s);
@@ -1903,14 +2009,17 @@ function buildCorridor(arm,sLo,sHi,rowScale){
       const x=fr.x+fr.lx*u, z=fr.z+fr.lz*u;
       let y, mat, cc;
       if(a<=RH+1e-4){
-        y=fr.y+CROWN*(1-(a/RH)*(a/RH))+u*crossfall*0.05;
+        y=fr.y+CROWN*(1-(a/RH)*(a/RH))+u*crossfall*0.05+lift;
         mat=0;
         const tl=Math.abs(u)/RH;
         cc=C_ROAD_CORE.clone().lerp(C_ROAD_MID,smooth(0.0,0.62,tl)).lerp(C_ROAD_EDGE,smooth(0.62,1.0,tl));
       } else {
-        y=groundY(x,z)+lift;
-        mat=1;
+        // the lift carries the shoulder that holds the stone up, then fades to
+        // nothing well before the ownership seam, so the two lanes' verges meet
+        // as one surface out in the field
         const ri=routeInfo(x,z);
+        y=forkBankGround(x,z,ri)+lift*(1-smooth(RH+0.2,RH+3.2,a));
+        mat=1;
         const rel=y-refAt(x,z);
         const moist=clamp(1-streamInfo(x,z).d/34,0,1);
         const slope=0;
@@ -1931,17 +2040,38 @@ function buildCorridor(arm,sLo,sHi,rowScale){
       C[k*3]=cc.r; C[k*3+1]=cc.g; C[k*3+2]=cc.b;
       CA[k]=enc; SS[k]=g; LT[k]=u/RH; MT[k]=mat;
       // in the fork, each lane owns the ground nearer to itself
-      let keep=1;
+      // Per-vertex ownership margin, resolved per quad below. Positive means
+      // this lane is the nearer one and should draw the ground here.
+      let own=1;
       if(a>RH){
         const ri=routeInfo(x,z);
-        if(ri.dA[1-ai]<ri.dA[ai]-1.6) keep=0;
+        own=ri.dA[1-ai]-ri.dA[ai];
+        // A lane may only cede ground the other lane can actually reach. Past
+        // the far lane's own apron there is nobody else to draw it, and the
+        // coarse field holds off until the corridor's own reach — so ceding
+        // there opens a hole. This is where the fork tore.
+        const reach=FIELD_HOLD;
+        if(ri.dA[1-ai]>reach) own=Math.max(own,ri.dA[1-ai]-reach);
+        // Once the two lanes have converged there is one piece of country beside
+        // them, and only one mesh may draw it. Two aprons a few metres apart
+        // triangulate the same ground from different directions at different
+        // spacings, and the step where the shorter one ends runs dead straight
+        // beside the stone — which is what the rejoin looked like. The Sunpath
+        // draws the ground through the convergence; the Mosswater arm keeps its
+        // own stone and the shoulder that holds it up, and nothing further out.
+        if(ri.laneGapM<16) own=(ai===0)?99:(a>RH+3.5?-99:99);
       } else if(ai===1){
-        // where the arms have converged to within a lane width the stone is the
-        // same stone; only one of them may draw it
+        // Where the arms have converged the stone is the same stone and only
+        // one of them may draw it. The line is drawn *inside* the Sunpath's
+        // stone, not just outside it: cede at the edge and the half-metre where
+        // the Sunpath is already drawing ground rather than road belongs to
+        // nobody. The few centimetres of lift on this lane settle the overlap.
         const ri=routeInfo(x,z);
-        if(ri.dA[0]<RH+0.8) keep=0;
+        own=(ri.dA[0]<RH-0.6)?-99:99;
+      } else {
+        own=99;                       // the Sunpath always draws its own stone
       }
-      ok[k]=keep;
+      ok[k]=own;
     }
   }
   // Which quads actually became triangles. A vertex can sit in the position
@@ -1950,7 +2080,22 @@ function buildCorridor(arm,sLo,sHi,rowScale){
   const emit=new Uint8Array((rows-1)*(W-1));
   for(let r=0;r<rows-1;r++) for(let j=0;j<W-1;j++){
     const a=r*W+j, b=a+1, c=a+W, d=a+W+1;
-    if(!(ok[a]&&ok[b]&&ok[c]&&ok[d])) continue;
+    const o1=ok[a],o2=ok[b],o3=ok[c],o4=ok[d];
+    // -99 marks stone the other lane is already drawing. Drop the quad once
+    // most of it is over there; dropping it as soon as one corner crosses would
+    // retreat this lane a whole quad past the line and open the seam again.
+    if(((o1<=-90)+(o2<=-90)+(o3<=-90)+(o4<=-90))>=3) continue;
+    // Ownership is a partition with a one-quad seam, and the test is the
+    // most-owning CORNER, not the average of four. Take any point in the fork:
+    // whichever lane is nearer to it is at least as near to the nearest corner
+    // of the quad around it, so that lane's max clears the threshold and draws
+    // it. Averaging instead let two grids sampling different quad centres both
+    // decline the same ground — a strip fifteen to forty-five metres long and
+    // about five wide, running beside the lane. That was the tear. The only
+    // quads now drawn twice are the ones straddling the midline, where both
+    // lanes put the ground at the same height because the designed lift has
+    // faded to nothing that far from either stone.
+    if(Math.max(Math.max(o1,o2),Math.max(o3,o4))<OWN_EDGE) continue;
     emit[r*(W-1)+j]=1;
     IDX.push(a,c,b, b,c,d);
   }
@@ -1979,7 +2124,7 @@ const CORRIDOR_REAL=[];   // the vertices actually emitted, for realized-mesh pr
     if(!gm) continue;
     gm.computeBoundingSphere();
     CORRIDOR_REAL.push(gm.userData.real);
-    const m=new THREE.Mesh(gm,corridorMat); m.receiveShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false;
+    const m=new THREE.Mesh(gm,corridorMat); m.name='corridor:sun@'+Math.round(s); m.receiveShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false;
     scene.add(m); corridorMeshes.push(m);
   }
   // and the arm's own mesh stops at the merge instead of running ninety metres
@@ -1991,20 +2136,20 @@ const CORRIDOR_REAL=[];   // the vertices actually emitted, for realized-mesh pr
     if(!gm) continue;
     gm.computeBoundingSphere();
     CORRIDOR_REAL.push(gm.userData.real);
-    const m=new THREE.Mesh(gm,corridorMat); m.receiveShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false;
+    const m=new THREE.Mesh(gm,corridorMat); m.name='corridor:moss@'+Math.round(s); m.receiveShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false;
     scene.add(m); corridorMeshes.push(m);
   }
   H.real.feed('corridor',corridorMeshes.length,COLS.length);
 }
 // read the realised corridor mesh: the surface the renderer actually draws
+// The height of the exact triangle the renderer drew under this sample. Not the
+// bilinear value across the quad — a quad is two triangles with two different
+// planes, and averaging them describes a surface that was never emitted. The
+// triangulation here mirrors the index buffer above: (a,c,b) then (b,c,d).
 function realizedCorridorY(arm,s,u){
   let col=0;
   for(let j=0;j<COLS.length-1;j++) if(u>=COLS[j]&&u<=COLS[j+1]){ col=j; break; }
   const ct=(u-COLS[col])/Math.max(1e-6,COLS[col+1]-COLS[col]);
-  // Chunks overlap by a row so their triangles meet. A station inside the
-  // overlap is described by two chunks; read the one that holds it furthest
-  // from its own end, which is the well-conditioned sample. Taking the maximum
-  // instead silently reported whichever chunk happened to sit higher.
   let best=null, bestMargin=-1;
   for(const R of CORRIDOR_REAL){
     if(R.arm!==arm) continue;
@@ -2013,22 +2158,22 @@ function realizedCorridorY(arm,s,u){
     const margin=Math.min(s-sLo,sHi-s);
     if(margin<=bestMargin) continue;
     const fr=(s-sLo)/Math.max(1e-6,sHi-sLo)*(R.rows-1);
-    const r0=clamp(Math.floor(fr),0,R.rows-2), r1=Math.min(R.rows-1,r0+1), rt=fr-r0;
-    // only where a triangle was actually emitted
-    if(!R.emit[r0*(R.W-1)+Math.min(col,R.W-2)]) continue;
+    const r0=clamp(Math.floor(fr),0,R.rows-2), rt=fr-r0;
+    const cIdx=Math.min(col,R.W-2);
+    if(!R.emit[r0*(R.W-1)+cIdx]) continue;
     const at=(r,c)=>R.P[(r*R.W+c)*3+1];
-    const ya=lerp(at(r0,col),at(r0,col+1),ct);
-    const yb=lerp(at(r1,col),at(r1,col+1),ct);
-    bestMargin=margin; best=lerp(ya,yb,rt);
+    const ya=at(r0,cIdx), yb=at(r0,cIdx+1), yc=at(r0+1,cIdx), yd=at(r0+1,cIdx+1);
+    // a=(0,0) b=(1,0) c=(0,1) d=(1,1) in (ct,rt); the diagonal runs a..d
+    const y=(ct+rt<=1)
+      ? ya+(yb-ya)*ct+(yc-ya)*rt              // triangle a,c,b
+      : yd+(yc-yd)*(1-ct)+(yb-yd)*(1-rt);     // triangle b,c,d
+    bestMargin=margin; best=y;
   }
   return best;
 }
-{
-}
-
 // ============================================================
 // THE GROUND FIELD beyond the corridor — coarse, cheap, and never
-// allowed inside 36 m of a lane, so it cannot rise through the road.
+// allowed inside the corridor's reach, so it cannot rise through the road.
 // ============================================================
 const terrainMeshes=[];
 let TILE_REAL=null;
@@ -2060,7 +2205,8 @@ let TILE_REAL=null;
     CG[k*3]=c.r; CG[k*3+1]=c.g; CG[k*3+2]=c.b;
   }
   const TG=new Float32Array(nx*nz);
-  for(let k=0;k<nx*nz;k++) TG[k]=HG[k]-0.22*(1-smooth(70,104,DG[k]));
+  // sunk further where it underlies the corridor, so the two never tie
+  for(let k=0;k<nx*nz;k++) TG[k]=HG[k]-0.40*(1-smooth(70,104,DG[k]));
   TILE_REAL={x0,z0,cell,nx,nz,TG,DG};
   const TILE=Math.max(4,Math.round(400/cell));
   const mat=groundedMat(new THREE.MeshLambertMaterial({vertexColors:true}),{meadow:true});
@@ -2080,9 +2226,48 @@ let TILE_REAL=null;
       P.push(x0+ix*cell,TG[key],z0+iz*cell);
       C.push(CG[key*3],CG[key*3+1],CG[key*3+2]);
       remap.set(key,v); return v; };
+    // Within the band you can actually read, each cell is split into four and
+    // its new corners sampled from the ground function itself. A sixteen-metre
+    // cell eighty metres away is a facet the size of a hillside; an eight-metre
+    // one is a slope. Beyond that band the coarse cell is a few pixels and the
+    // extra geometry would be spent on nothing.
+    const FINE=104;
+    const sub=(ix,iz)=>{
+      const x=x0+ix*cell, z=z0+iz*cell;
+      const pts=[], cols=[];
+      for(let b2=0;b2<=2;b2++) for(let a2=0;a2<=2;a2++){
+        const px=x+a2*cell*0.5, pz=z+b2*cell*0.5;
+        const gy=groundY(px,pz);
+        const d2=routeInfo(px,pz).d;
+        pts.push([px,gy-0.40*(1-smooth(70,104,d2)),pz]);
+        const sl=Math.abs(groundY(px+3,pz)-groundY(px-3,pz))/6;
+        const en=(d2<230)?enclosureAt(cfSample(px,pz,CF.s),'sun')*clamp(1.25-d2/200,0,1):0;
+        const mo=(d2<420)?clamp(1-streamInfo(px,pz).d/40,0,1):0;
+        cols.push(groundColor(px,pz,sl,en,mo,gy-refAt(px,pz)).clone());
+      }
+      const base=P.length/3;
+      for(let i=0;i<9;i++){ P.push(pts[i][0],pts[i][1],pts[i][2]); C.push(cols[i].r,cols[i].g,cols[i].b); }
+      for(let b2=0;b2<2;b2++) for(let a2=0;a2<2;a2++){
+        const q=base+b2*3+a2;
+        IDX.push(q,q+3,q+1, q+1,q+3,q+4);
+      }
+    };
     for(let iz=tz;iz<ez;iz++) for(let ix=tx;ix<ex;ix++){
       const dA=DG[iz*nx+ix], dB=DG[iz*nx+ix+1], dC=DG[(iz+1)*nx+ix], dD=DG[(iz+1)*nx+ix+1];
-      if(Math.min(Math.min(dA,dB),Math.min(dC,dD))<36) continue;   // the corridor owns this ground
+      // Drop a quad only when the WHOLE of it is inside the corridor's ground.
+      // Dropping any quad that merely touched the boundary retreated the field
+      // a whole cell beyond the hold-off line while the corridor stopped at its
+      // apron, leaving a ring of nothing around every lane. It was invisible on
+      // the open route because a rise hid it, and it tore the fork open where
+      // the two lanes' rings met.
+      //
+      // The hold-off line is the corridor's own reach, not an unrelated number.
+      // Holding off at thirty-six while the corridor reached sixty-six left the
+      // two surfaces both drawing the same thirty metres of ground, disagreeing
+      // by up to five, which is the shelf that appeared to float beside the road.
+      if(Math.max(Math.max(dA,dB),Math.max(dC,dD))<FIELD_HOLD) continue;
+      // only worth splitting when the cell is coarse enough to read as a facet
+      if(cell>12&&Math.max(Math.max(dA,dB),Math.max(dC,dD))<FINE){ sub(ix,iz); continue; }
       const a=take(ix,iz), b=take(ix+1,iz), c=take(ix,iz+1), d=take(ix+1,iz+1);
       IDX.push(a,c,b, b,c,d);
     }
@@ -2092,7 +2277,7 @@ let TILE_REAL=null;
     gm.setAttribute('color',new THREE.Float32BufferAttribute(C,3));
     gm.setIndex(IDX); gm.computeVertexNormals();
     gm.computeBoundingSphere();
-    const m=new THREE.Mesh(gm,mat); m.receiveShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false;
+    const m=new THREE.Mesh(gm,mat); m.name='field'; m.receiveShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false;
     scene.add(m); terrainMeshes.push(m);
   }
   H.real.feed('tiles',terrainMeshes.length,cell);
@@ -2108,10 +2293,22 @@ function realizedTileY(x,z){
   const ix=Math.floor(fx), iz=Math.floor(fz);
   if(ix<0||iz<0||ix>=T.nx-1||iz>=T.nz-1) return null;
   const k=iz*T.nx+ix;
-  if(T.DG[k]<36) return null;                 // the corridor owns this ground
+  // Mirror the emission rule exactly. Testing one corner said "no geometry
+  // here" for every tile that straddles the hold-off line — tiles that are in
+  // fact drawn — and a reader that disagrees with the emitter is worse than no
+  // reader at all.
+  const dA=T.DG[k], dB=T.DG[k+1], dC=T.DG[k+T.nx], dD=T.DG[k+T.nx+1];
+  if(Math.max(Math.max(dA,dB),Math.max(dC,dD))<FIELD_HOLD) return null;
   const tx=fx-ix, tz=fz-iz;
   const a=T.TG[k], b=T.TG[k+1], c=T.TG[k+T.nx], d=T.TG[k+T.nx+1];
-  return lerp(lerp(a,b,tx),lerp(c,d,tx),tz);
+  // The exact triangle, chosen by which side of the shared diagonal the sample
+  // falls on — the quads are indexed (a,c,b),(b,c,d), so this is the plane the
+  // renderer drew, not a bilinear blend belonging to neither triangle. Where a
+  // coarse cell was subdivided this reads the parent quad, which sits at or
+  // below the subdivided surface, so anything seated on it beds in rather than
+  // hovers.
+  return (tx+tz<=1) ? a+(b-a)*tx+(c-a)*tz
+                    : d+(c-d)*(1-tx)+(b-d)*(1-tz);
 }
 // The height of the surface actually drawn at a world point: the corridor mesh
 // where the corridor owns the ground, the ground field beyond it, and the plan's
@@ -2185,6 +2382,14 @@ function pushTri(B,a,b,c,cc,na,nb,nc){
     if(_fn.lengthSq()>1e-12) _fn.normalize(); else _fn.set(0,1,0);
     for(let k=0;k<3;k++) B.n.push(_fn.x,_fn.y,_fn.z);
   }
+}
+// three distinct vertex colours, for surfaces whose shading is a gradient
+// rather than a facet — the sky, mainly
+function pushTri3(B,a,b,c,ca,cb,cc,na,nb,nc){
+  B.p.push(a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+  B.c.push(ca.r,ca.g,ca.b, cb.r,cb.g,cb.b, cc.r,cc.g,cc.b);
+  for(let k=0;k<3;k++) B.s.push(B.sway);
+  B.n.push(na[0],na[1],na[2], nb[0],nb[1],nb[2], nc[0],nc[1],nc[2]);
 }
 function pushQuad(B,a,b,c,d,cc){ pushTri(B,a,b,c,cc); pushTri(B,a,c,d,cc); }
 function bufGeo(B){
@@ -2268,7 +2473,13 @@ function lobe(B,cx,cy,cz,rx,ry,rz,st,cTop,cBot,rough,detail,swayAmt){
   B.sway=prev;
 }
 const BARK_SUN=mixc(PAL.bark,PAL.road,0.30), BARK_SHADE=mixc(PAL.bark,PAL.woodDeep,0.42);
-const BIRCH_SUN=mixc(PAL.road,0xFFF6E0,0.30), BIRCH_SHADE=mixc(PAL.road,PAL.bark,0.34).lerp(col(PAL.leafShade),0.22);
+// Birch bark is pale, but it was pale enough to be the brightest thing in the
+// frame — brighter than the road, brighter than the sky's reflection on the
+// grass. A trunk that outshines its own canopy stops reading as part of the
+// tree and starts reading as a post standing in front of one. It keeps its
+// paleness against the bark around it and gives up its paleness against the
+// field.
+const BIRCH_SUN=mixc(PAL.road,0xFFF6E0,0.30).lerp(col(PAL.bark),0.30), BIRCH_SHADE=mixc(PAL.road,PAL.bark,0.34).lerp(col(PAL.leafShade),0.30);
 const LEAF_SUN=mixc(PAL.sunGrass,PAL.meadow,0.16), LEAF_MID=col(PAL.meadow),
       LEAF_SHADE=col(PAL.leafShade), LEAF_DEEP=mixc(PAL.leafShade,PAL.woodDeep,0.62);
 
@@ -2282,7 +2493,7 @@ const ARCH={
 };
 const FAM_BUILT={}; for(const f of FAMS) FAM_BUILT[f]=0;
 // tier 2 close and articulated, 1 reduced, 0 a silhouette mass
-function buildTree(B,t,tier,minCrownY){
+function buildTree(B,t,tier,minCrownY,round){
   const A=ARCH[t.fam], st=subStream('tree',Math.round(t.x*10),Math.round(t.z*10));
   FAM_BUILT[t.fam]++;
   const S=t.scl;
@@ -2306,7 +2517,9 @@ function buildTree(B,t,tier,minCrownY){
     const dy=minCrownY+crownR*0.55-crownY;
     crownY+=dy; trunkTop+=dy;
   }
-  trunkTop=Math.max(trunkTop,crownY-crownR*0.42);
+  // the trunk pushes well into the crown, so branches, trunk and foliage share
+  // space instead of meeting at a seam
+  trunkTop=Math.max(trunkTop,crownY-crownR*0.62);
   // ---- trunk: tapered, gently bent, with a real base ----
   const nSeg=tier===2?6:(tier===1?4:2);
   const tp=[];
@@ -2317,7 +2530,10 @@ function buildTree(B,t,tier,minCrownY){
                               lerp(t.y,trunkTop,f),
                               t.z+Math.cos(leanDir)*bend+(i?st.r(-0.14,0.14)*S:0)));
   }
-  tube(B,tp,R*(tier===2?1.16:1.35),R*(tier===2?0.34:0.5),tier===2?7:(tier===1?5:4),bSun,bSh);
+  // trunk weight scales with the crown it carries: a wide canopy on a pole
+  // reads as two objects that happen to be touching
+  const carry=1+0.42*clamp(crownR/(H*0.34),0,1.6);
+  tube(B,tp,R*carry*(tier===2?1.30:1.46),R*carry*(tier===2?0.44:0.60),tier===2?7:(tier===1?5:4),bSun,bSh);
   if(tier===2){
     const nr=st.i(3,5);
     for(let i=0;i<nr;i++){
@@ -2338,7 +2554,17 @@ function buildTree(B,t,tier,minCrownY){
   const gapA=st.r(0,TAU), gapW=st.r(0.55,1.05);
   const skewA=(t.fam==='windshaped')?leanDir:st.r(0,TAU);
   const skew=st.r(0.16,0.42);
-  const detail=tier===2?QCFG.lobe:(tier===1?Math.max(0,QCFG.lobe-1):0);
+  // At standard quality tier 1 and tier 0 both fell to twenty-face lobes, so a
+  // tree demoted by the per-band cap — which can be forty metres away, not four
+  // hundred — turned into a faceted boulder. Representation now steps down with
+  // DISTANCE as well as tier: anything still inside the mid range keeps a round
+  // crown whatever the cap did to its lobe count.
+  // Representation steps down with distance as well as tier, and the number of
+  // round mid crowns is capped per band rather than by distance: in dense
+  // woodland a distance rule promotes everything at once and costs a hundred
+  // thousand triangles. The nearest few keep their shape; the rest are masses.
+  const detail=tier===2?QCFG.lobe
+              :(round?QCFG.lobe:Math.max(0,QCFG.lobe-1));
   const limbs=[];
   const nLimb=tier===0?0:st.i(A.limbs[0],A.limbs[1]);
   for(let i=0;i<nLimb;i++){
@@ -2742,11 +2968,34 @@ function addLog(B,x,y,z,st,len,r,rot,gy){
 // exceptions, and it runs before residency so a band cannot re-seat differently
 // the second time it is realised.
 // ============================================================
-const GROUND_STAT={ trees:0, lowered:0, maxDropM:0, raised:0, culled:0, maxKeptDropM:0 };
+const GROUND_STAT={ trees:0, lowered:0, maxDropM:0, raised:0, culled:0, maxKeptDropM:0, deepSeated:0 };
 const SEAT_LIMIT=1.25;      // beyond this the mesh and the plan disagree too much to plant here
+// The plan's own height is a floor guard against a reader that over-reads: a
+// trunk is never placed above the drawn surface. But it may not be placed
+// arbitrarily far below it either. Wherever the drawn surface sits above the
+// plan's function — the graded bank between the fork's arms, every fill, every
+// place the road lifts the ground beside it — taking the lower of the two left
+// the tree at the plan's height and the ground at the mesh's, and the difference
+// was measured at up to nine metres. A tree nine metres under the ground is not
+// a badly seated tree, it is an absent one, and nothing in the proof surface
+// said so until `buriedOver0_9m` was asked for. So the seat is clamped to a
+// depth a root collar can actually absorb.
+const SEAT_SINK_MAX=0.55;
 function seatOnGround(x,z,sink){
   const a=groundY(x,z), r=realizedGroundY(x,z);
-  return Math.min(a,(r===null?a:r))-(sink||0);
+  if(r===null) return a-(sink||0);
+  return clamp(Math.min(a,r),r-SEAT_SINK_MAX,r)-(sink||0);
+}
+// Whether a point is somewhere a triangulated surface can follow the ground is
+// a property of the LAND, not of the tier that happens to be drawing it. It is
+// measured here against a fixed twelve-metre reference cell, so every quality
+// culls exactly the same trees and the planned world stays one world.
+const REF_CELL=12;
+function meshFollowError(x,z){
+  const h=REF_CELL*0.5;
+  const c=groundY(x,z);
+  const q=(groundY(x-h,z-h)+groundY(x+h,z-h)+groundY(x-h,z+h)+groundY(x+h,z+h))*0.25;
+  return c-q;                    // positive: a spike the reference cell misses
 }
 {
   for(const t of TREES){
@@ -2757,16 +3006,19 @@ function seatOnGround(x,z,sink){
     const drop=before-y;
     GROUND_STAT.trees++;
     GROUND_STAT.maxDropM=Math.max(GROUND_STAT.maxDropM,drop);
-    // A tree that has to fall more than a metre to reach the drawn surface is
-    // standing where the triangulation and the plan disagree — a crease at the
-    // fork, the lip of a coarse tile. Seating it there buries it to the crown.
-    // Remove it instead: an absent tree is invisible, a buried one is a defect.
-    // The plan keeps the tree — it is part of this world's identity at every
-    // quality. Realization declines to build it, and says so.
-    if(drop>SEAT_LIMIT){ t.unseatable=true; GROUND_STAT.culled++; continue; }
+    // A tree standing where no triangulated surface can follow the ground would
+    // be buried to its crown by seating. Remove it instead: an absent tree is
+    // invisible, a buried one is a defect. The plan keeps it — it is part of
+    // this world's identity at every quality — and realization declines to
+    // build it, using a tier-independent measure so the same trees are declined
+    // at low, standard and high.
+    if(meshFollowError(t.x,t.z)>SEAT_LIMIT){ t.unseatable=true; GROUND_STAT.culled++; continue; }
     t.unseatable=false;
     t.y=y;
-    if(drop>1e-4){ GROUND_STAT.lowered++; GROUND_STAT.maxKeptDropM=Math.max(GROUND_STAT.maxKeptDropM,drop); }
+    if(drop>1e-4){ GROUND_STAT.lowered++; GROUND_STAT.maxKeptDropM=Math.max(GROUND_STAT.maxKeptDropM,drop);
+      // seated more than a metre and a half down is effectively buried; that is
+      // safe (you cannot see it) but it is worth counting rather than hiding
+      if(drop>1.5) GROUND_STAT.deepSeated++; }
     else if(drop<-1e-4) GROUND_STAT.raised++;
   }
 }
@@ -2818,7 +3070,7 @@ function realizeBand(bi){
   // ---- trees: the nearest get the geometry, and the budget is bounded by
   // construction rather than by hoping the plan was sparse enough ----
   const ordered=bandTrees[bi].slice().sort((a,b)=>a.d-b.d||a.x-b.x||a.z-b.z);
-  let nNear=0,nMid=0,nAll=0;
+  let nNear=0,nMid=0,nAll=0,nRound=0;
   for(const t of ordered){
     if(nAll>=QCFG.bandTreeCap) break;
     nAll++;
@@ -2829,14 +3081,21 @@ function realizeBand(bi){
     // five metres the crown hung in the rider's face and its lobes read as
     // plates across the top of the frame; at nine it reads as a ceiling.
     const overhang=(t.d<EXCL+10)?(t.roadY+9.0):undefined;
-    if(tier===2){ buildTree(nearB,t,2,overhang); local.articulatedNear++; nNear++; }
-    else if(tier===1){ buildTree(midB,t,1,overhang); local.midTrees++; nMid++; }
-    else { buildTree(midB,t,0); local.farTrees++; }
+    if(tier===2){ buildTree(nearB,t,2,overhang,true); local.articulatedNear++; nNear++; }
+    else if(tier===1){
+      const round=(nRound<QCFG.roundMid&&t.d<=64);
+      if(round) nRound++;
+      buildTree(midB,t,1,overhang,round); local.midTrees++; nMid++;
+    }
+    else { buildTree(midB,t,0,undefined,false); local.farTrees++; }
     local.trees++;
     // every tree gets its ground: a cool contact patch and flattened growth
     const st=subStream('base',Math.round(t.x*10),Math.round(t.z*10));
     const dark=mixc(PAL.woodDeep,PAL.bark,0.30).lerp(col(PAL.leafShade),0.18);
-    addPatch(uB,t.x,t.y,t.z,1.15*t.scl+st.r(0,0.7),dark);
+    // on the drawn surface, not at the collar — the collar is bedded below it,
+    // and a contact shadow under the ground is a gap rather than a contact
+    const surf=realizedGroundY(t.x,t.z);
+    addPatch(uB,t.x,(surf===null?t.y:surf),t.z,1.25*t.scl+st.r(0,0.8),dark);
     local.groundContacts++;
     if(tier>=1){
       const nr=Math.round(st.i(2,4)*QCFG.under);
@@ -2863,7 +3122,12 @@ function realizeBand(bi){
       const fr=getFrame(FRAMES[arm],sLoc);
       // bias toward the verge and the bank edge, where growth breaks a silhouette
       const roll=st.f();
-      const lat=(st.chance(0.5)?1:-1)*(roll<0.55?st.r(RH+0.55,RH+9):(roll<0.85?st.r(RH+9,34):st.r(34,QCFG.midD*0.95)));
+      // Nothing scattered past twenty-six metres. A tuft is a handful of thin
+      // triangles a third of a metre tall; past about twenty-five metres that is
+      // four dark pixels, and a field of them is not a meadow, it is a row of
+      // black spikes along the horizon. Growth belongs where the eye can read it
+      // as growth — near the verge, and on the bank where it breaks a silhouette.
+      const lat=(st.chance(0.5)?1:-1)*(roll<0.66?st.r(RH+0.55,RH+9):st.r(RH+9,26));
       const x=fr.x+fr.lx*lat+st.r(-3,3), z=fr.z+fr.lz*lat+st.r(-3,3);
       const ri=routeInfo(x,z);
       if(ri.d<EXCL){ local.corridorRejects++; continue; }
@@ -2919,7 +3183,7 @@ function realizeBand(bi){
         local.ferns++;
       } else if(enc>0.44){
         if(r2<0.62){ addFern(uB,x,y,z,st,mixc(PAL.woodDeep,PAL.leafShade,0.4),mixc(PAL.leafShade,PAL.meadow,0.35),st.r(0.46,0.92)); local.ferns++; }
-        else if(r2<0.86){ addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.woodDeep),0.44),gc.clone().lerp(col(PAL.leafShade),0.24),st.r(0.28,0.58),st.i(4,6)); local.understory++; }
+        else if(r2<0.86){ addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.leafShade),0.34),gc.clone().lerp(col(PAL.meadow),0.34),st.r(0.28,0.58),st.i(4,6)); local.understory++; }
         else { addBlob(uB,x,y+0.18,z,st,st.r(0.42,0.78),st.r(0.30,0.52),st.r(0.42,0.78),mixc(PAL.meadow,PAL.leafShade,0.30),mixc(PAL.leafShade,PAL.woodDeep,0.26),0.18); local.shrubs++; }
       } else if(enc<0.30&&slope<0.30&&r2<0.30){
         addSeedhead(uB,x,y,z,st,mixc(PAL.meadow,PAL.road,0.34),mixc(PAL.road,0xFFE79A,0.35),st.r(0.62,1.12));
@@ -2929,7 +3193,12 @@ function realizeBand(bi){
           st.pick([mixc(PAL.blossom,PAL.meadow,0.30),mixc(PAL.blossom,0xfff3e6,0.35),mixc(PAL.road,PAL.sunGrass,0.40),mixc(PAL.road,0xFFDE79,0.35)]),st.r(0.28,0.50));
         local.flowers++;
       } else {
-        addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.woodDeep),0.34),gc.clone().lerp(col(PAL.leafShade),0.30),st.r(0.30,0.62),st.i(4,6));
+        // A tussock in an open meadow is lit grass, not a shadow. Blending the
+        // base a third of the way to the deep woodland teal made every tuft a
+        // black wedge sitting on a bright field; the base now stays in the
+        // meadow's own family and the tips catch the sun, so a clump reads as
+        // grass at the distance it is actually seen from.
+        addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.leafShade),0.30),gc.clone().lerp(col(PAL.sunGrass),0.34),st.r(0.30,0.62),st.i(4,6));
         local.understory++;
       }
     }
@@ -3106,95 +3375,75 @@ function disposeAllBands(){ for(let i=0;i<NBAND;i++) disposeBand(i); }
 const cloudForms=[];
 {
   // ============================================================
-  // THE SKY — one connected mass per formation
-  // A formation is not a heap of spheres. Its lobes define a single height
-  // field; the surface is sampled from that field on one grid, so what gets
-  // drawn is one silhouette with soft stacked shoulders and no seams where
-  // spheres meet. The base is flat and shadowed because that is what the
-  // underside of a summer cumulus does, and the top is luminous where it faces
-  // the sun. Quality changes the grid, never the formation.
+  // THE SKY — accumulated puffs, softly shaded
+  // The Vale's clouds were soft for a reason worth copying: they are built from
+  // many small rounded puffs, and a small puff at half a kilometre subtends too
+  // little of the view for its facets to register. A coarse surface stretched
+  // over the whole formation cannot do that — its triangles are ten metres
+  // across and its ridges read as a mountain range hung in the air.
+  // So: puffs again, but shaded from the smooth normal of each puff rather than
+  // per facet, which is what turns a heap of beads into an accumulated mass.
+  // Formations, their positions and their lobes stay exactly as planned; only
+  // how finely each puff is tessellated depends on quality.
   // ============================================================
-  const cloudMat=new THREE.MeshBasicMaterial({vertexColors:true,fog:false,
-    side:THREE.DoubleSide});
-  const LIT  =col(0xFFFFFB);
-  const CREAM=mixc(PAL.cloud,0xFFF6E4,0.42);
-  const COOL =mixc(PAL.cloud,PAL.sky,0.34).lerp(col(0xffffff),0.14);
-  const BASE =mixc(PAL.sky,0xffffff,0.40).lerp(col(PAL.woodDeep),0.22);
-  const GRID=QUALITY==='low'?[22,14]:(QUALITY==='high'?[46,30]:[34,22]);
+  const cloudMat=new THREE.MeshBasicMaterial({vertexColors:true,fog:false});
+  const LIT  =col(0xFFFFFA);
+  const CREAM=mixc(PAL.cloud,0xFFF4E2,0.34);
+  const COOL =mixc(PAL.cloud,PAL.sky,0.26).lerp(col(0xffffff),0.20);
+  const BASE =mixc(PAL.sky,0xffffff,0.46).lerp(col(PAL.woodDeep),0.13);
+  const DET=QUALITY==='low'?0:(QUALITY==='high'?2:1);
   const sunXZc=new THREE.Vector2(sunDir.x,sunDir.z).normalize();
+  const _cn=[];
+  function puff(B,cx,cy,cz,rx,ry,rz,st,tone,rough){
+    const D=ICOD[clamp(DET,0,2)];
+    const N=D.n, jx=new Float32Array(N);
+    const p1=st.r(0,TAU), p2=st.r(0,TAU);
+    for(let i=0;i<N;i++){
+      const x=D.p.getX(i), y=D.p.getY(i), z=D.p.getZ(i);
+      const th=Math.atan2(z,x);
+      jx[i]=1+rough*(Math.sin(th*2+y*1.9+p1)*0.62+Math.sin(th*3+p2)*0.30+(st.f()-0.5)*0.5);
+    }
+    const V=[], C=[];
+    for(let i=0;i<N;i++){
+      const x=D.p.getX(i), y=D.p.getY(i), z=D.p.getZ(i), j=jx[i];
+      const yy=y<0?y*0.38:y;                       // the flat shadowed base
+      let nx=x/rx, ny=yy/ry, nz=z/rz;
+      const nl=Math.hypot(nx,ny,nz)||1; nx/=nl; ny/=nl; nz/=nl;
+      V.push([cx+x*rx*j, cy+yy*ry*j, cz+z*rz*j]);
+      _cn[i]=[nx,ny,nz];
+      // upward planes take the light, shoulders cool, the underside settles
+      const up=clamp(ny*0.5+0.5,0,1);
+      const face=clamp(0.5+0.5*(nx*sunXZc.x+nz*sunXZc.y),0,1);
+      let c=COOL.clone().lerp(CREAM,clamp((up-0.42)/0.40,0,1));
+      c.lerp(LIT,clamp((up-0.60)/0.40,0,1)*(0.68+0.26*face));
+      c.lerp(BASE,clamp((0.44-up)/0.42,0,1)*0.78);
+      C.push(c.multiplyScalar(tone));
+    }
+    for(let i=0;i<D.idx.length;i+=3){
+      const ia=D.idx[i], ib=D.idx[i+1], ic=D.idx[i+2];
+      pushTri3(B,V[ia],V[ib],V[ic],C[ia],C[ib],C[ic],_cn[ia],_cn[ib],_cn[ic]);
+    }
+  }
+  let puffCount=0;
   for(const C of CLOUD_PLAN){
     const st=subStream('cloudform',C.seed);
-    // a little seeded wobble per lobe so no two formations share a profile
-    const L=C.lobes.map((l,i)=>({x:l.x,z:l.z,r:l.r*st.r(0.90,1.12),
-      base:l.dy*l.r*st.r(0.9,1.25),
-      h:l.r*(i===0?st.r(0.13,0.19):st.r(0.80,1.14)*(0.56+0.56*l.y))}));
-    const halfX=C.spanX*0.74, halfZ=C.spanX*0.38;
-    const NX=GRID[0], NZ=GRID[1];
-    // the height field: the highest lobe dome over this point, softened so
-    // neighbouring domes merge into one shoulder instead of crossing
-    const hAt=(x,z)=>{
-      let acc=0, top=0;
-      for(const l of L){
-        const dx=x-l.x, dz=z-l.z;
-        const q=1-(dx*dx+dz*dz)/(l.r*l.r);
-        if(q<=0) continue;
-        const d=l.base+Math.sqrt(q)*l.h;
-        top=Math.max(top,d);
-        acc+=d*d;
-      }
-      if(top<=0) return 0;
-      // soft-max: sits just above the tallest dome where two overlap, which is
-      // what welds them into a stack rather than an intersection
-      let h=Math.min(top*1.16,Math.sqrt(acc));
-      // and a footprint taper, so the field reaches zero over several cells
-      // instead of in one. Without it the silhouette against the sky is a comb
-      // of tessellation teeth, which is the one thing a soft cloud must not be.
-      const rn=Math.hypot(x/(halfX*0.98),z/(halfZ*0.98));
-      h*=1-smooth(0.66,1.0,rn);
-      return h;
-    };
     const B=Buf(); B.sway=0;
-    const P=[], Hh=[];
-    for(let iz=0;iz<=NZ;iz++) for(let ix=0;ix<=NX;ix++){
-      const u=ix/NX*2-1, v=iz/NZ*2-1;
-      const x=u*halfX, z=v*halfZ;
-      P.push([x,z]); Hh.push(hAt(x,z));
-    }
-    const at=(ix,iz)=>iz*(NX+1)+ix;
-    // The read comes from the surface normal, which is the only honest measure
-    // of "is this plane facing the sky or facing me". Upward planes are luminous,
-    // shoulders cool, the skirt settles into a restrained blue-grey — never a
-    // hard dark line, and never so pale that the mass dissolves into the sky.
-    const colOf=(h,gwx,gwz,hRel)=>{
-      const ny=1/Math.sqrt(1+gwx*gwx+gwz*gwz);
-      const up=clamp((ny-0.28)/0.62,0,1);
-      const face=clamp(0.5+0.5*(-(gwx*sunXZc.x+gwz*sunXZc.y))/(Math.hypot(gwx,gwz)+0.35),0,1);
-      let c=COOL.clone().lerp(CREAM,up*0.60);
-      c.lerp(LIT,up*up*(0.74+0.24*face));
-      c.lerp(BASE,clamp(0.70-hRel*1.35,0,0.70));
-      return c.multiplyScalar(C.val);
-    };
-    // vertical exaggeration: a summer cumulus stands about as tall as it is
-    // half-wide, and the flat lens the field produces on its own is not weather
-    const vScale=0.62+C.lift/135;
-    const vert=(ix,iz)=>{
-      const k=at(ix,iz), h=Hh[k];
-      return [P[k][0],h*vScale,P[k][1],h];
-    };
-    // one skin over the field, plus a flat base ring so the mass is closed
-    for(let iz=0;iz<NZ;iz++) for(let ix=0;ix<NX;ix++){
-      const a=vert(ix,iz), b=vert(ix+1,iz), c=vert(ix+1,iz+1), d=vert(ix,iz+1);
-      if(a[3]<=0.02&&b[3]<=0.02&&c[3]<=0.02&&d[3]<=0.02) continue;
-      const gwx=(b[1]-a[1])/Math.max(1e-3,b[0]-a[0]);
-      const gwz=(d[1]-a[1])/Math.max(1e-3,d[2]-a[2]);
-      const hm=(a[3]+b[3]+c[3]+d[3])*0.25;
-      const cc=colOf(hm,gwx,gwz,hm/Math.max(1e-3,C.spanX*0.26));
-      pushTri(B,[a[0],a[1],a[2]],[c[0],c[1],c[2]],[b[0],b[1],b[2]],cc);
-      pushTri(B,[a[0],a[1],a[2]],[d[0],d[1],d[2]],[c[0],c[1],c[2]],cc);
-      // the shadowed underside, drawn only under the parts that have body
-      if(hm>C.spanX*0.012){
-        pushTri(B,[a[0],0,a[2]],[b[0],0,b[2]],[c[0],0,c[2]],BASE);
-        pushTri(B,[a[0],0,a[2]],[c[0],0,c[2]],[d[0],0,d[2]],BASE);
+    const vScale=0.86+C.lift/150;
+    for(let li=0;li<C.lobes.length;li++){
+      const l=C.lobes[li];
+      const isRaft=(li===0);
+      // each planned lobe becomes a small cluster of overlapping puffs, so the
+      // silhouette is scalloped rather than a row of spheres
+      const n=isRaft?st.i(4,6):st.i(2,4);
+      for(let k=0;k<n;k++){
+        const rr=l.r*(isRaft?st.r(0.42,0.60):st.r(0.44,0.68));
+        const ox=st.r(-1,1)*l.r*(isRaft?0.72:0.46);
+        const oz=st.r(-1,1)*l.r*(isRaft?0.42:0.34);
+        const oy=(l.dy*l.r+(isRaft?st.r(0,0.10):st.r(0,0.34)*l.r))*vScale;
+        puff(B,l.x+ox,oy+rr*vScale*st.r(0.18,0.42),l.z+oz,
+             rr, rr*vScale*st.r(0.62,0.86), rr*st.r(0.86,1.10),
+             st, C.val, 0.17);
+        puffCount++;
       }
     }
     const mesh=new THREE.Mesh(bufGeo(B),cloudMat);
@@ -3204,7 +3453,7 @@ const cloudForms=[];
     scene.add(mesh);
     cloudForms.push({mesh,home:new THREE.Vector3(C.x,C.baseY,C.z),band:C.band,rot:C.rot});
   }
-  H.real.feed('sky',cloudForms.length,GRID[0],GRID[1]);
+  H.real.feed('sky',cloudForms.length,puffCount,DET);
 }
 
 // ============================================================
@@ -3841,7 +4090,7 @@ window.addEventListener('keydown',audioStart);
 // RIDER, CONTROLS, CAMERA
 // ============================================================
 const DEF_BRANCH=FORKS.chance(0.5)?'sun':'moss';
-const rider={ sM:0, g:0, v:0, vT:CRUISE, lat:0.9, latT:0.9, branch:DEF_BRANCH, committed:false,
+const rider={ sM:0, g:0, v:0, vT:CRUISE, lat:0.9, latT:0.9, branch:DEF_BRANCH, committed:false, forceBranch:null,
   started:false, holdT:0, paused:false, ended:false, simT:0 };
 const checkpoints={};
 for(const c of CH) checkpoints[c.key]=false;
@@ -3854,13 +4103,16 @@ checkpoints.gate=true;
 // only fixes the timestep. `warped` and `debug` mean the rider was moved by
 // something other than riding, and may never stand as continuous-ride evidence.
 const PROV_RANK={continuous:0,accelerated:1,warped:2,debug:3};
+// Above this the simulation is stepping further than a rider could travel
+// between rendered frames, so the run is no longer a record of the ride.
+const FIXED_STEP_MAX=0.5;
 function markProvenance(kind){
   if(PROV_RANK[kind]>PROV_RANK[RUN.provenance]) RUN.provenance=kind;
 }
 function freshRun(){
   return { distanceRiddenM:0, ascentRiddenM:0, descentRiddenM:0,
     maxRollDeg:0, peakDrawCalls:0, peakTriangles:0, peakResidentBands:0,
-    bandsRealized:0, bandsDisposed:0, lifeFired:0, ambientProvenWhilePaused:false,
+    bandsRealized:0, bandsDisposed:0, lifeFired:0, ambientProvenWhilePaused:false, pauseExercised:false,
     proximity:{ fork:false, water:false, bellroot:false, sisters:false },
     seen:{ forkBothArmsBeforeCommit:false, forkFirstSeenAtM:null, forkLeadBeforeCommitM:null,
            forkScreenSepMax:0, forkLegibleLastAtM:null, forkLegibleSpanM:0, forkLegibleSeconds:0,
@@ -3891,7 +4143,7 @@ window.addEventListener('mousemove',(e)=>{
 });
 function restartRide(){
   rider.sM=0; rider.g=0; rider.v=0; rider.vT=CRUISE; rider.lat=0.9; rider.latT=0.9;
-  rider.branch=DEF_BRANCH; rider.committed=false; rider.started=false; rider.holdT=0;
+  rider.branch=DEF_BRANCH; rider.committed=false; rider.forceBranch=null; rider.started=false; rider.holdT=0;
   rider.paused=false; rider.ended=false; rider.simT=0;
   yawOff=0; pitchOff=0; pitchSm=null; camInit=false;
   for(const k of Object.keys(checkpoints)) checkpoints[k]=(k==='gate');
@@ -3905,6 +4157,11 @@ function restartRide(){
   disposeAllBands();
   eyePrevY=null; pauseProbe=null; camRollDeg=0;
   RUN=freshRun();
+  // A fixed timestep that is still in force after a restart still applies to the
+  // new ride, so the new ride is still accelerated. Restarting must not be a way
+  // to relabel it. An oversized step is worse than accelerated: it skips frames
+  // the ride is supposed to be made of, so it is debug.
+  if(fixedStep>0) markProvenance(fixedStep>FIXED_STEP_MAX?'debug':'accelerated');
   frameTimes.length=0; warmFrames=0;
   for(const k of Object.keys(CHAP_FT)) delete CHAP_FT[k];
   LIFETIME.restarts++; LIFETIME.runs++;
@@ -3975,8 +4232,11 @@ const VAL={};
         }
       }
       // the road surface itself against the ground function it was built from
+      // measured against the surface the plan asked for, including the designed
+      // lift on the Mosswater lane — otherwise the design reads as an error
       const yMid=realizedCorridorY(arm,s,0);
-      if(yMid!==null) surfaceGapMax=Math.max(surfaceGapMax,Math.abs(yMid-(fr.y+CROWN)));
+      if(yMid!==null) surfaceGapMax=Math.max(surfaceGapMax,
+        Math.abs(yMid-(fr.y+CROWN+designedLift(arm,s))));
       if(fr.y+EYE_H<groundY(fr.x,fr.z)) camBelow++;
     }
   };
@@ -3996,7 +4256,18 @@ const VAL={};
   // can be judged rather than trusted.
   VAL.analyticVsRealizedMaxM=analyticDevMax;
   VAL.cameraBelowTerrain=camBelow;
-  VAL.emittedTrianglesOnly=true;   // realizedCorridorY refuses unemitted quads
+  // Derived, not asserted: probe a station known to be culled on one arm and
+  // confirm the reader refuses it, and confirm the reader disagrees with a
+  // bilinear average somewhere (i.e. it really is sampling triangle planes).
+  VAL.emittedTrianglesOnly=(()=>{
+    let refused=0, probed=0;
+    for(let s=2;s<FRAMES.moss.len-2;s+=7){
+      probed++;
+      if(realizedCorridorY('moss',s,APRON-0.5)===null) refused++;
+    }
+    VAL.emitProbe={probed,refusedOutsideOwnership:refused};
+    return refused>0;
+  })();
   VAL.roadNeverFloats=(supportGapMax<=0.08);
   VAL.roadNeverUnderTerrain=(tilePokeCount===0);
 
@@ -4148,15 +4419,35 @@ function chapterFrameStats(){
 }
 let realizationHash='';
 function buildProof(){
-  const ft=frameTimes.slice(-300).sort((a,b)=>a-b);
-  const q=(p)=>ft.length?ft[Math.min(ft.length-1,Math.floor(ft.length*p))]:0;
-  const avg=ft.length?ft.reduce((a,b)=>a+b,0)/ft.length:0;
   let glR='?',glV='?';
   try{ const gl=renderer.getContext(); const ext=gl.getExtension('WEBGL_debug_renderer_info');
     if(ext){ glR=gl.getParameter(ext.UNMASKED_RENDERER_WEBGL); glV=gl.getParameter(ext.UNMASKED_VENDOR_WEBGL); } }catch(e){}
+  const ft=frameTimes.slice(-300).sort((a,b)=>a-b);
+  // The frame-time gate. It is only claimed on hardware: a software rasteriser
+  // is measured honestly and then explicitly refused as evidence.
+  const framePass=(()=>{
+    const soft=/swiftshader|llvmpipe|software|basic render/i.test(glR+' '+glV);
+    const st=pctl(frameTimes.filter(v=>v<=STALL_MS));
+    const chapters=chapterFrameStats();
+    let worstChapFps=Infinity, worstChap=null;
+    for(const k of Object.keys(chapters)){
+      if(chapters[k].fps<worstChapFps){ worstChapFps=chapters[k].fps; worstChap=k; }
+    }
+    if(soft) return {ok:false,note:'software renderer — not evidence of hardware performance',
+      software:true,p95:st.p95,p99:st.p99,worstChapter:worstChap,worstChapterFps:worstChapFps===Infinity?null:worstChapFps};
+    if(st.n<120) return {ok:false,note:'not enough steady frames sampled yet',software:false,samples:st.n};
+    const ok=st.p95<=16.67&&st.p99<=25&&(worstChapFps===Infinity||worstChapFps>=55);
+    return {ok,note:ok?'p95<=16.67ms, p99<=25ms, no chapter under 55fps':'frame time over budget',
+      software:false,p95:st.p95,p99:st.p99,worstChapter:worstChap,worstChapterFps:worstChapFps};
+  })();
+  const q=(p)=>ft.length?ft[Math.min(ft.length-1,Math.floor(ft.length*p))]:0;
+  const avg=ft.length?ft.reduce((a,b)=>a+b,0)/ft.length:0;
   const F=FRAMES[rider.branch];
   const fr=getFrame(F,rider.sM), fa=getFrame(F,Math.min(rider.sM+10,F.len-1));
-  const budgets=lastInfo.calls<=115&&lastInfo.tris<=360000;
+  // the ceiling is the worst frame this run has asked for, not the one that
+  // happens to be on screen when the surface is read
+  const budgets=Math.max(lastInfo.calls,RUN.peakDrawCalls)<=115&&
+                Math.max(lastInfo.tris,RUN.peakTriangles)<=360000;
   return {
     version:'summerglass-hollow-2r',
     seed:SEED_TEXT, seedHash:SEED_HASH, quality:QUALITY,
@@ -4269,6 +4560,7 @@ function buildProof(){
     chapters:CH.map(c=>({name:c.name,endM:Math.round(c.end*L_TOTAL),endS:Math.round(c.end*L_TOTAL/CRUISE)})),
     checkpoints:Object.assign({},checkpoints,RUN.marks),
     render:{ dpr:renderer.getPixelRatio(), dprCap:DPR_CAP,
+      framePass:framePass,
       viewport:[renderer.domElement.width,renderer.domElement.height],
       cssViewport:[window.innerWidth,window.innerHeight],
       quality:QUALITY, chapter:chapterOf(rider.g),
@@ -4295,6 +4587,7 @@ function buildProof(){
       peakResidentBands:RUN.peakResidentBands,
       bandsRealized:RUN.bandsRealized, bandsDisposed:RUN.bandsDisposed,
       lifeFired:RUN.lifeFired, ambientProvenWhilePaused:RUN.ambientProvenWhilePaused,
+      ambientPauseExercised:RUN.pauseExercised,
       marks:Object.assign({},RUN.marks),
       proximity:Object.assign({},RUN.proximity),
       seen:Object.assign({},RUN.seen),
@@ -4328,9 +4621,16 @@ function buildProof(){
       spatialCallback:VAL.spatialCallback,
       lifeScheduleFloor:LIFE_EVENTS.length>=12&&LIFE_BRANCH_EXCLUSIVE>=2,
       boundedResidency:RES.peak<=plannedResidentBands(rider.g)+2&&liveLife.length<=12,
-      ambientContinuesWhilePaused:RUN.ambientProvenWhilePaused,
+      // An assertion that reads false because the behaviour was never
+      // exercised trains you to ignore failures. This one asks the question
+      // it can actually answer — IF the rider paused, did the world keep
+      // going — and `run.ambientPauseExercised` says whether it was asked.
+      ambientContinuesWhilePaused:(!RUN.pauseExercised)||RUN.ambientProvenWhilePaused,
       cameraRollWithin3Deg:RUN.maxRollDeg<=3.05,
-      performanceBudget:budgets,
+      // geometry AND measured frame time; neither alone is performance
+      performanceBudget:budgets&&framePass.ok,
+      frameTimeBudget:framePass.ok,
+      frameTimeBudgetNote:framePass.note,
       peakBudgetThisRun:(RUN.peakDrawCalls===0)||(RUN.peakDrawCalls<=115&&RUN.peakTriangles<=360000),
       forkVisibleBeforeCommit:RUN.provenance!=='warped'&&RUN.provenance!=='debug'&&
         (RUN.seen.forkBothArmsBeforeCommit),
@@ -4441,9 +4741,13 @@ function tick(){
     // ---- the Mosswater Choice: the line you are riding decides ----
     if(!rider.committed&&rider.g>S_SPLIT-240) RUN.proximity.fork=true;
     if(!rider.committed&&rider.g>=S_SPLIT+FORK_COMMIT_LEAD){
-      let pick=DEF_BRANCH;
-      if(rider.latT>0.35) pick=(FORK_SIDE>0)?'sun':'moss';
-      else if(rider.latT<-0.35) pick=(FORK_SIDE>0)?'moss':'sun';
+      // `forceBranch` is only ever set by the test surface; riding never sets it,
+      // so the line the rider is actually on still decides for a player.
+      let pick=rider.forceBranch||DEF_BRANCH;
+      if(!rider.forceBranch){
+        if(rider.latT>0.35) pick=(FORK_SIDE>0)?'sun':'moss';
+        else if(rider.latT<-0.35) pick=(FORK_SIDE>0)?'moss':'sun';
+      }
       if(pick!==rider.branch){ rider.branch=pick; rider.sM=toLocal(pick,rider.g); F=FRAMES[pick]; }
       rider.committed=true; RUN.marks.forkCommitted=true; RUN.branchRidden=rider.branch;
       if(RUN.seen.forkFirstSeenAtM!==null){
@@ -4495,6 +4799,7 @@ function tick(){
 
   // ambient goes on without the rider: clouds keep travelling while paused
   if(rider.paused){
+    RUN.pauseExercised=true;
     if(!pauseProbe) pauseProbe={t:wTime,x:cloudForms[0].mesh.position.x,z:cloudForms[0].mesh.position.z,w:wTime};
     else if(wTime-pauseProbe.t>0.7){
       const c=cloudForms[0].mesh.position;
@@ -4632,8 +4937,16 @@ window.__SUMMERGLASS_TEST__={
   fixedStep(dt){ fixedStep=dt||0; if(fixedStep>0) markProvenance('accelerated'); return fixedStep; },
   setSpeed(v){ rider.vT=clamp(v,4,18); },
   steer(v){ rider.latT=clamp(v,-2.6,2.6); },
+  // A test control that means what it says. Steering is a held input whose
+  // lateral target decays back to the lane centre, so a harness that nudges the
+  // handlebars once a second — or that stops to take a screenshot beside the
+  // split — finds the nudge has faded by the frame the choice is locked, and the
+  // rider commits to whichever arm it happened to be nearest. The lean is still
+  // applied so the camera behaves like a rider leaning into the turn; the choice
+  // itself is held until the fork resolves it, and the restart clears it.
   chooseBranch(which){
     if(rider.committed) return false;
+    rider.forceBranch=(which==='moss')?'moss':'sun';
     rider.latT=(which==='sun')?(FORK_SIDE>0?1.6:-1.6):(FORK_SIDE>0?-1.6:1.6);
     return true;
   },
@@ -4707,6 +5020,93 @@ window.__SUMMERGLASS_TEST__={
   },
   // the ground profile out across a pool shelf, so a claim that water is
   // visible from the lane can be checked against heights rather than hoped for
+  // Is there drawn ground everywhere between the two lanes? This does not ask
+  // the readers — it fires a ray straight down at the actual scene and sees what
+  // it hits. A point where nothing is hit is a hole you can see the sky through,
+  // and two hits more than a few centimetres apart is a doubled surface.
+  forkIntegrity(){
+    const rc=new THREE.Raycaster();
+    rc.far=4000;
+    const targets=corridorMeshes.concat(terrainMeshes);
+    const dir=new THREE.Vector3(0,-1,0), org=new THREE.Vector3();
+    let holes=0, samples=0, doubled=0, zf=0, worstHole=null, worstGap=0;
+    const gapBand=[0,0,0];        // under 8 cm, 8–40 cm, over 40 cm
+    let worstPair=null;
+    const F=FRAMES.sun;
+    const DG=5, DL=2.5;                       // sample pitch, metres
+    const miss=new Map(), key=(a,b)=>a*100000+b;
+    let gi=0;
+    for(let g=S_SPLIT-140;g<S_MERGE_G+140;g+=DG,gi++){
+      const fr=getFrame(F,clamp(toLocal('sun',g),0,F.len-1));
+      let li=0;
+      for(let lat=-(APRON+34);lat<=APRON+34;lat+=DL,li++){
+        const x=fr.x+fr.lx*lat, z=fr.z+fr.lz*lat;
+        if(routeInfo(x,z).d>APRON+30) continue;
+        samples++;
+        org.set(x,fr.y+900,z);
+        rc.set(org,dir);
+        const hits=rc.intersectObjects(targets,false);
+        if(!hits.length){
+          holes++; miss.set(key(gi,li),{g:Math.round(g),lat:Math.round(lat)});
+          if(!worstHole) worstHole={g:Math.round(g),lat:Math.round(lat)};
+          continue;
+        }
+        if(hits.length>1){
+          const d=Math.abs(hits[0].point.y-hits[1].point.y);
+          if(d<0.02) zf++; else if(d<1.2) doubled++;
+          // Two surfaces a few centimetres apart are a depth-test question. Two
+          // surfaces half a metre apart are a shelf hanging in the air, and only
+          // that second kind is a defect you can see, so count them apart.
+          if(d>=0.02){
+            if(d<0.08) gapBand[0]++; else if(d<0.40) gapBand[1]++; else gapBand[2]++;
+            if(d>worstGap){ worstGap=d;
+              worstPair={g:Math.round(g),lat:Math.round(lat),gapM:Math.round(d*100)/100,
+                         top:hits[0].object.name||'?',under:hits[1].object.name||'?',
+                         topY:Math.round(hits[0].point.y*100)/100,
+                         underY:Math.round(hits[1].point.y*100)/100,
+                         planY:Math.round(groundY(x,z)*100)/100,
+                         d0:Math.round(routeInfo(x,z).dA[0]*10)/10,
+                         d1:Math.round(routeInfo(x,z).dA[1]*10)/10}; }
+          }
+        }
+      }
+    }
+    // A miss rate is not a picture. What decides whether the ground reads as
+    // torn is the size of the largest *connected* opening: a lone ray slipping
+    // between two triangles is invisible, a five-by-five block is a window onto
+    // the sky. Flood-fill the miss grid and report the biggest one in metres.
+    let biggest=null, singles=0;
+    const seen=new Set();
+    for(const k of miss.keys()){
+      if(seen.has(k)) continue;
+      const stack=[k], cells=[];
+      seen.add(k);
+      while(stack.length){
+        const c=stack.pop(); cells.push(c);
+        const cg=Math.floor(c/100000), cl=c%100000;
+        for(const [dg,dl] of [[1,0],[-1,0],[0,1],[0,-1]]){
+          const n=key(cg+dg,cl+dl);
+          if(miss.has(n)&&!seen.has(n)){ seen.add(n); stack.push(n); }
+        }
+      }
+      if(cells.length===1){ singles++; }
+      if(!biggest||cells.length>biggest.cells){
+        let g0=Infinity,g1=-Infinity,l0=Infinity,l1=-Infinity;
+        for(const c of cells){
+          const m=miss.get(c);
+          g0=Math.min(g0,m.g); g1=Math.max(g1,m.g);
+          l0=Math.min(l0,m.lat); l1=Math.max(l1,m.lat);
+        }
+        biggest={cells:cells.length,alongM:g1-g0+DG,acrossM:l1-l0+DL,atG:g0,atLat:l0};
+      }
+    }
+    return {samples,holes,holePct:Math.round(holes/Math.max(1,samples)*10000)/100,
+      doubledGroundWithin1_2m:doubled, coplanarPairs:zf,
+      worstOverlapM:Math.round(worstGap*1000)/1000, worstHole,
+      isolatedMisses:singles, largestOpening:biggest,
+      overlapUnder8cm:gapBand[0], overlap8to40cm:gapBand[1], overlapOver40cm:gapBand[2],
+      worstOverlapAt:worstPair};
+  },
   // How much of the frame the stone actually occupies, integrated from the
   // projected road edges rather than guessed from a screenshot. Reported for the
   // whole frame and for the lower half, which is where dominance is felt.
@@ -4750,6 +5150,10 @@ window.__SUMMERGLASS_TEST__={
   // negative means bedded in, which is what we want.
   groundingProbe(){
     let worst=null, floating=0, maxAbove=-1e9, sampled=0;
+    // A trunk above the drawn surface hovers; a trunk far below it is buried to
+    // its collar, which reads as a pole pushed into a lawn. Both are failures of
+    // contact and neither is visible in a count of the other, so measure both.
+    let deepest=0, buried=0, deepestAt=null;
     const check=(x,z,y,what)=>{
       const r=realizedGroundY(x,z); if(r===null) return;
       sampled++;
@@ -4757,12 +5161,18 @@ window.__SUMMERGLASS_TEST__={
       if(above>maxAbove){ maxAbove=above; worst={what,x:Math.round(x),z:Math.round(z),
         aboveM:Math.round(above*1000)/1000}; }
       if(above>0.05) floating++;
+      const under=-above;
+      if(under>0.9) buried++;
+      if(under>deepest){ deepest=under; deepestAt={what,x:Math.round(x),z:Math.round(z),
+        underM:Math.round(under*1000)/1000}; }
     };
     for(const t of TREES){ if(t.unseatable) continue; check(t.x,t.z,t.y,'tree:'+t.fam); }
     check(HERO_POS.x,HERO_POS.z,HERO_POS.y,'bellroot');
     return {sampled,floating,maxAboveM:Math.round(maxAbove*1000)/1000,worst,
+      buriedOver0_9m:buried, deepestBelowDrawnM:Math.round(deepest*1000)/1000,
+      deepestAt,
       seated:{lowered:GROUND_STAT.lowered,raised:GROUND_STAT.raised,
-        unseatable:GROUND_STAT.culled,
+        unseatable:GROUND_STAT.culled, deepSeatedOver1_5m:GROUND_STAT.deepSeated,
         maxDropAnyM:Math.round(GROUND_STAT.maxDropM*1000)/1000,
         maxDropKeptM:Math.round(GROUND_STAT.maxKeptDropM*1000)/1000,
         plannedTotal:GROUND_STAT.trees}};
