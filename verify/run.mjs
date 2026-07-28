@@ -271,11 +271,19 @@ async function checkQuality(browser) {
   // percentile that passes while one tree has moved four metres is still a fact
   // the reader is entitled to. Low is the loose tier; high sits at twelve
   // centimetres.
-  const heightsBounded = worstNear <= 0.5 && heights.low.length === base.length &&
+  // The near/far split let the far field move freely, and it did: sharing the
+  // cell SIZE across tiers without sharing the grid ORIGIN put low's lattice two
+  // metres out of phase, which the near gate never saw. The seating surface is
+  // meant to be quality-independent, so the gate is now what that actually
+  // means — the elevation hash of every tree, identical at every tier. The
+  // distribution below stays in the record to say by how much, if ever, it is not.
+  const elevationIdentical = v.every(x => x.seatedElevation === v[0].seatedElevation);
+  const heightsBounded = elevationIdentical && heights.low.length === base.length &&
                          heights.high.length === base.length;
   record('quality', samePlan && sameIdentity && sameTrees && realDiffers &&
     heightsBounded && v[0].qualityReadsBeforePlan === 0,
     {...seen, perTreeIdentityIdentical: sameTrees,
+     seatedElevationIdentical: elevationIdentical,
      seatedHeightDriftVsStandard: drift, worstNearDriftTier: worstNearTier,
      worstNearP99DriftM: worstNear,
      note: 'plan and per-tree identity must be identical across tiers; seated height is realization and is bounded, not asserted equal'});
@@ -320,9 +328,13 @@ async function checkRide(browser, branch) {
   const P = await proof(p);
   const errs = p._errs;
   await p.close();
+  // A ride that the harness gave up on, or that stopped short, is not a ride of
+  // this route however clean its other fields look.
   record(`ride/${branch}`,
     P.run.completedContinuousRide && P.run.continuousRideEligible &&
-    P.run.marks.rested && P.run.marks.rejoined && errs.length === 0,
+    P.run.marks.rested && P.run.marks.rejoined && errs.length === 0 &&
+    !timedOut && P.run.stepOverruns === 0 &&
+    P.run.distanceRiddenM >= P.route.lengthM * 0.985,
     {provenance: P.run.provenance, completed: P.run.completedContinuousRide,
      maxStepM: P.run.maxStepM, stepCeilingM: P.run.stepCeilingM, stepOverruns: P.run.stepOverruns,
      harnessTimedOut: timedOut, minutes: Math.round((Date.now() - t0) / 6000) / 10,
@@ -463,10 +475,20 @@ async function checkPerf(browser) {
             `from ${r.dprCap} to ${r.dpr} (rung ${gov.rung}). The world runs; this GPU ` +
             `cannot hold the standard tier's resolution at 60fps.`});
   }
-  record('perf', geometry && r.framePass.ok === true && chapterFails.length === 0,
-    {...detail, plannedChapters, chaptersOverBudget: chapterFails});
+  record('perf', geometry && r.framePass.ok === true && chapterFails.length === 0 &&
+    !timedOut && P.run.continuousRideEligible &&
+    P.run.distanceRiddenM >= P.route.lengthM * 0.985,
+    {...detail, plannedChapters, chaptersOverBudget: chapterFails,
+     routeLengthM: P.route.lengthM, continuousRideEligible: P.run.continuousRideEligible});
 }
 
+// A mistyped selector used to run nothing and exit zero, which reads exactly like
+// a clean sweep. The set of groups is named, and an unknown one is an error.
+const GROUPS = ['restart','provenance','fork','road','grounding','quality','seeds','ride','budget','perf'];
+if (ONLY && !GROUPS.some(g => g.startsWith(ONLY) || ONLY.startsWith(g))) {
+  console.error(`unknown --only=${ONLY}; expected one of: ${GROUPS.join(', ')}`);
+  process.exit(3);
+}
 const wanted = n => !ONLY || n.startsWith(ONLY);
 
 const server = await serve();

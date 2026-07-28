@@ -2298,8 +2298,16 @@ let TILE_REAL=null;
   for(const F of [FRAMES.sun,FRAMES.moss]) for(let i=0;i<=F.N;i+=4){
     minX=Math.min(minX,F.x[i]); maxX=Math.max(maxX,F.x[i]);
     minZ=Math.min(minZ,F.z[i]); maxZ=Math.max(maxZ,F.z[i]); }
-  const x0=minX-MARGIN, z0=minZ-MARGIN;
-  const nx=Math.ceil((maxX-minX+2*MARGIN)/cell)+1, nz=Math.ceil((maxZ-minZ+2*MARGIN)/cell)+1;
+  // Sharing the cell SIZE is not enough to share the surface. The grid also has
+  // an origin, and the origin was the corner of a margin that varies with the
+  // tier's draw distance — 930 m at low against 980 elsewhere. Fifty metres is
+  // three cells and an eighth, so the whole lattice sat two metres out of phase
+  // at low and every triangle in it was cut through the landform somewhere else.
+  // The origin is now snapped to a world-absolute multiple of the cell, so all
+  // three tiers lay the SAME lattice over the ground and differ only in how far
+  // out they extend it.
+  const x0=Math.floor((minX-MARGIN)/cell)*cell, z0=Math.floor((minZ-MARGIN)/cell)*cell;
+  const nx=Math.ceil((maxX+MARGIN-x0)/cell)+2, nz=Math.ceil((maxZ+MARGIN-z0)/cell)+2;
   const HG=new Float32Array(nx*nz), DG=new Float32Array(nx*nz);
   for(let iz=0;iz<nz;iz++) for(let ix=0;ix<nx;ix++){
     const x=x0+ix*cell, z=z0+iz*cell;
