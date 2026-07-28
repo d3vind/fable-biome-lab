@@ -2,18 +2,21 @@
 
 Single-file procedural world experiments. Each branch is one world.
 
-## Summerglass Hollow (`phase-3-summerglass-hollow-v2-reconcile`)
+## Summerglass Hollow (`phase-3-summerglass-hollow-v2-quiet-cut`)
 
 A seeded bicycle passage through one remembered summer afternoon: a pale road
 travelling over grassy rises, down into cool woodland hollows, around a ridge
 that divides it in two, past water, and up to an ancient tree above a broad
 final valley.
 
-This branch is a reconciliation of `phase-3-summerglass-hollow-v2`. The journey,
-the route, the rolling terrain, the fork and the streaming architecture are
-unchanged; what has been repaired is the soft canopy and cloud language of the
-original Summerglass Vale, the composition of the water, the road and its verge,
-the honesty of the proof surface, and the runtime budget.
+This branch is a subtractive editorial pass over
+`phase-3-summerglass-hollow-v2-reconcile`. The journey, the route, the rolling
+terrain, the fork, Glasswater, Bellroot and the streaming architecture are
+unchanged. What changed is what was taken away: two thirds of the airborne
+particles, half the scattered grass, ten of the twenty-one cloud formations, and
+a tenth of the frame the road was occupying. What was added is grounding — every
+tree now stands on the surface the renderer actually draws, not on the function
+the plan used to place it.
 
 Open `index.html` over any HTTP server. No build step, no assets, no
 dependencies beyond the pinned Three.js module in the import map.
@@ -75,6 +78,30 @@ between a fluffy canopy and a heap of crystals: it lets an eighty-triangle puff
 shade like a soft ball, so a crown can be built from many small overlapping
 lobes instead of a few large faceted ones.
 
+### The editorial rules
+
+Three rules decide what exists, and they are worth stating because they are the
+whole design:
+
+* **Fewer objects, stronger silhouettes.** A meadow is not an even sprinkle of
+  grass. A coarse field decides whether a patch of ground has growth on it at
+  all — most does not — and a finer field varies density inside a patch so its
+  edges are ragged. The emptiness between is the composition, not a gap in it.
+* **Airborne life is an event.** The plan schedules a handful of pockets: one
+  shaft of light in the Dappled Gate, a breeze on the open ground, one deep in
+  Fernfold, the water margins, and Bellroot. Everywhere else the air is nearly
+  empty, which is what makes a pocket read as something rather than as a filter
+  over the lens.
+* **Everything stands on the drawn surface.** The plan places things with a
+  continuous ground function; the renderer draws a triangulated approximation of
+  it. Wherever the triangles fall below the function — every convex cell, every
+  crease where the two lanes' shoulders cross — a trunk placed by the plan hangs
+  in the air. Every planted position is therefore re-seated onto the drawn mesh
+  and bedded slightly into it, once, before residency begins. Where the two
+  disagree by more than a tree can be seated through, realization declines to
+  build the tree and says so; the plan keeps it, so the world's identity is the
+  same at every quality.
+
 ### Proof surface
 
 `window.__SUMMERGLASS_PROOF__` (version `summerglass-hollow-2r`) reports runtime
@@ -97,9 +124,24 @@ rider came near the fork; `seen.forkBothArmsBeforeCommit` means both arms were
 inside the frustum with a clear ground line before the choice was locked.
 `water.proximityThisRun` and `water.seenThisRun` likewise, with a frame count.
 
-Road validation is measured against the **realized corridor and ground-field
-meshes** — the vertices actually emitted — not against the analytic ground
-function: surface gap, edge-above-support, unsupported edge samples, ground-field
+Every run reports its **provenance**: `continuous`, `accelerated`, `warped` or
+`debug`. It only ever escalates, and it resets with the ride. `continuous` and
+`accelerated` both mean every metre was travelled and every frame rendered —
+accelerated only fixes the timestep, which is how a ride is verified on a
+software rasteriser. `warped` and `debug` mean the rider was moved by something
+other than riding: such a run can be inspected, but `continuousRideEligible` is
+false and the visibility assertions refuse to pass. A teleport cannot be
+mistaken for a ride.
+
+Frame time is reported twice — raw, and with harness stalls removed — together
+with the count of stalls, the threshold used, the viewport, the device pixel
+ratio, the renderer string, whether that renderer is software, and percentiles
+per route chapter. Neither number can be quoted without the other.
+
+Road validation is measured against the **triangles actually emitted to the
+renderer**. A vertex can sit in the position buffer and be referenced by no
+triangle — the fork culls exactly such vertices where one lane owns the other's
+ground — and validating those is validating geometry nobody sees: surface gap, edge-above-support, unsupported edge samples, ground-field
 poke-through, and the designed verge drop reported separately as design rather
 than as error.
 
