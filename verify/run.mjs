@@ -485,11 +485,22 @@ async function checkPerf(browser) {
 // A mistyped selector used to run nothing and exit zero, which reads exactly like
 // a clean sweep. The set of groups is named, and an unknown one is an error.
 const GROUPS = ['restart','provenance','fork','road','grounding','quality','seeds','ride','budget','perf'];
-if (ONLY && !GROUPS.some(g => g.startsWith(ONLY) || ONLY.startsWith(g))) {
-  console.error(`unknown --only=${ONLY}; expected one of: ${GROUPS.join(', ')}`);
+// The validator and the matcher have to agree, and they did not. The validator
+// accepted anything that was a prefix OF a group or had a group as its prefix,
+// so `--only=performance` passed it (because "performance".startsWith("perf")),
+// while the matcher asks whether the CHECK NAME starts with the selector — and
+// "perf".startsWith("performance") is false. The result ran nothing, reported
+// 0/0 passed, and exited zero: a selector typo that looked exactly like a clean
+// sweep. The selector must now resolve to exactly one group by the same rule the
+// matcher uses, and anything else is an error rather than a silent no-op.
+const SELECTED = ONLY ? GROUPS.filter(g => g.startsWith(ONLY)) : null;
+if (ONLY && SELECTED.length !== 1) {
+  console.error(SELECTED.length === 0
+    ? `unknown --only=${ONLY}; expected one of: ${GROUPS.join(', ')}`
+    : `ambiguous --only=${ONLY}; matches: ${SELECTED.join(', ')}`);
   process.exit(3);
 }
-const wanted = n => !ONLY || n.startsWith(ONLY);
+const wanted = n => !ONLY || n.startsWith(SELECTED[0]);
 
 const server = await serve();
 const {chromium} = await import('playwright');
@@ -544,18 +555,29 @@ try {
         const before = results.length;
         await checkPerf(browser);
         const r = results.pop();               // fold the individual rows into one
-        runs.push({run: i + 1, state: r.state, p95: r.detail.steady && r.detail.steady.p95,
-                   p99: r.detail.steady && r.detail.steady.p99, dpr: r.detail.dpr,
-                   dprHeld: r.detail.dprHeld, chaptersOverBudget: r.detail.chaptersOverBudget,
-                   note: r.detail.note});
+        // The whole point of requiring three runs is that all three are on the
+        // record. Keeping a five-field digest of each and calling it "all of
+        // them" is the same failure this runner keeps being audited for, so the
+        // ENTIRE detail of every run is retained — per-chapter percentiles,
+        // governor steps, geometry, renderer string and all.
+        runs.push({run: i + 1, state: r.state, detail: r.detail});
         results.length = before;
       }
       const allPass = runs.every(r => r.state === 'PASS');
       const anyNoVerdict = runs.some(r => r.state === 'NO-VERDICT');
-      const detail = {consecutiveRunsRequired: N, runs,
-        worstP95Ms: Math.max(...runs.map(r => r.p95 || 0)),
-        worstP99Ms: Math.max(...runs.map(r => r.p99 || 0)),
-        allHeldTierDpr: runs.every(r => r.dprHeld)};
+      const p95 = r => (r.detail.steady && r.detail.steady.p95) || 0;
+      const p99 = r => (r.detail.steady && r.detail.steady.p99) || 0;
+      const detail = {consecutiveRunsRequired: N,
+        // the headline, then every run in full underneath it
+        summary: runs.map(r => ({run: r.run, state: r.state, p95Ms: p95(r), p99Ms: p99(r),
+          dpr: r.detail.dpr, dprHeld: r.detail.dprHeld,
+          peakDrawCalls: r.detail.peakDrawCalls, peakTriangles: r.detail.peakTriangles,
+          chaptersSampled: r.detail.chaptersSampled,
+          chaptersOverBudget: r.detail.chaptersOverBudget})),
+        worstP95Ms: Math.max(...runs.map(p95)),
+        worstP99Ms: Math.max(...runs.map(p99)),
+        allHeldTierDpr: runs.every(r => r.detail.dprHeld),
+        runs};
       if (anyNoVerdict && !runs.some(r => r.state === 'FAIL')) {
         recordNoVerdict('perf', {...detail,
           note: 'at least one of the ' + N + ' runs could not be answered on this hardware'});
@@ -567,6 +589,14 @@ try {
 } finally {
   await browser.close();
   server.close();
+}
+// Zero checks is not zero failures. Whatever the reason — a selector that
+// matched nothing, a group that silently skipped itself — a run that asserted
+// nothing must never exit as though everything held.
+if (results.length === 0) {
+  console.log('\nNO CHECKS RAN' + (ONLY ? ` for --only=${ONLY}` : '') +
+    ' — a run that asserts nothing is not a pass.');
+  process.exit(3);
 }
 const failed = results.filter(r => r.state === 'FAIL');
 const noVerdict = results.filter(r => r.state === 'NO-VERDICT');

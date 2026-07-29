@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Summerglass Hollow</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#5EC2E8; }
+  canvas { display:block; }
+  #hint {
+    position:fixed; left:14px; bottom:12px; user-select:none; pointer-events:none;
+    color:#F2E3BC; text-shadow:0 1px 3px rgba(22,52,44,0.6);
+    font:14px system-ui, sans-serif; letter-spacing:0.02em; opacity:0.9; z-index:9;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hint">W/S ride &middot; A/D steer &amp; choose &middot; drag to look &middot; Space pause &middot; R restart</div>
+<script type="module">
+import * as THREE from 'three';
