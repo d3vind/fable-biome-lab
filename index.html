@@ -1,0 +1,3853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Asterline Relay — The Long Signal</title>
+<style>
+  :root{
+    --bone:#f2e9d8; --gold:#e8d5a0; --ember:#ff7a59; --rasp:#e23a6d; --ink:#050308;
+  }
+  html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#050308;}
+  #view{position:fixed;inset:0;display:block;}
+  .hud{position:fixed;color:var(--bone);font-family:Georgia,'Times New Roman',serif;
+       pointer-events:none;user-select:none;-webkit-user-select:none;z-index:10;}
+  #title{top:26px;left:32px;letter-spacing:.42em;font-size:12px;opacity:.62;
+         text-transform:uppercase;transition:opacity 2.5s ease;}
+  #title small{display:block;letter-spacing:.30em;font-size:9px;opacity:.55;margin-top:6px;
+         font-style:italic;text-transform:none;}
+  #chapter{left:0;right:0;bottom:14%;text-align:center;letter-spacing:.55em;font-size:13px;
+           text-transform:uppercase;opacity:0;transition:opacity 3.2s ease;color:var(--gold);}
+  #chapter em{display:block;font-size:9px;letter-spacing:.34em;opacity:.6;margin-top:8px;font-style:italic;text-transform:none;}
+  #help{bottom:22px;right:30px;font-size:10.5px;letter-spacing:.14em;opacity:.40;font-style:italic;}
+  #hint{bottom:22px;left:32px;font-size:10.5px;letter-spacing:.14em;opacity:.42;font-style:italic;
+        transition:opacity 1.8s ease;}
+  #endcard{left:0;right:0;bottom:20%;text-align:center;opacity:0;transition:opacity 5s ease;}
+  #endcard .l1{letter-spacing:.5em;font-size:14px;text-transform:uppercase;color:var(--gold);}
+  #endcard .l2{letter-spacing:.26em;font-size:10px;font-style:italic;opacity:.6;margin-top:10px;}
+  #diag{top:64px;left:32px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;
+        line-height:1.5;color:#cfe8e4;background:rgba(5,3,8,.72);padding:12px 14px;
+        border:1px solid rgba(232,213,160,.18);display:none;white-space:pre;max-height:78vh;overflow:hidden;}
+  #fade{position:fixed;inset:0;background:#050308;z-index:20;pointer-events:none;
+        transition:opacity 2.6s ease;}
+  #vig{position:fixed;inset:0;z-index:5;pointer-events:none;
+       background:radial-gradient(ellipse 130% 105% at 50% 42%,transparent 58%,rgba(5,3,8,.36) 100%);}
+  #err{top:40%;left:0;right:0;text-align:center;font-size:12px;letter-spacing:.2em;color:#e8d5a0;
+       display:none;z-index:30;}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="vig"></div>
+<div id="title" class="hud">Asterline Relay<small>the long signal</small></div>
+<div id="chapter" class="hud"></div>
+<div id="help" class="hud">W/S speed &nbsp;·&nbsp; A/D drift &nbsp;·&nbsp; drag look &nbsp;·&nbsp; space hold &nbsp;·&nbsp; R restart</div>
+<div id="hint" class="hud">click once for sound</div>
+<div id="endcard" class="hud"><div class="l1">the signal is home</div><div class="l2">R&nbsp;&nbsp;to carry it again</div></div>
+<div id="diag" class="hud"></div>
+<div id="err" class="hud"></div>
+<div id="fade"></div>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ============================================================================
+   ASTERLINE RELAY — the long signal
+   A solitary cycling journey along an abandoned orbital maintenance road.
+   Single-file procedural world. Seeded, deterministic, streamed.
+   ========================================================================= */
+
+'use strict';
+
+/* ------------------------------ deterministic core ----------------------- */
+
+function xmur3(str){
+  let h = 1779033703 ^ str.length;
+  for (let i = 0; i < str.length; i++){
+    h = Math.imul(h ^ str.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return function(){
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return (h ^= h >>> 16) >>> 0;
+  };
+}
+
+function sfc32(a, b, c, d){
+  return function(){
+    a >>>= 0; b >>>= 0; c >>>= 0; d >>>= 0;
+    let t = (a + b) | 0;
+    a = b ^ (b >>> 9);
+    b = (c + (c << 3)) | 0;
+    c = (c << 21) | (c >>> 11);
+    d = (d + 1) | 0;
+    t = (t + d) | 0;
+    c = (c + t) | 0;
+    return (t >>> 0) / 4294967296;
+  };
+}
+
+class Stream {
+  constructor(seedStr, name){
+    const g = xmur3(seedStr + '::' + name);
+    this.f = sfc32(g(), g(), g(), g());
+    for (let i = 0; i < 12; i++) this.f();
+  }
+  float(){ return this.f(); }
+  range(a, b){ return a + (b - a) * this.f(); }
+  int(n){ return Math.floor(this.f() * n); }
+  pick(arr){ return arr[Math.floor(this.f() * arr.length)]; }
+  sign(){ return this.f() < 0.5 ? -1 : 1; }
+  chance(p){ return this.f() < p; }
+  gauss(){ // approx normal, bounded
+    return (this.f() + this.f() + this.f() + this.f() - 2) * 0.5;
+  }
+}
+
+/* FNV-1a 32-bit over a number/string sequence, quantised for float stability */
+class Hasher {
+  constructor(){ this.h = 0x811c9dc5 >>> 0; }
+  byte(b){ this.h = Math.imul(this.h ^ (b & 0xff), 16777619) >>> 0; return this; }
+  num(x){
+    if (!Number.isFinite(x)) x = -123456789;
+    const q = Math.round(x * 1000);
+    this.byte(q).byte(q >> 8).byte(q >> 16).byte(q >> 24);
+    return this;
+  }
+  str(s){ for (let i = 0; i < s.length; i++) this.byte(s.charCodeAt(i)); return this; }
+  arr(a){ for (let i = 0; i < a.length; i++) this.num(a[i]); return this; }
+  hex(){ return ('00000000' + this.h.toString(16)).slice(-8); }
+}
+
+/* --------------------------------- config -------------------------------- */
+
+const params = new URLSearchParams(location.search);
+const CONFIG = {
+  seed: params.get('seed') || 'ASTERLINE-1189',
+  quality: ['low','standard','high'].includes(params.get('quality')) ? params.get('quality') : 'standard',
+  jump: Math.max(0, parseFloat(params.get('jump') || '0') || 0),
+};
+
+const QUALITY = {
+  low:      { dpr: 1.0,  bloom: false, stars: 4200,  motes: 900,  ribStep: 6, moteSize: 1.0,
+              droneExtra: 0, undersideDetail: 1, sailSeg: 6,  planetDetail: 4, farStep: 36 },
+  standard: { dpr: 1.5,  bloom: true,  stars: 7400,  motes: 1500, ribStep: 4, moteSize: 1.0,
+              droneExtra: 8, undersideDetail: 2, sailSeg: 10, planetDetail: 5, farStep: 24 },
+  high:     { dpr: 2.0,  bloom: true,  stars: 9800,  motes: 2100, ribStep: 3, moteSize: 1.1,
+              droneExtra: 16, undersideDetail: 2, sailSeg: 14, planetDetail: 5, farStep: 18 },
+}[CONFIG.quality];
+
+/* --------------------------------- palette -------------------------------- */
+/* the eight-colour family; everything in the world derives from these        */
+
+const PAL = {
+  ink:       new THREE.Color(0x050308),  // void ink
+  graphite:  new THREE.Color(0x16171b),  // road graphite
+  aubergine: new THREE.Color(0x2a1630),  // deep shadow only
+  raspberry: new THREE.Color(0xe23a6d),  // relay raspberry
+  coral:     new THREE.Color(0xff7a59),  // coral ember
+  burnt:     new THREE.Color(0xd95f18),  // burnt orange
+  gold:      new THREE.Color(0xe8d5a0),  // old gold
+  bone:      new THREE.Color(0xf2e9d8),  // bone light
+  teal:      new THREE.Color(0x3fd2c7),  // rare cold counterpoint
+};
+
+/* GLSL palette ramp shared by every signal shader: the prismwake sequence.
+   t in [0,1) walks raspberry -> coral -> burnt -> gold, with a narrow teal
+   counterpoint window. Chapter 7 biases everything toward amber/bone.       */
+const GLSL_PRISM = `
+vec3 prismColor(float t, float amberBias){
+  t = fract(t);
+  vec3 rasp = vec3(0.771, 0.042, 0.145);
+  vec3 cor  = vec3(1.000, 0.196, 0.096);
+  vec3 brn  = vec3(0.700, 0.114, 0.007);
+  vec3 gld  = vec3(0.822, 0.665, 0.353);
+  vec3 tea  = vec3(0.049, 0.640, 0.575);
+  vec3 c = rasp;
+  c = mix(c, cor, smoothstep(0.18, 0.36, t));
+  c = mix(c, brn, smoothstep(0.40, 0.58, t));
+  c = mix(c, gld, smoothstep(0.62, 0.80, t));
+  c = mix(c, rasp, smoothstep(0.90, 1.00, t));
+  float tealWin = smoothstep(0.845, 0.862, t) * (1.0 - smoothstep(0.878, 0.895, t));
+  c = mix(c, tea, tealWin * (1.0 - amberBias));
+  vec3 amber = mix(gld, vec3(0.900, 0.815, 0.640), 0.35);
+  return mix(c, amber, amberBias);
+}
+`;
+
+/* prismwake envelope: how lit a piece of route furniture at arc-length s is,
+   given the rider at ws. gates wake gently ahead, blaze near the rider, and
+   settle to a faint permanent afterglow behind. uBreath adds the slow
+   inhale/exhale of the already-lit line.                                    */
+const GLSL_WAKE = `
+uniform float uCrown;
+float wakeEnv(float s, float ws, float breath){
+  float d = s - ws;
+  float aheadWin = 95.0 + uCrown * 130.0;
+  float ahead  = smoothstep(aheadWin, 18.0, d) * step(0.0, d);
+  float behind = step(d, 0.0);
+  float crest  = exp(-abs(d) * (0.028 - uCrown * 0.010));
+  float after  = behind * (0.16 + 0.05 * breath + 0.14 * uCrown);
+  return max(after, crest * (0.55 + 0.45 * ahead));
+}
+`;
+
+const clamp = (x, a, b) => x < a ? a : (x > b ? b : x);
+const lerp  = (a, b, t) => a + (b - a) * t;
+const smooth = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+const TAU = Math.PI * 2;
+
+/* ============================================================================
+   PLAN — quality-independent world truth. Everything here flows from named
+   PRNG streams on the seed. Realization (meshes, particles, quality) happens
+   elsewhere and may not touch these streams.
+   ========================================================================= */
+
+const STEP = 2;              // route sample spacing, metres
+const ROAD_W = 10.8;         // deck width
+const ROAD_HALF = ROAD_W / 2;
+const CLEAR_R = 8.2;         // protected clear radius from centreline
+const CHUNK_LEN = 200;       // detailed chunk length
+const WIDEN = 160;           // fork widening approach length
+const FORK_GAP = 6.1;        // arm centre offset at the split nose
+
+const CHAPTERS = [
+  { key: 'yard',     name: 'Calibration Yard',  sub: 'the road remembers its language' },
+  { key: 'orchard',  name: 'Signal Orchard',    sub: 'sails and tethers'  },
+  { key: 'viaduct',  name: 'Shadow Viaduct',    sub: 'beside the sleeping limb' },
+  { key: 'currents', name: 'Twin Currents',     sub: 'either hand is true' },
+  { key: 'freight',  name: 'Freight Eclipse',   sub: 'the caravan passes' },
+  { key: 'descent',  name: 'Prismwake Descent', sub: 'the signal at full voice' },
+  { key: 'afterglow',name: 'Relay Afterglow',   sub: 'amber, then bone, then quiet' },
+];
+
+function buildRouteSamples(seedStr, attempt){
+  const rs = new Stream(seedStr, 'route#' + attempt);
+  const L = Math.round(rs.range(6950, 8650) / STEP) * STEP;
+  const n = Math.round(L / STEP) + 1;
+
+  // --- curvature profile: piecewise-linear ramps (clothoid-like) ---------
+  const kProf = new Float32Array(n);
+  {
+    let i = 0, k = 0, heading = 0;
+    while (i < n){
+      let target;
+      const straight = rs.chance(0.30);
+      if (straight) target = rs.range(-1, 1) * (1 / 2400);
+      else {
+        const R = rs.range(130, 720) * (rs.chance(0.18) ? 0.62 : 1); // rare tighter sweepers >= ~80
+        let sign = rs.sign();
+        if (Math.abs(heading) > 1.05) sign = -Math.sign(heading);            // steer back
+        else if (Math.abs(heading) > 0.55 && rs.chance(0.7)) sign = -Math.sign(heading);
+        target = sign / Math.max(R, 60);
+      }
+      const ramp = Math.round(rs.range(40, 70) / STEP);
+      const hold = Math.round(rs.range(140, 430) / STEP);
+      for (let j = 0; j < ramp && i < n; j++, i++){
+        k = k + (target - k) / (ramp - j);
+        kProf[i] = k; heading += k * STEP;
+      }
+      for (let j = 0; j < hold && i < n; j++, i++){
+        kProf[i] = k; heading += k * STEP;
+      }
+    }
+    // calm both ends (station yards / overlook approach)
+    for (let i2 = 0; i2 < n; i2++){
+      const s = i2 * STEP;
+      const env = smooth((s - 40) / 260) * smooth((L - 60 - s) / 320);
+      kProf[i2] *= env;
+    }
+  }
+
+  // --- chapters ----------------------------------------------------------
+  const cs = new Stream(seedStr, 'chapters#' + attempt);
+  const fr = [0.050, 0.160, 0.160, 0.180, 0.115, 0.205, 0.130].map(f => f * (1 + cs.range(-0.16, 0.16)));
+  const fSum = fr.reduce((a, b) => a + b, 0);
+  const spans = []; let acc = 0;
+  for (let c = 0; c < 7; c++){
+    const s0 = acc; acc += (fr[c] / fSum) * L;
+    spans.push({ s0: Math.round(s0), s1: Math.round(acc) });
+  }
+  spans[6].s1 = L;
+
+  // --- elevation: integrate a soft-clamped slope profile -----------------
+  const es = new Stream(seedStr, 'elevation#' + attempt);
+  const dH = [ es.range(10, 22), es.range(42, 62), es.range(8, 22), es.range(-4, 10),
+               es.range(-58, -78), es.range(-16, -30) ]; // deltas for ch2..ch7 trends (ch1 flat)
+  const rollers = [
+    { a: es.range(3.5, 5.5), l: es.range(850, 1250), p: es.range(0, TAU) },
+    { a: es.range(1.6, 2.6), l: es.range(420, 610),  p: es.range(0, TAU) },
+  ];
+  const yProf = new Float32Array(n);
+  {
+    let y = 0;
+    for (let i = 0; i < n; i++){
+      const s = i * STEP;
+      let trend = 0;
+      for (let c = 1; c < 7; c++){
+        const { s0, s1 } = spans[c];
+        if (s >= s0 && s < s1){
+          const u = (s - s0) / (s1 - s0);
+          trend = (dH[c - 1] / (s1 - s0)) * Math.sin(Math.PI * u) * (Math.PI / 2);
+        }
+      }
+      let g = trend;
+      for (const r of rollers) g += (r.a * TAU / r.l) * Math.cos(TAU * s / r.l + r.p);
+      g *= smooth((s - 20) / 200) * smooth((L - 30 - s) / 260);
+      g = 0.092 * Math.tanh(g / 0.092);
+      yProf[i] = y; y += g * STEP;
+    }
+  }
+
+  // --- integrate position ------------------------------------------------
+  const px = new Float32Array(n), pz = new Float32Array(n), hd = new Float32Array(n);
+  {
+    let x = 0, z = 0, h = 0;
+    for (let i = 0; i < n; i++){
+      px[i] = x; pz[i] = z; hd[i] = h;
+      h += kProf[i] * STEP;
+      x += Math.cos(h) * STEP;
+      z += Math.sin(h) * STEP;
+    }
+  }
+
+  // --- self-clearance ----------------------------------------------------
+  const cell = 48, grid = new Map();
+  const gkey = (x, z) => (Math.round(x / cell) * 73856093) ^ (Math.round(z / cell) * 19349663);
+  let ok = true;
+  outer:
+  for (let i = 0; i < n; i += 4){
+    const gx = Math.round(px[i] / cell), gz = Math.round(pz[i] / cell);
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++){
+      const key = ((gx + dx) * 73856093) ^ ((gz + dz) * 19349663);
+      const bucket = grid.get(key);
+      if (bucket) for (const j of bucket){
+        if (Math.abs(i - j) * STEP < 90) continue;
+        const ddx = px[i] - px[j], ddz = pz[i] - pz[j], ddy = yProf[i] - yProf[j];
+        if (ddx * ddx + ddz * ddz + ddy * ddy < 30 * 30){ ok = false; break outer; }
+      }
+    }
+    const key = gkey(px[i], pz[i]);
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(i);
+  }
+
+  return { ok, L, n, px, pz, py: yProf, hd, kProf, spans };
+}
+
+function buildPlan(seedStr){
+  let route = null;
+  for (let attempt = 0; attempt < 24; attempt++){
+    route = buildRouteSamples(seedStr, attempt);
+    if (route.ok) { route.attempt = attempt; break; }
+  }
+  const { L, spans } = route;
+  const midOf = c => (spans[c].s0 + spans[c].s1) / 2;
+
+  /* ---- fork -------------------------------------------------------------- */
+  const fs = new Stream(seedStr, 'fork');
+  const side = fs.sign();                       // +1: outer current on the right
+  const c4 = spans[3];
+  const sFork = Math.round(c4.s0 + 0.14 * (c4.s1 - c4.s0));
+  const sRejoin = Math.round(c4.s1 - 0.12 * (c4.s1 - c4.s0));
+  const fork = {
+    side, sFork, sRejoin,
+    outerD: fs.range(42, 62), innerD: fs.range(22, 30),
+    outerLift: fs.range(9, 15), innerDip: -fs.range(4, 8),
+    innerWiggleN: fs.pick([2, 3]), innerWigglePh: fs.range(0, TAU), innerWiggleA: fs.range(5.5, 7.5),
+  };
+
+  /* ---- signal gates & pylons -------------------------------------------- */
+  const gs = new Stream(seedStr, 'gates');
+  const gates = [];
+  {
+    let s = 380 + gs.range(0, 160);
+    while (s < L - 420){
+      const inFork = s > sFork - WIDEN - 60 && s < sRejoin + WIDEN + 60;
+      if (!inFork){
+        gates.push({
+          s: Math.round(s), side: gs.sign(), variant: gs.int(4),
+          h: gs.range(7.5, 11.5), reach: gs.range(3.5, 7.0), backward: 0,
+        });
+      }
+      s += gs.range(330, 640);
+    }
+    // constellation pylons cluster in the descent
+    const c6 = spans[5];
+    const pyN = 8 + gs.int(3);
+    for (let i = 0; i < pyN; i++){
+      const s2 = c6.s0 + (i + 0.5 + gs.range(-0.3, 0.3)) * (c6.s1 - c6.s0) / pyN;
+      gates.push({ s: Math.round(s2), side: gs.sign(), variant: 4, h: gs.range(16, 26), reach: 0, backward: 0 });
+    }
+    gates.sort((a, b) => a.s - b.s);
+  }
+
+  /* ---- chime cairns — the Cairn Chorale --------------------------------- */
+  const ks = new Stream(seedStr, 'cairns');
+  const scaleDeg = [0, 2, 4, 7, 9, 11, 14, 16];    // pentatonic + lydian colour
+  const motif = []; for (let i = 0; i < 8; i++) motif.push(ks.pick(scaleDeg));
+  const cairns = [];
+  {
+    let s = 260, idx = 0;
+    while (s < L - 260){
+      const inFork = s > sFork - WIDEN - 40 && s < sRejoin + WIDEN + 40;
+      if (!inFork){
+        cairns.push({ s: Math.round(s), side: (idx % 2) ? 1 : -1, note: motif[idx % 8], stones: 3 + ks.int(3) });
+        idx++;
+      }
+      s += ks.range(230, 330);
+    }
+  }
+
+  /* ---- satellites / observatories --------------------------------------- */
+  const ss = new Stream(seedStr, 'satellites');
+  const sats = [];
+  const satN = 27 + ss.int(7);
+  for (let i = 0; i < satN; i++){
+    const s = ss.range(0.02, 0.99) * L;
+    sats.push({
+      s: Math.round(s),
+      lat: ss.sign() * ss.range(95, 640),
+      h: ss.range(-190, 260),
+      variant: ss.int(6), scale: ss.range(0.8, 1.9),
+      spin: ss.range(0.008, 0.05) * ss.sign(), phase: ss.range(0, TAU),
+      tracker: 0,
+    });
+  }
+  // four tracker observatories that watch the giant, not the rider
+  for (const i of [3, 9, 15, 21]) if (sats[i]) sats[i].tracker = 1;
+
+  /* ---- solar sails / orbital kites -------------------------------------- */
+  const ws2 = new Stream(seedStr, 'sails');
+  const sails = [];
+  const sailN = 21 + ws2.int(6);
+  for (let i = 0; i < sailN; i++){
+    const s = ws2.range(0.03, 0.98) * L;
+    sails.push({
+      s: Math.round(s),
+      lat: ws2.sign() * ws2.range(64, 430),
+      h: ws2.range(-160, 220),
+      size: ws2.range(18, 54), aspect: ws2.range(0.65, 1.5),
+      tiltRate: ws2.range(0.02, 0.07), phase: ws2.range(0, TAU),
+      hue: ws2.float(), tetherSat: ws2.chance(0.55) ? ws2.int(satN) : -1,
+    });
+  }
+
+  /* ---- stations ---------------------------------------------------------- */
+  const st = new Stream(seedStr, 'stations');
+  const stations = {
+    depart: { gantries: 5 + st.int(3), width: st.range(30, 44), platforms: 2 + st.int(2) },
+    receive: {
+      rings: 2 + st.int(3), ringR: st.range(90, 150), spireH: st.range(130, 210),
+      dishN: 3 + st.int(4), tilt: st.range(-0.15, 0.25), apertureR: st.range(16, 26),
+      armN: 4 + st.int(4), sideLobes: st.int(3),
+    },
+  };
+
+  /* ---- transit caravans -------------------------------------------------- */
+  const ts = new Stream(seedStr, 'transit');
+  const railSide = ts.sign();
+  const sCross = Math.round(midOf(4) + ts.range(80, 220));      // overhead crossing in ch5
+  const overtakeS = Math.round(midOf(4) - ts.range(120, 260));
+  const vCav = ts.range(15.5, 18.5);
+  const modulesA = []; const modN = 9 + ts.int(3);
+  for (let m = 0; m < modN; m++) modulesA.push({ variant: ts.int(5), len: ts.range(6.5, 10.5), glow: ts.range(0.6, 1) });
+  const transit = {
+    railSide, sCross, vCav, overtakeS,
+    startS: overtakeS - vCav * (overtakeS / 10.5),   // meets rider at overtakeS at default cruise
+    railLat: ts.range(34, 44), railH: ts.range(13, 17),
+    modulesA,
+    caravanB: { orbitR: ts.range(700, 1000), period: ts.range(420, 560), phase: ts.range(0, TAU), modN: 7 + ts.int(3) },
+    /* the Dawn Service: a short caravan on a slow circle that crosses the
+       opening vista, recedes, and returns on a long period                  */
+    caravanC: { r: ts.range(380, 460), ahead: ts.range(680, 820), h: ts.range(38, 62),
+                omega: ts.range(0.016, 0.024) * ts.sign(), modN: 6 + ts.int(3) },
+  };
+
+  /* ---- maintenance drones ------------------------------------------------ */
+  const ds = new Stream(seedStr, 'drones');
+  const drones = [];
+  for (let i = 0; i < 20; i++)  // family A: rib inspectors
+    drones.push({ fam: 0, s: Math.round(ds.range(0.03, 0.97) * L), side: ds.sign(),
+                  r: ds.range(2.5, 4.5), rate: ds.range(0.25, 0.6), phase: ds.range(0, TAU) });
+  for (let i = 0; i < 16; i++)  // family B: couriers between clusters
+    drones.push({ fam: 1, a: ds.int(satN), b: ds.int(satN), rate: ds.range(0.012, 0.03),
+                  phase: ds.range(0, 1), bow: ds.range(30, 120) });
+  for (let i = 0; i < 12; i++)  // family C: sail tenders
+    drones.push({ fam: 2, sail: ds.int(sailN), r: ds.range(8, 18), rate: ds.range(0.15, 0.4),
+                  phase: ds.range(0, TAU), tilt: ds.range(-0.5, 0.5) });
+
+  /* ---- kite-ray fauna ---------------------------------------------------- */
+  const fs2 = new Stream(seedStr, 'fauna');
+  const fauna = [];
+  for (let g = 0; g < 6; g++){
+    let anchorS = fs2.range(0.08, 0.95) * L;
+    let latBand = fs2.sign() * fs2.range(120, 420);
+    if (g === 0){ anchorS = 310; latBand = -170; }  // the poster crossing
+    const pts = [];
+    const pn = 6 + fs2.int(3);
+    const spread = g === 0 ? 0.5 : 1.0;
+    for (let p = 0; p < pn; p++){
+      pts.push({
+        s: anchorS + fs2.range(-900, 900) * spread,
+        lat: latBand + fs2.range(-160, 160) * spread,
+        h: fs2.range(-120, 200) * spread,
+      });
+    }
+    fauna.push({
+      pts, n: 3 + fs2.int(3), size: fs2.range(7, 15),
+      period: fs2.range(70, 130), phase: fs2.range(0, TAU),
+      flap: fs2.range(0.5, 1.1), tint: fs2.float(),
+    });
+  }
+
+  /* ---- the giant --------------------------------------------------------- */
+  const gs2 = new Stream(seedStr, 'giant');
+  const giants = [];
+  {
+    let t = 46 + gs2.range(0, 22);
+    const closeT = midOf(5) / 10.5;   // guaranteed near passage while in the descent (at cruise)
+    let placedClose = false;
+    while (t < 1500){
+      let dist = gs2.range(2100, 4100), alt = gs2.range(300, 1300) * gs2.sign();
+      if (!placedClose && t > closeT){ dist = 1450; alt = gs2.range(500, 800); placedClose = true; }
+      giants.push({
+        t0: Math.round(t), dur: gs2.range(46, 70), side: gs2.sign(),
+        dist, alt, variant: gs2.int(3), scale: gs2.range(0.8, 1.35),
+      });
+      t += gs2.range(62, 98);
+    }
+  }
+
+  /* ---- meteors ----------------------------------------------------------- */
+  const ms = new Stream(seedStr, 'meteors');
+  const meteors = [];
+  { let t = 20 + ms.range(0, 20);
+    while (t < 1600){ meteors.push({ t0: Math.round(t * 10) / 10, az: ms.range(0, TAU), el: ms.range(0.2, 0.9), roll: ms.range(0, TAU), spd: ms.range(0.7, 1.4) }); t += ms.range(24, 65); } }
+
+  /* ---- atmosphere / celestial layout ------------------------------------- */
+  const as = new Stream(seedStr, 'atmosphere');
+  const planetSide = as.sign();
+  const pR = as.range(2300, 2900);
+  const celestial = {
+    planetSide,
+    planetR: pR,
+    planetAz: as.range(0.52, 0.80),             // radians off the departure axis
+    planetDist: as.range(4300, 5100),
+    planetDrop: as.range(850, 1250),
+    bandSeed: as.range(0, 100), bandFreq: as.range(5, 9),
+    eclipseAz: -planetSide * as.range(0.5, 0.9), // opposite side of sky from the planet
+    eclipseEl: as.range(0.28, 0.45),
+    eclipseDist: 19000, eclipseR: as.range(750, 1050),
+    hazeTint: as.float(),
+  };
+
+  /* ---- rare anomalies ---------------------------------------------------- */
+  const an = new Stream(seedStr, 'anomalies');
+  const impossible = an.pick(['borrowedStar', 'echoRoad']);
+  const subtlePool = ['missingConstellation', 'backwardSignal', 'waitingCaravan'];
+  const sub1 = subtlePool.splice(an.int(3), 1)[0];
+  const sub2 = subtlePool.splice(an.int(2), 1)[0];
+  const anomalies = { impossible, subtle: [sub1, sub2], unsentReply: true };
+  // quiet-window triggers (route-distance keyed, away from fork/turns)
+  const quietA = Math.round(lerp(spans[2].s0, spans[2].s1, 0.55));
+  const quietB = Math.round(lerp(spans[5].s0, spans[5].s1, 0.72));
+  anomalies.trigS = { borrowedStar: quietB, echoRoad: quietA, missingConstellation: -1,
+                     backwardSignal: 0, waitingCaravan: 0 };
+  if (anomalies.subtle.includes('backwardSignal') || 1){
+    // choose a run of gates in ch3 to ignite backward (armed only if selected)
+    const c3gates = gates.filter(g => g.s > spans[2].s0 && g.s < spans[2].s1 && g.variant < 4);
+    if (anomalies.subtle.includes('backwardSignal'))
+      for (let i = 1; i < Math.min(4, c3gates.length); i++) c3gates[i].backward = 1;
+  }
+
+  /* ---- audio event colours ------------------------------------------------ */
+  const aus = new Stream(seedStr, 'audio');
+  const audioPlan = { root: 146.83 * Math.pow(2, aus.int(3) / 12), chimeGain: aus.range(0.5, 0.8),
+                      humDetune: aus.range(0.3, 0.8) };
+
+  /* ---- chunks ------------------------------------------------------------- */
+  const chunks = [];
+  {
+    let id = 0;
+    for (let s = 0; s < sFork; s += CHUNK_LEN)
+      chunks.push({ id: id++, lane: 'base', s0: s, s1: Math.min(s + CHUNK_LEN, sFork) });
+    for (const lane of ['inner', 'outer'])
+      for (let s = sFork; s < sRejoin; s += CHUNK_LEN)
+        chunks.push({ id: id++, lane, s0: s, s1: Math.min(s + CHUNK_LEN, sRejoin) });
+    for (let s = sRejoin; s < L; s += CHUNK_LEN)
+      chunks.push({ id: id++, lane: 'base', s0: s, s1: Math.min(s + CHUNK_LEN, L) });
+    chunks.push({ id: id++, lane: 'islandA', s0: sFork, s1: sFork + 90 });
+    chunks.push({ id: id++, lane: 'islandB', s0: sRejoin - 90, s1: sRejoin });
+  }
+
+  const plan = {
+    seed: seedStr, L, spans, route, fork, gates, cairns, motif, sats, sails, stations,
+    transit, drones, fauna, giants, meteors, celestial, anomalies, audioPlan, chunks,
+  };
+  plan.hashes = hashPlan(plan);
+  return plan;
+}
+
+function hashPlan(p){
+  const hr = new Hasher(); hr.str(p.seed).num(p.L).num(p.route.attempt);
+  for (let i = 0; i < p.route.n; i += 8) hr.num(p.route.px[i]).num(p.route.pz[i]).num(p.route.py[i]);
+  const routeHash = hr.hex();
+  const hf = new Hasher();
+  hf.num(p.fork.side).num(p.fork.sFork).num(p.fork.sRejoin).num(p.fork.outerD)
+    .num(p.fork.innerD).num(p.fork.outerLift).num(p.fork.innerDip)
+    .num(p.fork.innerWiggleN).num(p.fork.innerWiggleA);
+  const forkHash = hf.hex();
+  const hc = new Hasher();
+  for (const sp of p.spans) hc.num(sp.s0).num(sp.s1);
+  const chapterHash = hc.hex();
+  const hi = new Hasher();
+  for (const g of p.gates) hi.num(g.s).num(g.side).num(g.variant).num(g.h).num(g.backward);
+  for (const c of p.cairns) hi.num(c.s).num(c.side).num(c.note);
+  for (const s of p.sats) hi.num(s.s).num(s.lat).num(s.h).num(s.variant).num(s.scale).num(s.tracker);
+  for (const s of p.sails) hi.num(s.s).num(s.lat).num(s.h).num(s.size);
+  hi.num(p.stations.receive.rings).num(p.stations.receive.ringR).num(p.stations.receive.spireH)
+    .num(p.stations.receive.dishN).num(p.stations.receive.armN);
+  const infraHash = hi.hex();
+  const ht = new Hasher();
+  ht.num(p.transit.railSide).num(p.transit.sCross).num(p.transit.vCav).num(p.transit.startS)
+    .num(p.transit.railLat).num(p.transit.railH).num(p.transit.modulesA.length)
+    .num(p.transit.caravanB.orbitR).num(p.transit.caravanB.period)
+    .num(p.transit.caravanC.r).num(p.transit.caravanC.ahead).num(p.transit.caravanC.omega)
+    .num(p.transit.caravanC.modN);
+  for (const m of p.transit.modulesA) ht.num(m.variant).num(m.len);
+  const transitHash = ht.hex();
+  const ha = new Hasher();
+  for (const d of p.drones) ha.num(d.fam).num(d.s || 0).num(d.rate).num(d.phase || 0);
+  for (const f of p.fauna){ ha.num(f.n).num(f.size).num(f.period); for (const pt of f.pts) ha.num(pt.s).num(pt.lat).num(pt.h); }
+  for (const g of p.giants) ha.num(g.t0).num(g.dur).num(g.side).num(g.dist).num(g.variant);
+  const ce = p.celestial;
+  ha.num(ce.planetSide).num(ce.planetR).num(ce.planetAz).num(ce.planetDist).num(ce.planetDrop)
+    .num(ce.eclipseAz).num(ce.eclipseEl).num(ce.eclipseR).num(ce.bandFreq);
+  const ambientHash = ha.hex();
+  const hx = new Hasher();
+  hx.str(p.anomalies.impossible).str(p.anomalies.subtle.join(','))
+    .num(p.anomalies.trigS.borrowedStar).num(p.anomalies.trigS.echoRoad);
+  for (const m of p.motif) hx.num(m);
+  const rareHash = hx.hex();
+  const hp = new Hasher();
+  hp.str(routeHash).str(forkHash).str(chapterHash).str(infraHash).str(transitHash)
+    .str(ambientHash).str(rareHash);
+  return { routeHash, forkHash, chapterHash, infraHash, transitHash, ambientHash, rareHash,
+           planHash: hp.hex() };
+}
+
+/* ============================================================================
+   ROUTE — the one authoritative frame system. Every camera pose, mesh strip,
+   prop anchor, rail, creature path and verification probe goes through here.
+   ========================================================================= */
+
+class Route {
+  constructor(plan){
+    this.plan = plan;
+    this.L = plan.L;
+    this.n = plan.route.n;
+    this.px = plan.route.px; this.pz = plan.route.pz; this.py = plan.route.py;
+    this.hd = plan.route.hd;
+    this._v = new THREE.Vector3(); this._v2 = new THREE.Vector3();
+  }
+
+  /* lateral offset & lift of a lane relative to the base line at s */
+  laneOffset(s, lane){
+    const f = this.plan.fork;
+    if (lane === 'base' || s <= f.sFork || s >= f.sRejoin) return { d: 0, lift: 0 };
+    const u = (s - f.sFork) / (f.sRejoin - f.sFork);
+    const bump = smooth(u / 0.30) * smooth((1 - u) / 0.30);
+    if (lane === 'outer'){
+      return { d: f.side * (FORK_GAP + (f.outerD - FORK_GAP) * bump),
+               lift: f.outerLift * bump };
+    }
+    const wig = f.innerWiggleA * Math.sin(TAU * u * f.innerWiggleN + f.innerWigglePh)
+              * smooth(u / 0.18) * smooth((1 - u) / 0.18);
+    return { d: -f.side * (FORK_GAP + (f.innerD - FORK_GAP) * bump) + wig * -f.side,
+             lift: f.innerDip * bump };
+  }
+
+  /* deck half-width at s for a lane (base widens near the fork) */
+  halfWidth(s, lane){
+    const f = this.plan.fork;
+    if (lane !== 'base') return ROAD_HALF;
+    let w = ROAD_HALF;
+    if (s > f.sFork - WIDEN && s <= f.sFork)
+      w = lerp(ROAD_HALF, FORK_GAP + ROAD_HALF, smooth((s - (f.sFork - WIDEN)) / WIDEN));
+    else if (s >= f.sRejoin && s < f.sRejoin + WIDEN)
+      w = lerp(FORK_GAP + ROAD_HALF, ROAD_HALF, smooth((s - f.sRejoin) / WIDEN));
+    return w;
+  }
+
+  /* base-line point (no lane offset) */
+  basePos(s, out){
+    const t = clamp(s / STEP, 0, this.n - 1.001);
+    const i = Math.floor(t), fr2 = t - i;
+    out.set(this.px[i] + (this.px[i + 1] - this.px[i]) * fr2,
+            this.py[i] + (this.py[i + 1] - this.py[i]) * fr2,
+            this.pz[i] + (this.pz[i + 1] - this.pz[i]) * fr2);
+    return out;
+  }
+
+  heading(s){
+    const t = clamp(s / STEP, 0, this.n - 1.001);
+    const i = Math.floor(t), fr2 = t - i;
+    return this.hd[i] + (this.hd[i + 1] - this.hd[i]) * fr2;
+  }
+
+  /* full lane point: base + lateral offset along base-right + lift */
+  posAt(s, lane, out){
+    this.basePos(s, out);
+    const off = this.laneOffset(s, lane);
+    if (off.d !== 0 || off.lift !== 0){
+      const h = this.heading(s);      // right = (-sin h, 0, cos h), matching frameAt
+      out.x += -Math.sin(h) * off.d;
+      out.z += Math.cos(h) * off.d;
+      out.y += off.lift;
+    }
+    return out;
+  }
+
+  /* frame: pos, tan (forward), right, nrm (up-ish). gravity-oriented.       */
+  frameAt(s, lane, fr){
+    this.posAt(s, lane, fr.pos);
+    this.posAt(Math.min(s + 2.5, this.L), lane, this._v);
+    this.posAt(Math.max(s - 2.5, 0), lane, this._v2);
+    fr.tan.subVectors(this._v, this._v2).normalize();
+    fr.right.set(-fr.tan.z, 0, fr.tan.x).normalize();
+    fr.nrm.crossVectors(fr.right, fr.tan).normalize();
+    if (fr.nrm.y < 0){ fr.nrm.negate(); fr.right.negate(); }
+    return fr;
+  }
+
+  grade(s){
+    const a = this.py[clamp(Math.round(s / STEP), 0, this.n - 1)];
+    const b = this.py[clamp(Math.round(s / STEP) + 5, 0, this.n - 1)];
+    return (b - a) / (5 * STEP);
+  }
+
+  curvatureAt(s, lane){
+    const fA = { pos: new THREE.Vector3(), tan: new THREE.Vector3(), right: new THREE.Vector3(), nrm: new THREE.Vector3() };
+    const fB = { pos: new THREE.Vector3(), tan: new THREE.Vector3(), right: new THREE.Vector3(), nrm: new THREE.Vector3() };
+    this.frameAt(s - 4, lane, fA); this.frameAt(s + 4, lane, fB);
+    return fA.tan.angleTo(fB.tan) / 8;
+  }
+
+  chapterAt(s){
+    for (let c = 6; c >= 0; c--) if (s >= this.plan.spans[c].s0) return c;
+    return 0;
+  }
+
+  /* distance from an arbitrary world point to the nearest lane centreline    */
+  clearanceOf(pos, sHint){
+    let best = 1e9;
+    const w = 700;
+    const s0 = Math.max(0, (sHint ?? 0) - w), s1 = Math.min(this.L, (sHint ?? this.L) + w);
+    const lanes = ['base'];
+    if (s1 > this.plan.fork.sFork && s0 < this.plan.fork.sRejoin) lanes.push('inner', 'outer');
+    for (const lane of lanes){
+      for (let s = s0; s <= s1; s += 8){
+        this.posAt(s, lane, this._v);
+        const d = this._v.distanceTo(pos);
+        if (d < best) best = d;
+      }
+    }
+    return best;
+  }
+}
+
+function makeFrame(){
+  return { pos: new THREE.Vector3(), tan: new THREE.Vector3(),
+           right: new THREE.Vector3(), nrm: new THREE.Vector3() };
+}
+
+/* ============================================================================
+   SKY & DEEP SPACE — stars in strata, the sleeping planet, the eclipse disc
+   that governs all light, paper arcs, the far network, motes, meteors.
+   ========================================================================= */
+
+class SkySystem {
+  constructor(plan, route){
+    this.plan = plan; this.route = route;
+    this.group = new THREE.Group();
+    this.disposables = [];
+    this.time = 0;
+
+    const cel = plan.celestial;
+
+    /* ---- celestial anchors ---------------------------------------------- */
+    const fr0b = makeFrame();
+    route.frameAt(60, 'base', fr0b);
+    const azW = route.heading(60) + cel.planetSide * cel.planetAz;
+    this.planetCenter = fr0b.pos.clone().add(new THREE.Vector3(
+      Math.cos(azW) * cel.planetDist, -cel.planetDrop, Math.sin(azW) * cel.planetDist));
+    /* deterministic pushback: the route must never graze the planet */
+    {
+      const latDir = this.planetCenter.clone().sub(fr0b.pos);
+      latDir.y = 0; latDir.normalize();
+      const r2 = plan.route;
+      for (let tries = 0; tries < 40; tries++){
+        let minD = 1e12;
+        for (let i = 0; i < r2.n; i += 8){
+          const dx = r2.px[i] - this.planetCenter.x, dy = r2.py[i] - this.planetCenter.y,
+                dz = r2.pz[i] - this.planetCenter.z;
+          const d = dx * dx + dy * dy + dz * dz;
+          if (d < minD) minD = d;
+        }
+        if (Math.sqrt(minD) > cel.planetR + 420) break;
+        this.planetCenter.addScaledVector(latDir, 260);
+      }
+    }
+
+    const h0 = route.heading(40);
+    const az = h0 + cel.eclipseAz;
+    this.sunDir = new THREE.Vector3(
+      Math.cos(az) * Math.cos(cel.eclipseEl), Math.sin(cel.eclipseEl),
+      Math.sin(az) * Math.cos(cel.eclipseEl)).normalize();
+    this.eclipsePos = this.sunDir.clone().multiplyScalar(cel.eclipseDist);
+
+    this._buildStars();
+    this._buildPlanet();
+    this._buildEclipse();
+    this._buildScrims();
+    this._buildNetwork();
+    this._buildEcho();
+    this._buildMotes();
+    this._buildMeteors();
+
+    /* the governing light + a whisper of fill */
+    this.sun = new THREE.DirectionalLight(0xf0d9a8, 1.25);
+    this.sun.position.copy(this.sunDir).multiplyScalar(100);
+    this.group.add(this.sun);
+    this.hemi = new THREE.HemisphereLight(0x241028, 0x0a0508, 0.55);
+    this.group.add(this.hemi);
+  }
+
+  _track(...objs){ this.disposables.push(...objs); }
+
+  /* ---- stars ------------------------------------------------------------ */
+  _buildStars(){
+    const rr = new Stream(this.plan.seed, 'real:stars');
+    const N = QUALITY.stars;
+    const pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+    const attr = new Float32Array(N * 3); // size, phase, flag(0 plain,1 cluster,2 lost)
+    const shells = [24000, 30000, 37000];
+
+    // authored density: a tilted belt, clusters, and deliberate dark holes
+    const beltN = new THREE.Vector3(rr.range(-0.5, 0.5), 1, rr.range(-0.5, 0.5)).normalize();
+    const holes = [];
+    for (let i = 0; i < 5; i++)
+      holes.push({ d: new THREE.Vector3(rr.range(-1, 1), rr.range(-0.15, 1), rr.range(-1, 1)).normalize(),
+                   r: rr.range(0.22, 0.45) });
+    const clusters = [];
+    for (let i = 0; i < 7; i++)
+      clusters.push({ d: new THREE.Vector3(rr.range(-1, 1), rr.range(0.05, 1), rr.range(-1, 1)).normalize(),
+                      r: rr.range(0.06, 0.14) });
+
+    const v = new THREE.Vector3();
+    let i = 0, guard = 0;
+    while (i < N - 12 && guard++ < N * 40){
+      v.set(rr.range(-1, 1), rr.range(-1, 1), rr.range(-1, 1));
+      if (v.lengthSq() > 1 || v.lengthSq() < 0.01) continue;
+      v.normalize();
+      if (v.y < -0.28 && rr.float() < 0.85) continue;      // planet owns the deep floor
+      let density = 0.32;
+      const belt = Math.abs(v.dot(beltN));
+      density += 0.55 * Math.pow(Math.max(0, 1 - belt / 0.30), 1.6);
+      for (const c of clusters){ const a = v.angleTo(c.d); if (a < c.r) density += 0.8 * (1 - a / c.r); }
+      for (const h of holes){ const a = v.angleTo(h.d); if (a < h.r) density *= 0.10 + 0.9 * smooth(a / h.r); }
+      if (rr.float() > density) continue;
+
+      const shell = shells[rr.int(3)];
+      pos[i * 3] = v.x * shell; pos[i * 3 + 1] = v.y * shell; pos[i * 3 + 2] = v.z * shell;
+      const m = rr.float();
+      let c0 = PAL.bone;
+      if (m < 0.16) c0 = PAL.gold; else if (m < 0.21) c0 = PAL.coral;
+      else if (m < 0.235) c0 = PAL.raspberry; else if (m < 0.245) c0 = PAL.teal;
+      const b = rr.range(0.35, 1.0) * (m < 0.06 ? 1.5 : 1.0);
+      col[i * 3] = c0.r * b; col[i * 3 + 1] = c0.g * b; col[i * 3 + 2] = c0.b * b;
+      attr[i * 3] = rr.range(1.1, 2.6) * (m < 0.06 ? 1.7 : 1.0);
+      attr[i * 3 + 1] = rr.range(0, TAU);
+      attr[i * 3 + 2] = 0;
+      i++;
+    }
+
+    // The Ferry — an authored nine-star constellation (candidate for loss)
+    const fd = new THREE.Vector3(0.2, 0.62, -0.55).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.route.heading(40)).normalize();
+    const fu = new THREE.Vector3(0, 1, 0).cross(fd).normalize();
+    const fv = fd.clone().cross(fu).normalize();
+    const ferry = [[0,0],[1.6,0.4],[3.1,0.5],[4.4,-0.2],[5.2,-1.3],[2.2,1.8],[3.6,2.4],[0.9,-1.2],[4.9,1.4]];
+    this.ferryDir = fd.clone();
+    for (let k2 = 0; k2 < 9 && i < N; k2++, i++){
+      const p = fd.clone().multiplyScalar(28000)
+        .addScaledVector(fu, ferry[k2][0] * 520).addScaledVector(fv, ferry[k2][1] * 520);
+      pos[i * 3] = p.x; pos[i * 3 + 1] = p.y; pos[i * 3 + 2] = p.z;
+      col[i * 3] = PAL.bone.r * 1.6; col[i * 3 + 1] = PAL.bone.g * 1.6; col[i * 3 + 2] = PAL.bone.b * 1.5;
+      attr[i * 3] = 3.1; attr[i * 3 + 1] = k2; attr[i * 3 + 2] = (k2 === 3) ? 2 : 1;
+    }
+    this.starCount = i;
+
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, i * 3), 3));
+    g.setAttribute('aCol', new THREE.BufferAttribute(col.subarray(0, i * 3), 3));
+    g.setAttribute('aInfo', new THREE.BufferAttribute(attr.subarray(0, i * 3), 3));
+    this.starMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false,
+      uniforms: {
+        uTime: { value: 0 }, uMissing: { value: 0 }, uLost: { value: 0 },
+        uPx: { value: 1 },
+      },
+      vertexShader: `
+        attribute vec3 aCol; attribute vec3 aInfo;
+        varying vec3 vCol; varying float vDim;
+        uniform float uTime, uMissing, uLost, uPx;
+        void main(){
+          vCol = aCol;
+          float flag = aInfo.z;
+          float dim = 1.0;
+          if (flag > 0.5) dim = 1.0 - uMissing;
+          if (flag > 1.5) dim = min(dim, 1.0 - uLost);
+          vDim = dim * (0.88 + 0.12 * sin(uTime * 0.11 + aInfo.y * 1.7));
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * mv;
+          gl_PointSize = aInfo.x * uPx * clamp(30000.0 / -mv.z, 0.35, 2.0);
+        }`,
+      fragmentShader: `
+        varying vec3 vCol; varying float vDim;
+        void main(){
+          vec2 q = gl_PointCoord - 0.5;
+          float d = length(q);
+          float a = smoothstep(0.5, 0.08, d);
+          if (a < 0.01) discard;
+          gl_FragColor = vec4(vCol * vDim, a * vDim);
+        }`,
+    });
+    this.stars = new THREE.Points(g, this.starMat);
+    this.stars.frustumCulled = false;
+    this.stars.renderOrder = -20;
+    this.group.add(this.stars);
+    this._track(g, this.starMat);
+  }
+
+  /* ---- planet ----------------------------------------------------------- */
+  _buildPlanet(){
+    const cel = this.plan.celestial;
+    const g = new THREE.IcosahedronGeometry(cel.planetR, QUALITY.planetDetail);
+    this.planetMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uSun: { value: this.sunDir }, uBand: { value: cel.bandSeed },
+        uFreq: { value: cel.bandFreq }, uTime: { value: 0 },
+      },
+      vertexShader: `
+        varying vec3 vPos; varying vec3 vWorld;
+        void main(){
+          vPos = position;
+          vec4 w = modelMatrix * vec4(position, 1.0);
+          vWorld = w.xyz;
+          gl_Position = projectionMatrix * viewMatrix * w;
+        }`,
+      fragmentShader: `
+        varying vec3 vPos; varying vec3 vWorld;
+        uniform vec3 uSun; uniform float uBand, uFreq, uTime;
+        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float noise(vec2 p){
+          vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
+                     mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+        }
+        void main(){
+          vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+          vec3 p = normalize(vPos);
+          float lat = p.y;
+          float warp = noise(vec2(p.x * 3.0 + uBand, p.z * 3.0)) * 0.35;
+          float band = sin((lat + warp) * uFreq * 3.1 + uBand);
+          float band2 = sin((lat + warp * 0.6) * uFreq * 7.7 + uBand * 2.0);
+          // screen-printed night bands: aubergine to umber, very dark
+          vec3 cA = vec3(0.058, 0.024, 0.066);
+          vec3 cB = vec3(0.120, 0.050, 0.036);
+          vec3 cC = vec3(0.036, 0.019, 0.026);
+          vec3 base = mix(cA, cB, smoothstep(-0.4, 0.6, band));
+          base = mix(base, cC, smoothstep(0.2, 0.9, band2) * 0.5);
+          float NdL = dot(n, uSun);
+          float lit = smoothstep(0.06, 0.52, NdL);
+          float term = smoothstep(-0.22, 0.02, NdL) * (1.0 - smoothstep(0.04, 0.42, NdL));
+          vec3 dayC = mix(vec3(0.32, 0.13, 0.05), vec3(0.55, 0.34, 0.13), smoothstep(-0.5, 0.8, band));
+          vec3 col = base + dayC * lit * 0.52 + vec3(0.75, 0.18, 0.09) * term * 0.85;
+          // sparse hand-built settlements on the night side
+          float town = step(0.9985, hash(floor(vec2((p.x + 1.0) * 260.0, (p.z + p.y) * 260.0))));
+          float nightside = 1.0 - smoothstep(-0.05, 0.15, NdL);
+          col += vec3(0.85, 0.55, 0.22) * town * nightside * 0.7;
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    });
+    this.planet = new THREE.Mesh(g, this.planetMat);
+    this.planet.position.copy(this.planetCenter);
+    this.planet.rotation.z = 0.32;
+    this.group.add(this.planet);
+    this._track(g, this.planetMat);
+
+    // limb glow — a restrained fresnel shell
+    const g2 = new THREE.SphereGeometry(cel.planetR * 1.018, 48, 32);
+    this.limbMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.BackSide,
+      uniforms: { uSun: { value: this.sunDir } },
+      vertexShader: `
+        varying vec3 vN; varying vec3 vV;
+        void main(){
+          vN = normalize(mat3(modelMatrix) * normal);
+          vec4 w = modelMatrix * vec4(position, 1.0);
+          vV = normalize(cameraPosition - w.xyz);
+          gl_Position = projectionMatrix * viewMatrix * w;
+        }`,
+      fragmentShader: `
+        varying vec3 vN; varying vec3 vV; uniform vec3 uSun;
+        void main(){
+          float f = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 3.5);
+          float sunSide = 0.35 + 0.65 * smoothstep(-0.4, 0.6, dot(normalize(vN), uSun));
+          vec3 col = mix(vec3(0.10, 0.03, 0.10), vec3(0.75, 0.22, 0.10), sunSide);
+          gl_FragColor = vec4(col * f * 0.95, f * 0.7);
+        }`,
+    });
+    const limb = new THREE.Mesh(g2, this.limbMat);
+    limb.position.copy(this.planetCenter);
+    this.group.add(limb);
+    this._track(g2, this.limbMat);
+  }
+
+  /* ---- eclipse disc ------------------------------------------------------ */
+  _buildEclipse(){
+    const rr = new Stream(this.plan.seed, 'real:eclipse');
+    const R = this.plan.celestial.eclipseR;
+    const grp = new THREE.Group();
+    grp.position.copy(this.eclipsePos);
+    grp.lookAt(0, 0, 0);
+
+    // corona ring — the light the disc hides
+    const ringG = new THREE.RingGeometry(R * 0.96, R * 2.05, 72, 1);
+    const ringMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      uniforms: { uR: { value: R } },
+      vertexShader: `varying vec2 vP; void main(){ vP = position.xy;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        varying vec2 vP; uniform float uR;
+        void main(){
+          float r = length(vP) / uR;
+          float ring = exp(-(r - 1.0) * 3.4);
+          float spear = pow(abs(sin(atan(vP.y, vP.x) * 4.0 + 0.6)), 24.0) * exp(-(r - 1.0) * 1.4) * 0.5;
+          vec3 col = vec3(0.95, 0.72, 0.38) * ring + vec3(1.0, 0.35, 0.15) * spear;
+          float a = clamp(ring + spear, 0.0, 1.0);
+          if (r < 1.0){ col *= smoothstep(0.955, 1.0, r); a *= smoothstep(0.955, 1.0, r); }
+          gl_FragColor = vec4(col * 1.05, a);
+        }`,
+    });
+    const ring = new THREE.Mesh(ringG, ringMat);
+    grp.add(ring);
+
+    // the faceted occluder — cut-paper rim
+    const seg = 26, shape = new THREE.Shape();
+    for (let i = 0; i <= seg; i++){
+      const a = (i / seg) * TAU;
+      const rj = R * (0.985 + 0.03 * Math.sin(a * 7 + rr.range(0, TAU)) * rr.range(0.3, 1));
+      if (i === 0) shape.moveTo(Math.cos(a) * rj, Math.sin(a) * rj);
+      else shape.lineTo(Math.cos(a) * rj, Math.sin(a) * rj);
+    }
+    const discG = new THREE.ShapeGeometry(shape, 4);
+    const discMat = new THREE.ShaderMaterial({
+      side: THREE.DoubleSide,
+      uniforms: {},
+      vertexShader: `varying vec2 vP; void main(){ vP = position.xy;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        varying vec2 vP;
+        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        void main(){
+          float fac = hash(floor(vP * 0.006));
+          vec3 col = mix(vec3(0.0035, 0.0018, 0.0040), vec3(0.0140, 0.0062, 0.0105), fac);
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    });
+    const disc = new THREE.Mesh(discG, discMat);
+    disc.position.z = 40;
+    grp.add(disc);
+    grp.scale.setScalar(1);
+    this.eclipse = grp;
+    this.group.add(grp);
+    this._track(ringG, ringMat, discG, discMat);
+  }
+
+  /* ---- cut-paper orbital arcs ------------------------------------------- */
+  _buildScrims(){
+    const rr = new Stream(this.plan.seed, 'real:scrims');
+    this.scrims = [];
+    const mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      uniforms: { uTint: { value: new THREE.Color(0x1a0c18) } },
+      vertexShader: `varying vec2 vUv; void main(){ vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        varying vec2 vUv; uniform vec3 uTint;
+        void main(){
+          float edge = smoothstep(0.0, 0.05, vUv.y) * smoothstep(1.0, 0.95, vUv.y);
+          float rim = smoothstep(0.965, 0.985, vUv.y) * 0.5 + smoothstep(0.035, 0.015, vUv.y) * 0.25;
+          vec3 col = uTint + vec3(0.55, 0.38, 0.16) * rim;
+          gl_FragColor = vec4(col, edge * 0.85);
+        }`,
+    });
+    this.scrimMat = mat;
+    for (let i = 0; i < 4; i++){
+      const R = rr.range(7000, 13500);
+      const arc = rr.range(0.5, 1.4);
+      const g = new THREE.RingGeometry(R, R * rr.range(1.012, 1.03), 64, 1, rr.range(0, TAU), arc);
+      const m = new THREE.Mesh(g, mat);
+      m.position.set(rr.range(-1, 1) * 2000, rr.range(-2500, 2600), rr.range(-1, 1) * 2000);
+      m.rotation.set(rr.range(0.8, 1.9), rr.range(0, TAU), rr.range(0, TAU));
+      m.userData.drift = rr.range(0.002, 0.007) * rr.sign();
+      this.scrims.push(m);
+      this.group.add(m);
+      this._track(g);
+    }
+    this._track(mat);
+  }
+
+  /* ---- the wider network — faint far asterlines -------------------------- */
+  _buildNetwork(){
+    const rr = new Stream(this.plan.seed, 'real:network');
+    const mat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      uniforms: { uTime: { value: 0 }, uReply: { value: 0 } },
+      vertexShader: `varying vec2 vUv; void main(){ vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        varying vec2 vUv; uniform float uTime, uReply;
+        void main(){
+          float body = 0.05;
+          float lights = step(0.982, fract(vUv.x * 90.0 - uTime * 0.015)) * (0.5 + 5.0 * uReply);
+          float edge = smoothstep(0.0, 0.25, vUv.y) * smoothstep(1.0, 0.75, vUv.y);
+          vec3 col = vec3(0.10, 0.05, 0.06) * body + vec3(0.75, 0.45, 0.2) * lights;
+          gl_FragColor = vec4(col, edge * (0.5 + 0.3 * uReply));
+        }`,
+    });
+    this.networkMat = mat;
+    for (let i = 0; i < 3; i++){
+      const R = rr.range(3200, 6400);
+      const g = new THREE.RingGeometry(R, R + rr.range(26, 44), 96, 1, rr.range(0, TAU), rr.range(1.2, 2.6));
+      const m = new THREE.Mesh(g, mat);
+      const fr2 = makeFrame();
+      this.route.frameAt(rr.range(0.2, 0.8) * this.plan.L, 'base', fr2);
+      m.position.copy(fr2.pos).addScaledVector(fr2.right, rr.sign() * rr.range(2600, 4800));
+      m.position.y += rr.range(-2200, -600);
+      m.rotation.set(Math.PI / 2 + rr.range(-0.3, 0.3), rr.range(0, TAU), 0);
+      this.group.add(m);
+      this._track(g);
+    }
+    this._track(mat);
+  }
+
+  /* ---- the Echo Road anomaly --------------------------------------------- */
+  _buildEcho(){
+    if (this.plan.anomalies.impossible !== 'echoRoad'){ this.echo = null; return; }
+    const pts = []; const fr2 = makeFrame();
+    for (let s = 0; s <= this.plan.L; s += 40){
+      this.route.frameAt(this.plan.L - s, 'base', fr2);
+      pts.push(fr2.pos.clone().add(new THREE.Vector3(0, 640, 0)));
+    }
+    const g = new THREE.BufferGeometry();
+    const n = pts.length; const posA = new Float32Array(n * 2 * 3); const uvA = new Float32Array(n * 2 * 2);
+    const right = new THREE.Vector3();
+    for (let i = 0; i < n; i++){
+      const p = pts[i]; const q = pts[Math.min(i + 1, n - 1)];
+      right.subVectors(q, p); right.set(-right.z, 0, right.x).normalize().multiplyScalar(9);
+      posA.set([p.x - right.x, p.y, p.z - right.z, p.x + right.x, p.y, p.z + right.z], i * 6);
+      uvA.set([i / n, 0, i / n, 1], i * 4);
+    }
+    const idx = [];
+    for (let i = 0; i < n - 1; i++){ const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    g.setAttribute('position', new THREE.BufferAttribute(posA, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uvA, 2));
+    g.setIndex(idx);
+    this.echoMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      uniforms: { uTime: { value: 0 }, uOn: { value: 0 } },
+      vertexShader: `varying vec2 vUv; void main(){ vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        varying vec2 vUv; uniform float uTime, uOn;
+        void main(){
+          float body = 0.06;
+          float lights = step(0.985, fract(vUv.x * 160.0 + uTime * 0.02)) * 0.7;
+          float edge = smoothstep(0.0, 0.2, vUv.y) * smoothstep(1.0, 0.8, vUv.y);
+          vec3 col = vec3(0.09, 0.05, 0.07) * body + vec3(0.8, 0.5, 0.28) * lights;
+          gl_FragColor = vec4(col, edge * uOn * 0.55);
+        }`,
+    });
+    this.echo = new THREE.Mesh(g, this.echoMat);
+    this.echo.visible = false;
+    this.group.add(this.echo);
+    this._track(g, this.echoMat);
+  }
+
+  /* ---- orbital motes ------------------------------------------------------ */
+  _buildMotes(){
+    const rr = new Stream(this.plan.seed, 'real:motes');
+    const N = QUALITY.motes;
+    const box = 860;
+    const pos = new Float32Array(N * 3), info = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++){
+      pos[i * 3] = rr.range(0, box); pos[i * 3 + 1] = rr.range(0, box); pos[i * 3 + 2] = rr.range(0, box);
+      info[i * 3] = rr.range(0.7, 1.9); info[i * 3 + 1] = rr.range(0, TAU); info[i * 3 + 2] = rr.float();
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('aInfo', new THREE.BufferAttribute(info, 3));
+    this.moteMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      uniforms: { uTime: { value: 0 }, uCenter: { value: new THREE.Vector3() },
+                  uBox: { value: box }, uPx: { value: 1 } },
+      vertexShader: `
+        attribute vec3 aInfo; varying float vA; varying float vT;
+        uniform float uTime, uBox, uPx; uniform vec3 uCenter;
+        void main(){
+          vec3 p = mod(position - uCenter + uBox * 0.5, uBox) - uBox * 0.5 + uCenter;
+          p.x += sin(uTime * 0.05 + aInfo.y) * 6.0;
+          p.y += sin(uTime * 0.037 + aInfo.y * 2.1) * 4.0;
+          p.z += cos(uTime * 0.043 + aInfo.y * 1.3) * 6.0;
+          vec4 mv = modelViewMatrix * vec4(p, 1.0);
+          float d = -mv.z;
+          vA = smoothstep(26.0, 90.0, d) * (1.0 - smoothstep(360.0, 440.0, d));
+          vT = aInfo.z;
+          gl_Position = projectionMatrix * mv;
+          gl_PointSize = aInfo.x * uPx * clamp(140.0 / d, 0.4, 2.4);
+        }`,
+      fragmentShader: `
+        varying float vA; varying float vT;
+        void main(){
+          if (vA < 0.01) discard;
+          vec2 q = gl_PointCoord - 0.5;
+          float a = smoothstep(0.5, 0.1, length(q)) * vA * 0.30;
+          vec3 col = mix(vec3(0.55, 0.42, 0.24), vec3(0.10, 0.30, 0.28), step(0.93, vT));
+          gl_FragColor = vec4(col, a);
+        }`,
+    });
+    this.motes = new THREE.Points(g, this.moteMat);
+    this.motes.frustumCulled = false;
+    this.group.add(this.motes);
+    this._track(g, this.moteMat);
+  }
+
+  /* ---- meteors ------------------------------------------------------------ */
+  _buildMeteors(){
+    const g = new THREE.PlaneGeometry(900, 14, 1, 1);
+    this.meteorMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      uniforms: { uLife: { value: 0 } },
+      vertexShader: `varying vec2 vUv; void main(){ vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        varying vec2 vUv; uniform float uLife;
+        void main(){
+          float head = smoothstep(0.0, 0.85, vUv.x);
+          float tail = 1.0 - smoothstep(0.85, 1.0, vUv.x);
+          float w = smoothstep(0.0, 0.45, vUv.y) * smoothstep(1.0, 0.55, vUv.y);
+          float a = head * tail * w * uLife;
+          gl_FragColor = vec4(vec3(0.95, 0.82, 0.6) * a * 1.4, a);
+        }`,
+    });
+    this.meteorPool = [];
+    for (let i = 0; i < 4; i++){
+      const mat = this.meteorMat.clone();
+      const m = new THREE.Mesh(g, mat);
+      m.visible = false;
+      this.meteorPool.push({ mesh: m, mat, active: false, t0: 0, dur: 0 });
+      this.group.add(m);
+      this._track(mat);
+    }
+    this._track(g, this.meteorMat);
+    this.meteorIdx = 0;
+  }
+
+  /* ---- per-frame ---------------------------------------------------------- */
+  update(dt, t, camPos, anomalyState){
+    this.time = t;
+    this.starMat.uniforms.uTime.value = t;
+    this.starMat.uniforms.uMissing.value = anomalyState.missing;
+    this.starMat.uniforms.uLost.value = anomalyState.lost;
+    this.planet.rotation.y += dt * 0.0011;
+    this.moteMat.uniforms.uTime.value = t;
+    this.moteMat.uniforms.uCenter.value.copy(camPos);
+    this.networkMat.uniforms.uTime.value = t;
+    this.networkMat.uniforms.uReply.value = anomalyState.reply || 0;
+    for (const s of this.scrims) s.rotation.z += dt * s.userData.drift * 0.01;
+    if (this.echo){
+      this.echoMat.uniforms.uTime.value = t;
+      this.echoMat.uniforms.uOn.value = anomalyState.echo;
+      this.echo.visible = anomalyState.echo > 0.01;
+    }
+    // meteors from the deterministic schedule
+    const sched = this.plan.meteors;
+    while (this.meteorIdx < sched.length && sched[this.meteorIdx].t0 <= t){
+      const ev = sched[this.meteorIdx++];
+      const slot = this.meteorPool.find(p => !p.active);
+      if (slot){
+        slot.active = true; slot.t0 = t; slot.dur = 2.2 / ev.spd;
+        const d = new THREE.Vector3(Math.cos(ev.az) * Math.cos(ev.el), Math.sin(ev.el), Math.sin(ev.az) * Math.cos(ev.el));
+        slot.mesh.position.copy(d).multiplyScalar(16000);
+        slot.mesh.position.y = Math.abs(slot.mesh.position.y) * 0.6 + 2500;
+        slot.mesh.lookAt(camPos);
+        slot.mesh.rotateZ(ev.roll);
+        slot.vel = new THREE.Vector3(Math.cos(ev.roll), Math.sin(ev.roll) * 0.4, 0.2).normalize().multiplyScalar(2600 * ev.spd);
+        slot.mesh.visible = true;
+      }
+    }
+    for (const p of this.meteorPool){
+      if (!p.active) continue;
+      const u = (t - p.t0) / p.dur;
+      if (u >= 1){ p.active = false; p.mesh.visible = false; continue; }
+      p.mesh.position.addScaledVector(p.vel, dt);
+      p.mat.uniforms.uLife.value = Math.sin(u * Math.PI) * 0.8;
+    }
+  }
+
+  setPixelScale(px){
+    this.starMat.uniforms.uPx.value = px;
+    this.moteMat.uniforms.uPx.value = px;
+  }
+
+  dispose(){
+    for (const d of this.disposables) d.dispose && d.dispose();
+  }
+}
+
+/* ============================================================================
+   THE ROAD — matte graphite deck, articulated panels, parapets, dormant edge
+   ribs, faceted glowing underside, fork islands, far proxy, streaming.
+   ========================================================================= */
+
+const PARA_H = 0.62, PARA_T = 0.24, RIB_H = 0.88, RIB_L = 0.55, RIB_T = 0.07;
+const DETAIL_AHEAD = 620, DETAIL_BEHIND = 260, DETAIL_DROP = 140;
+
+const ROAD_VERT = `
+  attribute float aS; attribute float aLat; attribute float aPart; attribute float aAux;
+  varying float vS; varying float vLat; varying float vPart; varying float vAux;
+  varying vec3 vWorld;
+  void main(){
+    vS = aS; vLat = aLat; vPart = aPart; vAux = aAux;
+    vec4 w = modelMatrix * vec4(position, 1.0);
+    vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }`;
+
+const ROAD_FRAG = `
+  varying float vS; varying float vLat; varying float vPart; varying float vAux;
+  varying vec3 vWorld;
+  uniform float uWakeS, uBreath, uTime, uAmber, uDatum;
+  uniform vec3 uSun;
+  ${GLSL_PRISM}
+  ${GLSL_WAKE}
+  float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float noise(vec2 p){
+    vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
+               mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+  }
+  void main(){
+    vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+    vec3 V = normalize(cameraPosition - vWorld);
+    if (dot(n, V) < 0.0) n = -n;
+    float wake = wakeEnv(vS, uWakeS, uBreath);
+    vec3 prism = prismColor(vS * 0.00135 + 0.22, uAmber);
+    vec3 col;
+    float glow = 0.0; vec3 glowC = prism;
+
+    if (vPart < 0.5){
+      /* deck */
+      vec3 base = vec3(0.0132, 0.0140, 0.0168);
+      float wear = noise(vec2(vS * 0.11, vLat * 0.23));
+      base *= 0.88 + 0.26 * wear;
+      float seamL = smoothstep(0.055, 0.02, abs(fract(vLat / 2.7 + 0.5) - 0.5) * 2.7);
+      float seamT = smoothstep(0.075, 0.03, abs(fract(vS / 6.0 + 0.5) - 0.5) * 6.0);
+      base *= 1.0 - 0.42 * max(seamL, seamT);
+      float joint = smoothstep(0.30, 0.10, abs(fract(vS / 30.0 + 0.5) - 0.5) * 30.0);
+      base *= 1.0 - 0.5 * joint;
+      /* luminous aggregate: faint fixed specks */
+      float speck = step(0.9965, hash(floor(vec2(vS * 7.0, vLat * 7.0))));
+      base += vec3(0.045, 0.036, 0.026) * speck;
+      /* viewing panes outside the tire line */
+      float paneBand = step(3.5, abs(vLat)) * step(abs(vLat), 4.62);
+      float paneBlock = step(0.68, hash(vec2(floor(vS / 54.0), sign(vLat))));
+      float paneCell = smoothstep(0.42, 0.34, abs(fract(vS / 9.0 + 0.5) - 0.5)) *
+                       smoothstep(0.50, 0.40, abs(fract((abs(vLat) - 3.5) / 1.12 + 0.5) - 0.5));
+      float pane = paneBand * paneBlock * paneCell;
+      vec3 paneC = vec3(0.006, 0.016, 0.020) + vec3(0.03, 0.05, 0.055) *
+                   step(0.997, hash(floor(vec2(vS * 3.0, vLat * 3.0))));
+      col = mix(base, paneC, pane * 0.85);
+      /* warm centre datum */
+      float datum = smoothstep(0.10, 0.035, abs(vLat)) * uDatum;
+      glow += datum * (0.06 + 0.13 * wake);
+      glowC = mix(vec3(0.82, 0.66, 0.35), prism, 0.25);
+      /* restrained specular from the eclipse light */
+      vec3 H = normalize(uSun + V);
+      float spec = pow(max(dot(n, H), 0.0), 42.0) * (0.05 + 0.10 * pane);
+      col += vec3(0.85, 0.68, 0.42) * spec;
+    } else if (vPart < 1.5){
+      /* faceted underside */
+      float fh = hash(vec2(floor(vS / 6.0), vAux));
+      vec3 base = mix(vec3(0.010, 0.005, 0.012), vec3(0.026, 0.011, 0.024), fh);
+      float lit = wake * step(0.28, fh);
+      col = base;
+      glow += lit * (0.55 + 0.85 * fh);
+      glowC = prismColor(vS * 0.00135 + 0.22 + fh * 0.05, uAmber);
+      float NdL = max(dot(n, uSun), 0.0);
+      col += vec3(0.30, 0.14, 0.06) * NdL * 0.25;
+    } else if (vPart < 2.5){
+      /* parapet */
+      vec3 base = vec3(0.0176, 0.0180, 0.0210);
+      float panel = smoothstep(0.06, 0.025, abs(fract(vS / 4.0 + 0.5) - 0.5) * 4.0);
+      base *= 1.0 - 0.35 * panel;
+      col = base * (0.9 + 0.2 * noise(vec2(vS * 0.2, vLat)));
+      /* continuous top light seam */
+      float seam = smoothstep(0.72, 0.98, vAux);
+      glow += seam * (0.03 + 0.52 * wake);
+      float NdL = max(dot(n, uSun), 0.0);
+      col += vec3(0.32, 0.16, 0.07) * NdL * 0.30;
+    } else if (vPart < 3.5){
+      /* rib fin body */
+      col = vec3(0.0128, 0.0132, 0.0158);
+      float NdL = max(dot(n, uSun), 0.0);
+      col += vec3(0.35, 0.17, 0.08) * NdL * 0.32;
+      glow += 0.02;
+      glowC = vec3(0.62, 0.45, 0.25);
+    } else if (vPart < 4.5){
+      /* rib light slit */
+      col = vec3(0.010, 0.008, 0.012);
+      glow += 0.05 + 1.35 * wake;
+    } else {
+      /* fork island nose */
+      col = vec3(0.0150, 0.0154, 0.0182);
+      float chevron = smoothstep(0.25, 0.05, abs(fract(vS / 2.6 + vLat * 0.35 + 0.5) - 0.5));
+      glow += 0.10 + 0.35 * chevron * (0.3 + 0.7 * wake);
+      glowC = vec3(0.82, 0.66, 0.35);
+    }
+    col += glowC * glow;
+    gl_FragColor = vec4(col, 1.0);
+  }`;
+
+class RoadSystem {
+  constructor(plan, route, scene){
+    this.plan = plan; this.route = route; this.scene = scene;
+    this.mat = new THREE.ShaderMaterial({
+      vertexShader: ROAD_VERT, fragmentShader: ROAD_FRAG,
+      uniforms: {
+        uWakeS: { value: 0 }, uBreath: { value: 0 }, uTime: { value: 0 },
+        uAmber: { value: 0 }, uDatum: { value: 1 }, uCrown: { value: 0 },
+        uSun: { value: new THREE.Vector3(0, 1, 0) },
+      },
+    });
+    this.live = new Map();        // chunk id -> { mesh, chunk }
+    this.built = 0; this.dropped = 0;
+    this.pending = [];
+    this._fr = makeFrame();
+    this._buildProxy();
+  }
+
+  /* ------------------------------ chunk mesh ---------------------------- */
+  buildChunk(chunk){
+    const verts = [], idx = [];
+    const V = (p, s, lat, part, aux) => {
+      verts.push(p.x, p.y, p.z, s, lat, part, aux);
+      return (verts.length / 7) - 1;
+    };
+    const quad = (a, b, c, d) => { idx.push(a, b, c, a, c, d); };
+    const fr = this._fr;
+    const rt = this.route;
+
+    if (chunk.lane === 'islandA' || chunk.lane === 'islandB'){
+      this._buildIsland(chunk, verts, idx, V, quad);
+    } else {
+      const s0 = chunk.s0, s1 = chunk.s1;
+      const p = new THREE.Vector3();
+      let prev = null;
+      for (let s = s0; s <= s1 + 0.01; s += STEP){
+        const ss = Math.min(s, s1);
+        rt.frameAt(ss, chunk.lane, fr);
+        const hw = rt.halfWidth(ss, chunk.lane);
+        const row = { deck: [], paraL: [], paraR: [], under: [] };
+        for (const f of [-1, -0.5, 0, 0.5, 1]){
+          p.copy(fr.pos).addScaledVector(fr.right, f * hw);
+          row.deck.push(V(p, ss, f * hw, 0, 0));
+        }
+        for (const sd of [-1, 1]){
+          const arr = sd < 0 ? row.paraL : row.paraR;
+          const e = sd * hw, eo = sd * (hw + PARA_T);
+          p.copy(fr.pos).addScaledVector(fr.right, e); arr.push(V(p, ss, e, 2, 0));
+          p.copy(fr.pos).addScaledVector(fr.right, e).addScaledVector(fr.nrm, PARA_H); arr.push(V(p, ss, e, 2, 1));
+          p.copy(fr.pos).addScaledVector(fr.right, eo).addScaledVector(fr.nrm, PARA_H); arr.push(V(p, ss, eo, 2, 1));
+          p.copy(fr.pos).addScaledVector(fr.right, eo).addScaledVector(fr.nrm, -0.42); arr.push(V(p, ss, eo, 2, 0));
+        }
+        const uPts = [[-hw, 0], [-hw * 0.63, -1.5], [0, -2.4], [hw * 0.63, -1.5], [hw, 0]];
+        for (let u = 0; u < 5; u++){
+          p.copy(fr.pos).addScaledVector(fr.right, uPts[u][0]).addScaledVector(fr.nrm, uPts[u][1]);
+          row.under.push(V(p, ss, uPts[u][0], 1, u));
+        }
+        if (prev){
+          for (let i = 0; i < 4; i++) quad(prev.deck[i], prev.deck[i + 1], row.deck[i + 1], row.deck[i]);
+          for (const key of ['paraL', 'paraR']){
+            const a = prev[key], b = row[key];
+            for (let i = 0; i < 3; i++){
+              if (key === 'paraL') quad(a[i + 1], a[i], b[i], b[i + 1]);
+              else quad(a[i], a[i + 1], b[i + 1], b[i]);
+            }
+          }
+          for (let i = 0; i < 4; i++) quad(prev.under[i + 1], prev.under[i], row.under[i], row.under[i + 1]);
+        }
+        prev = row;
+        if (s >= s1) break;
+      }
+      /* dormant edge ribs on the parapet crown */
+      const step = QUALITY.ribStep;
+      const rp = new THREE.Vector3(), fwd = new THREE.Vector3(), out = new THREE.Vector3();
+      for (let s = Math.ceil(s0 / step) * step; s < s1; s += step){
+        rt.frameAt(s, chunk.lane, fr);
+        const hw = rt.halfWidth(s, chunk.lane);
+        for (const sd of [-1, 1]){
+          const eo = sd * (hw + PARA_T * 0.5);
+          fwd.copy(fr.tan).multiplyScalar(RIB_L * 0.5);
+          out.copy(fr.right).multiplyScalar(RIB_T * 0.5 * sd);
+          const base = rp.copy(fr.pos).addScaledVector(fr.right, eo).addScaledVector(fr.nrm, PARA_H);
+          const t0 = new THREE.Vector3().copy(base).sub(fwd), t1 = new THREE.Vector3().copy(base).add(fwd);
+          const mk = (b0, up, o, part) => {
+            const q = new THREE.Vector3().copy(b0).addScaledVector(fr.nrm, up).add(o);
+            return V(q, s, eo, part, 0);
+          };
+          const oIn = out.clone().negate(), oOut = out.clone();
+          const iA = mk(t0, 0, oOut, 3), iB = mk(t1, 0, oOut, 3),
+                iC = mk(t1, RIB_H, oOut, 3), iD = mk(t0, RIB_H * 0.8, oOut, 3);
+          if (sd > 0) quad(iA, iB, iC, iD); else quad(iD, iC, iB, iA);
+          const jA = mk(t0, 0, oIn, 4), jB = mk(t1, 0, oIn, 4),
+                jC = mk(t1, RIB_H, oIn, 4), jD = mk(t0, RIB_H * 0.8, oIn, 4);
+          if (sd > 0) quad(jD, jC, jB, jA); else quad(jA, jB, jC, jD);
+          quad(iD, iC, jC, jD);
+        }
+      }
+    }
+
+    const g = new THREE.BufferGeometry();
+    const f32 = new Float32Array(verts);
+    const inter = new THREE.InterleavedBuffer(f32, 7);
+    g.setAttribute('position', new THREE.InterleavedBufferAttribute(inter, 3, 0));
+    g.setAttribute('aS', new THREE.InterleavedBufferAttribute(inter, 1, 3));
+    g.setAttribute('aLat', new THREE.InterleavedBufferAttribute(inter, 1, 4));
+    g.setAttribute('aPart', new THREE.InterleavedBufferAttribute(inter, 1, 5));
+    g.setAttribute('aAux', new THREE.InterleavedBufferAttribute(inter, 1, 6));
+    g.setIndex(idx);
+    g.computeBoundingSphere();
+    const mesh = new THREE.Mesh(g, this.mat);
+    mesh.matrixAutoUpdate = false;
+    return mesh;
+  }
+
+  _buildIsland(chunk, verts, idx, V, quad){
+    const rt = this.route, f = this.plan.fork;
+    const isA = chunk.lane === 'islandA';
+    const pIn = new THREE.Vector3(), pOut = new THREE.Vector3(), base = new THREE.Vector3();
+    const p = new THREE.Vector3();
+    const frB = makeFrame();
+    let prev = null;
+    for (let s = chunk.s0; s <= chunk.s1 + 0.01; s += STEP){
+      const ss = Math.min(s, chunk.s1);
+      rt.frameAt(ss, 'base', frB);
+      rt.posAt(ss, 'inner', pIn); rt.posAt(ss, 'outer', pOut);
+      pIn.addScaledVector(frB.right, f.side * ROAD_HALF);
+      pOut.addScaledVector(frB.right, -f.side * ROAD_HALF);
+      const gap = pIn.distanceTo(pOut);
+      if (gap > 7.2 && ((isA && ss > chunk.s0 + 20) || (!isA && ss < chunk.s1 - 20))){
+        if (isA) break; else { prev = null; continue; }
+      }
+      const hEnv = isA ? smooth((chunk.s1 - ss) / 12) : smooth((ss - chunk.s0) / 12);
+      const row = { d: [], wl: [], wr: [], rf: [] };
+      for (const t of [0, 0.5, 1]){
+        p.lerpVectors(pIn, pOut, t);
+        row.d.push(V(p, ss, (t - 0.5) * gap, 5, 0));
+      }
+      for (const [key, edge, sd] of [['wl', pIn, 1], ['wr', pOut, -1]]){
+        p.copy(edge); row[key].push(V(p, ss, sd, 2, 0));
+        p.copy(edge).addScaledVector(frB.nrm, (PARA_H - 0.06) * hEnv); row[key].push(V(p, ss, sd, 2, 0.9));
+      }
+      /* median cap in island-deck material, not parapet glow */
+      p.copy(pIn).addScaledVector(frB.nrm, (PARA_H - 0.06) * hEnv); row.rf.push(V(p, ss, -gap * 0.5, 5, 0));
+      p.copy(pOut).addScaledVector(frB.nrm, (PARA_H - 0.06) * hEnv); row.rf.push(V(p, ss, gap * 0.5, 5, 0));
+      if (prev){
+        for (let i = 0; i < 2; i++) quad(prev.d[i], row.d[i], row.d[i + 1], prev.d[i + 1]);
+        quad(prev.wl[0], prev.wl[1], row.wl[1], row.wl[0]);
+        quad(prev.wr[1], prev.wr[0], row.wr[0], row.wr[1]);
+        quad(prev.rf[0], prev.rf[1], row.rf[1], row.rf[0]);
+      }
+      prev = row;
+      if (s >= chunk.s1) break;
+    }
+  }
+
+  /* ------------------------------ far proxy ------------------------------ */
+  _buildProxy(){
+    const mk = (lane, s0, s1) => {
+      const verts = [], idx = [];
+      const fr = makeFrame(); const p = new THREE.Vector3();
+      let row = 0;
+      for (let s = s0; s <= s1; s += QUALITY.farStep){
+        const ss = Math.min(s, s1);
+        this.route.frameAt(ss, lane, fr);
+        const hw = this.route.halfWidth(ss, lane);
+        p.copy(fr.pos).addScaledVector(fr.right, -hw).addScaledVector(fr.nrm, -0.4);
+        verts.push(p.x, p.y, p.z, ss, -1);
+        p.copy(fr.pos).addScaledVector(fr.right, hw).addScaledVector(fr.nrm, -0.4);
+        verts.push(p.x, p.y, p.z, ss, 1);
+        if (row > 0){
+          const a = (row - 1) * 2;
+          idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        }
+        row++;
+      }
+      const g = new THREE.BufferGeometry();
+      const f32 = new Float32Array(verts);
+      const inter = new THREE.InterleavedBuffer(f32, 5);
+      g.setAttribute('position', new THREE.InterleavedBufferAttribute(inter, 3, 0));
+      g.setAttribute('aS', new THREE.InterleavedBufferAttribute(inter, 1, 3));
+      g.setAttribute('aE', new THREE.InterleavedBufferAttribute(inter, 1, 4));
+      g.setIndex(idx);
+      g.computeBoundingSphere();
+      return g;
+    };
+    this.proxyMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      uniforms: {
+        uWakeS: { value: 0 }, uBreath: { value: 0 }, uAmber: { value: 0 },
+        uCrown: { value: 0 },
+      },
+      vertexShader: `
+        attribute float aS; attribute float aE;
+        varying float vS; varying float vE; varying float vD;
+        void main(){
+          vS = aS; vE = aE;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vD = -mv.z;
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        varying float vS; varying float vE; varying float vD;
+        uniform float uWakeS, uBreath, uAmber;
+        ${GLSL_PRISM}
+        ${GLSL_WAKE}
+        void main(){
+          float ds = vS - uWakeS;
+          float show = 1.0 - smoothstep(-${DETAIL_BEHIND}.0, -${DETAIL_BEHIND - 90}.0, ds)
+                           * (1.0 - smoothstep(${DETAIL_AHEAD - 130}.0, ${DETAIL_AHEAD - 30}.0, ds));
+          float wake = wakeEnv(vS, uWakeS, uBreath);
+          float edge = smoothstep(0.66, 0.96, abs(vE));
+          vec3 body = vec3(0.0165, 0.0170, 0.0200);
+          vec3 prism = prismColor(vS * 0.00135 + 0.22, uAmber);
+          float farBoost = 1.0 + smoothstep(500.0, 2600.0, vD) * 1.6;
+          vec3 col = body + prism * edge * (0.085 + 0.9 * wake) * farBoost;
+          float a = show * (0.95 - 0.25 * smoothstep(3000.0, 9000.0, vD));
+          gl_FragColor = vec4(col, a);
+        }`,
+    });
+    const f = this.plan.fork;
+    this.proxyMeshes = [];
+    const specs = [['base', 0, f.sFork], ['inner', f.sFork, f.sRejoin],
+                   ['outer', f.sFork, f.sRejoin], ['base', f.sRejoin, this.plan.L]];
+    for (const [lane, a, b] of specs){
+      const g = mk(lane, a, b);
+      const m = new THREE.Mesh(g, this.proxyMat);
+      m.renderOrder = -6;
+      m.frustumCulled = false;
+      this.proxyMeshes.push(m);
+      this.scene.add(m);
+    }
+  }
+
+  /* ------------------------------ streaming ------------------------------ */
+  update(riderS, wakeS, breath, amber, sunDir, time, crown){
+    this.mat.uniforms.uCrown.value = crown || 0;
+    this.proxyMat.uniforms.uCrown.value = crown || 0;
+    this.mat.uniforms.uWakeS.value = wakeS;
+    this.mat.uniforms.uBreath.value = breath;
+    this.mat.uniforms.uAmber.value = amber;
+    this.mat.uniforms.uTime.value = time;
+    this.mat.uniforms.uSun.value.copy(sunDir);
+    this.proxyMat.uniforms.uWakeS.value = wakeS;
+    this.proxyMat.uniforms.uBreath.value = breath;
+    this.proxyMat.uniforms.uAmber.value = amber;
+
+    const lo = riderS - DETAIL_BEHIND, hi = riderS + DETAIL_AHEAD;
+    let builtThisFrame = 0;
+    for (const chunk of this.plan.chunks){
+      const want = chunk.s1 >= lo && chunk.s0 <= hi;
+      const has = this.live.has(chunk.id);
+      if (want && !has && builtThisFrame < 2){
+        const mesh = this.buildChunk(chunk);
+        this.scene.add(mesh);
+        this.live.set(chunk.id, { mesh, chunk });
+        this.built++; builtThisFrame++;
+      } else if (!want && has){
+        const far = chunk.s1 < lo - DETAIL_DROP || chunk.s0 > hi + DETAIL_DROP;
+        if (far){
+          const e = this.live.get(chunk.id);
+          this.scene.remove(e.mesh);
+          e.mesh.geometry.dispose();
+          this.live.delete(chunk.id);
+          this.dropped++;
+        }
+      }
+    }
+  }
+
+  primeInitial(riderS){
+    const lo = riderS - DETAIL_BEHIND, hi = riderS + DETAIL_AHEAD;
+    for (const chunk of this.plan.chunks){
+      if (chunk.s1 >= lo && chunk.s0 <= hi && !this.live.has(chunk.id)){
+        const mesh = this.buildChunk(chunk);
+        this.scene.add(mesh);
+        this.live.set(chunk.id, { mesh, chunk });
+        this.built++;
+      }
+    }
+  }
+
+  dispose(){
+    for (const e of this.live.values()){
+      this.scene.remove(e.mesh);
+      e.mesh.geometry.dispose();
+    }
+    this.live.clear();
+    for (const m of this.proxyMeshes){ this.scene.remove(m); m.geometry.dispose(); }
+    this.proxyMat.dispose();
+    this.mat.dispose();
+  }
+}
+
+/* ============================================================================
+   ASTERLINE INFRASTRUCTURE — hand-built orbital carpentry. One geometry kit,
+   one lit/emissive material family, archetypes with silhouette, mid-shot and
+   close-up detail, merged into region meshes.
+   ========================================================================= */
+
+const STRUCT_VERT = `
+  attribute vec3 aCol; attribute float aGlow; attribute float aWake; attribute float aS;
+  varying vec3 vCol; varying float vGlow; varying float vWake; varying float vS;
+  varying vec3 vWorld;
+  void main(){
+    vCol = aCol; vGlow = aGlow; vWake = aWake; vS = aS;
+    vec4 p = vec4(position, 1.0);
+    #ifdef USE_INSTANCING
+      p = instanceMatrix * p;
+    #endif
+    vec4 w = modelMatrix * p;
+    vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }`;
+
+const STRUCT_FRAG = `
+  varying vec3 vCol; varying float vGlow; varying float vWake; varying float vS;
+  varying vec3 vWorld;
+  uniform vec3 uSun; uniform float uWakeS, uBreath, uAmber, uBeacon, uGiantDim, uTime;
+  ${GLSL_PRISM}
+  ${GLSL_WAKE}
+  void main(){
+    vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+    float NdL = max(dot(n, uSun), 0.0);
+    float fill = max(dot(n, vec3(0.0, -1.0, 0.0)), 0.0);
+    vec3 col = vCol * (0.30 + 0.85 * NdL) + vCol * fill * vec3(0.16, 0.05, 0.04);
+    float e = vGlow;
+    if (vWake > 1.5){
+      e *= uBeacon;                                  /* beacon channel */
+      col += prismColor(0.72, 1.0) * e * 2.2;
+    } else if (vWake > 0.5){
+      float w = wakeEnv(vS, uWakeS, uBreath);        /* relay channel */
+      col += prismColor(vS * 0.00135 + 0.22, uAmber) * e * (0.05 + 1.9 * w) * uGiantDim;
+    } else {
+      col += vCol * e * uGiantDim;                   /* steady lamps: colour is the lamp */
+    }
+    gl_FragColor = vec4(col, 1.0);
+  }`;
+
+function makeStructMaterial(){
+  return new THREE.ShaderMaterial({
+    vertexShader: STRUCT_VERT, fragmentShader: STRUCT_FRAG,
+    uniforms: {
+      uSun: { value: new THREE.Vector3(0, 1, 0) }, uWakeS: { value: -1e5 },
+      uBreath: { value: 0 }, uAmber: { value: 0 }, uBeacon: { value: 0 },
+      uGiantDim: { value: 1 }, uTime: { value: 0 }, uCrown: { value: 0 },
+    },
+  });
+}
+
+/* colour vocabulary for built things — patinated hulls, never default grey */
+const HULL = {
+  iron:   new THREE.Color(0x211714), umber: new THREE.Color(0x33221a),
+  plum:   new THREE.Color(0x241426), slate: new THREE.Color(0x1a1d22),
+  bone:   new THREE.Color(0x6b5f4c), rust:  new THREE.Color(0x4a2618),
+  brass:  new THREE.Color(0x54401f),
+};
+
+class GeoKit {
+  constructor(){ this.pos = []; this.idx = []; this.col = []; this.glow = []; this.wake = []; this.s = []; this.base = 0; }
+  prim(geo, m, color, opt = {}){
+    const g = geo;
+    const p = g.attributes.position;
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++){
+      tmp.fromBufferAttribute(p, i).applyMatrix4(m);
+      this.pos.push(tmp.x, tmp.y, tmp.z);
+      this.col.push(color.r, color.g, color.b);
+      this.glow.push(opt.glow || 0);
+      this.wake.push(opt.wake || 0);
+      this.s.push(opt.s || 0);
+    }
+    if (g.index) for (let i = 0; i < g.index.count; i++) this.idx.push(this.base + g.index.getX(i));
+    else for (let i = 0; i < p.count; i++) this.idx.push(this.base + i);
+    this.base += p.count;
+    if (g !== geo) g.dispose();
+    return this;
+  }
+  box(w, h, d, m, color, opt){ const g = GeoKit.G.box; GeoKit._m.makeScale(w, h, d).premultiply(m);
+    return this.prim(g, GeoKit._m, color, opt); }
+  /* merge a kit-built geometry, keeping its own colours/glow channels */
+  merge(geo, m){
+    const p = geo.attributes.position, c = geo.attributes.aCol,
+          gl = geo.attributes.aGlow, wk = geo.attributes.aWake, sA = geo.attributes.aS;
+    const tmp = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++){
+      tmp.fromBufferAttribute(p, i).applyMatrix4(m);
+      this.pos.push(tmp.x, tmp.y, tmp.z);
+      this.col.push(c.getX(i), c.getY(i), c.getZ(i));
+      this.glow.push(gl.getX(i)); this.wake.push(wk.getX(i)); this.s.push(sA.getX(i));
+    }
+    for (let i = 0; i < geo.index.count; i++) this.idx.push(this.base + geo.index.getX(i));
+    this.base += p.count;
+    return this;
+  }
+  build(){
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(this.pos), 3));
+    g.setAttribute('aCol', new THREE.BufferAttribute(new Float32Array(this.col), 3));
+    g.setAttribute('aGlow', new THREE.BufferAttribute(new Float32Array(this.glow), 1));
+    g.setAttribute('aWake', new THREE.BufferAttribute(new Float32Array(this.wake), 1));
+    g.setAttribute('aS', new THREE.BufferAttribute(new Float32Array(this.s), 1));
+    g.setIndex(this.idx);
+    g.computeBoundingSphere();
+    return g;
+  }
+}
+GeoKit.G = {
+  box: new THREE.BoxGeometry(1, 1, 1),
+  cyl: new THREE.CylinderGeometry(0.5, 0.5, 1, 8),
+  cyl6: new THREE.CylinderGeometry(0.5, 0.5, 1, 6),
+  cone: new THREE.ConeGeometry(0.5, 1, 8),
+  sph: new THREE.SphereGeometry(0.5, 10, 7),
+  oct: new THREE.OctahedronGeometry(0.5, 0),
+  dish: new THREE.SphereGeometry(0.5, 12, 6, 0, TAU, 0, 1.05),
+  ring: new THREE.TorusGeometry(0.5, 0.035, 6, 28),
+  rock: new THREE.DodecahedronGeometry(0.5, 0),
+  plane: new THREE.PlaneGeometry(1, 1),
+};
+GeoKit._m = new THREE.Matrix4();
+
+const M4 = () => new THREE.Matrix4();
+const compose = (x, y, z, rx = 0, ry = 0, rz = 0, sx = 1, sy = sx, sz = sx) => {
+  const m = M4();
+  m.compose(new THREE.Vector3(x, y, z),
+            new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)),
+            new THREE.Vector3(sx, sy, sz));
+  return m;
+};
+
+/* strut: a thin member from a to b */
+function strut(kit, a, b, t, color, opt){
+  const d = new THREE.Vector3().subVectors(b, a);
+  const len = d.length();
+  const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
+  const m = M4().compose(mid, q, new THREE.Vector3(t, len, t));
+  kit.prim(GeoKit.G.box, m, color, opt);
+}
+
+/* ---------------------------- gate archetypes ------------------------------ */
+/* local frame: origin on deck centreline at the gate's s. +x = toward gate    */
+/* side, +y up, +z along route.                                                */
+function buildGate(kit, g, hw){
+  const side = g.side, s = g.s;
+  const sw = (g.wakeS !== undefined) ? g.wakeS : g.s;   // backward-signal gates mirror their anchor
+  const mx = side * (hw + PARA_T + 3.6);                // mast centre, well clear of the deck
+  const iron = HULL.iron, umber = HULL.umber, brass = HULL.brass;
+  const gold = PAL.gold, prismy = PAL.coral;
+  const st = { s };
+  if (g.variant === 4){
+    /* constellation pylon: tall mast, star lamps, thin vanes */
+    kit.prim(GeoKit.G.cyl6, compose(mx, g.h / 2, 0, 0, 0, side * 0.06, 0.55, g.h, 0.55), iron, st);
+    kit.prim(GeoKit.G.cyl6, compose(mx, g.h + 0.4, 0, 0, 0, 0, 0.9, 0.8, 0.9), umber, st);
+    const rrq = ((s * 7919) % 97) / 97;
+    const lampN = 3 + Math.floor(rrq * 3);
+    for (let i = 0; i < lampN; i++){
+      const hy = g.h * (0.35 + 0.6 * i / lampN);
+      const off = Math.sin(i * 2.4 + s) * 1.6;
+      strut(kit, new THREE.Vector3(mx, hy, 0), new THREE.Vector3(mx + off, hy + 1.4, 1.2 * Math.cos(i * 1.9)), 0.09, iron, st);
+      kit.prim(GeoKit.G.oct, compose(mx + off, hy + 1.5, 1.2 * Math.cos(i * 1.9), 0, 0, 0, 0.42), gold, { glow: 1.6, wake: 1, s: sw });
+    }
+    kit.box(3.4, 0.12, 0.5, compose(mx, g.h * 0.72, 0), umber, st);
+    kit.box(0.5, 0.12, 3.0, compose(mx, g.h * 0.55, 0), umber, st);
+    /* footing */
+    kit.box(1.6, 0.5, 1.6, compose(mx, 0.22, 0), HULL.slate, st);
+    for (const dz of [-0.6, 0.6]) kit.box(0.18, 0.18, 0.18, compose(mx + side * 0.7, 0.14, dz), brass, st);
+    return;
+  }
+  /* signal gate: mast + cantilever arm + aperture ring over the parapet      */
+  const armY = g.h, reach = Math.min(g.reach, 5.2);
+  const tipX = mx - side * (reach + 1.5);
+  kit.box(0.7, armY + 1.2, 0.9, compose(mx, (armY + 1.2) / 2, 0), iron, st);
+  kit.box(0.86, 1.1, 1.06, compose(mx, armY * 0.45, 0), umber, st);           // junction box
+  kit.box(0.2, 0.3, 0.2, compose(mx + side * 0.45, armY * 0.45 + 0.4, 0.4), brass, st);
+  strut(kit, new THREE.Vector3(mx, armY, 0), new THREE.Vector3(tipX, armY + 0.5, 0), 0.34, iron, st);
+  strut(kit, new THREE.Vector3(mx, armY - 2.2, 0), new THREE.Vector3(tipX + side * 1.2, armY + 0.28, 0), 0.14, umber, st); // tension brace
+  /* counterweight lattice */
+  const back = mx + side * 1.9;
+  strut(kit, new THREE.Vector3(mx, armY, 0), new THREE.Vector3(back, armY - 1.1, 0), 0.2, iron, st);
+  kit.box(1.0, 1.5, 1.3, compose(back, armY - 1.9, 0), HULL.slate, st);
+  /* aperture at the tip — the part that wakes */
+  const ringR = 0.9 + (g.variant * 0.22);
+  kit.prim(GeoKit.G.ring, compose(tipX, armY + 0.5, 0, Math.PI / 2, 0, 0, ringR * 2), umber, st);
+  kit.prim(GeoKit.G.cyl, compose(tipX, armY + 0.5, 0, Math.PI / 2, 0, 0, ringR * 1.5, 0.08, ringR * 1.5), prismy, { glow: 1.3, wake: 1, s: sw });
+  if (g.variant >= 2){  /* twin aperture */
+    kit.prim(GeoKit.G.ring, compose(tipX + side * 1.4, armY + 0.1, 0, Math.PI / 2, 0, 0, ringR * 1.2), umber, st);
+    kit.prim(GeoKit.G.cyl, compose(tipX + side * 1.4, armY + 0.1, 0, Math.PI / 2, 0, 0, ringR * 0.85, 0.08, ringR * 0.85), PAL.gold, { glow: 1.0, wake: 1, s: sw });
+  }
+  /* small steady service lamp + hatch + fasteners (close-up read) */
+  kit.prim(GeoKit.G.oct, compose(mx - side * 0.5, 1.6, 0.3, 0, 0, 0, 0.16), PAL.gold, { glow: 0.9, s });
+  kit.box(0.5, 0.7, 0.06, compose(mx - side * 0.36, 1.0, 0, 0, side * Math.PI / 2, 0), HULL.slate, st);
+  for (const dy of [0.35, 0.75]) kit.box(0.09, 0.09, 0.09, compose(mx, dy + 0.2, 0.5), brass, st);
+  /* footing clamps under the deck edge */
+  const clampX = side * (hw - 0.4);
+  strut(kit, new THREE.Vector3(mx, 0.1, 0), new THREE.Vector3(clampX, -1.6, 0), 0.3, iron, st);
+  kit.box(1.2, 0.4, 1.6, compose(mx, -0.15, 0), HULL.slate, st);
+}
+
+/* ---------------------------- cairn: the chorale --------------------------- */
+function buildCairn(kit, c, hw){
+  const side = c.side, s = c.s;
+  const bx = side * (hw + PARA_T + 4.05);
+  const st = { s };
+  /* outrigger balcony held clear of the protected corridor */
+  kit.box(2.2, 0.16, 2.6, compose(bx, -0.10, 0), HULL.slate, st);
+  strut(kit, new THREE.Vector3(side * (hw - 0.2), -1.5, 0.8), new THREE.Vector3(bx, -0.2, 0.8), 0.14, HULL.iron, st);
+  strut(kit, new THREE.Vector3(side * (hw - 0.2), -1.5, -0.8), new THREE.Vector3(bx, -0.2, -0.8), 0.14, HULL.iron, st);
+  kit.box(0.1, 0.5, 2.4, compose(bx + side * 1.02, 0.24, 0), HULL.iron, st);
+  /* stacked stones */
+  let y = 0.0;
+  const rrq = (n) => ((s * 131 + n * 61) % 89) / 89;
+  for (let i = 0; i < c.stones; i++){
+    const sc = 0.62 - i * 0.11;
+    y += sc * 0.30;
+    kit.prim(GeoKit.G.rock,
+      compose(bx + (rrq(i) - 0.5) * 0.16, y, (rrq(i + 3) - 0.5) * 0.16, rrq(i) * 3, rrq(i + 1) * 3, 0, sc, sc * 0.62, sc),
+      i % 2 ? HULL.umber : HULL.bone, st);
+    y += sc * 0.24;
+  }
+  /* the throat lantern — sings when the wake passes */
+  kit.prim(GeoKit.G.oct, compose(bx, y + 0.22, 0, 0, 0, 0, 0.20), PAL.gold, { glow: 2.0, wake: 1, s });
+}
+
+/* ---------------------------- satellite archetypes ------------------------- */
+function buildSatGeo(variant, seed){
+  const kit = new GeoKit();
+  const rr = new Stream(seed, 'real:satgeo' + variant);
+  const iron = HULL.iron, umber = HULL.umber, slate = HULL.slate, plum = HULL.plum;
+  const winC = PAL.gold;
+  const winRow = (x, y, z, n, dz, g = 0.75) => {
+    for (let i = 0; i < n; i++) kit.box(0.16, 0.30, 0.10, compose(x, y, z + i * dz), winC, { glow: g });
+  };
+  if (variant === 0){ /* comm hub */
+    kit.box(2.6, 2.2, 3.4, compose(0, 0, 0), iron);
+    kit.box(2.8, 0.3, 3.6, compose(0, 1.15, 0), umber);
+    for (const sd of [-1, 1]){
+      strut(kit, new THREE.Vector3(sd * 1.3, 0, 0), new THREE.Vector3(sd * 3.1, 0.2, 0), 0.16, umber);
+      kit.box(3.6, 0.08, 1.7, compose(sd * 5.0, 0.25, 0, 0, 0, sd * 0.12), plum);
+      kit.box(3.7, 0.05, 0.12, compose(sd * 5.0, 0.30, 0.8, 0, 0, sd * 0.12), HULL.brass);
+    }
+    kit.prim(GeoKit.G.dish, compose(0, 2.2, 0.6, -1.1, 0, 0, 2.4), slate);
+    strut(kit, new THREE.Vector3(0, 1.1, 0.4), new THREE.Vector3(0, 2.1, 0.6), 0.14, umber);
+    strut(kit, new THREE.Vector3(0, -1.1, 0), new THREE.Vector3(0, -3.4, -0.6), 0.10, iron);
+    kit.prim(GeoKit.G.oct, compose(0, -3.6, -0.65, 0, 0, 0, 0.3), PAL.raspberry, { glow: 0.8 });
+    winRow(1.31, 0.2, -1.2, 5, 0.6);
+  } else if (variant === 1){ /* observatory */
+    kit.prim(GeoKit.G.cyl, compose(0, 0, 0, 0, 0, 0, 3.0, 2.2, 3.0), iron);
+    kit.prim(GeoKit.G.sph, compose(0, 1.6, 0, 0, 0, 0, 2.6), umber);
+    kit.prim(GeoKit.G.cyl, compose(0.4, 2.6, 0.4, 0.7, 0, 0.5, 0.7, 2.6, 0.7), slate);
+    kit.box(0.16, 1.2, 2.62, compose(0, 1.8, 0), plum);      // dome slit
+    for (let i = 0; i < 4; i++){
+      const a = i * TAU / 4 + 0.4;
+      strut(kit, new THREE.Vector3(Math.cos(a) * 1.4, -1.1, Math.sin(a) * 1.4),
+                 new THREE.Vector3(Math.cos(a) * 2.3, -2.8, Math.sin(a) * 2.3), 0.13, iron);
+    }
+    winRow(1.52, -0.3, -1.0, 4, 0.66, 0.6);
+    kit.prim(GeoKit.G.oct, compose(0, 3.9, 0.8, 0, 0, 0, 0.22), PAL.teal, { glow: 0.9 });
+  } else if (variant === 2){ /* relay node */
+    kit.prim(GeoKit.G.oct, compose(0, 0, 0, 0, 0, 0, 2.6), iron);
+    kit.prim(GeoKit.G.oct, compose(0, 0, 0, 0, 0, 0, 1.6, 2.9, 1.6), umber);
+    for (const [rx, rz, sc] of [[Math.PI / 2, 0, 4.4], [1.9, 0.5, 5.6], [1.2, -0.7, 6.6]])
+      kit.prim(GeoKit.G.ring, compose(0, 0, 0, rx, 0, rz, sc), slate);
+    for (let i = 0; i < 5; i++){
+      const a = i * TAU / 5;
+      strut(kit, new THREE.Vector3(0, 0, 0), new THREE.Vector3(Math.cos(a) * 3.4, Math.sin(a * 2) * 1.4, Math.sin(a) * 3.4), 0.08, umber);
+    }
+    kit.prim(GeoKit.G.sph, compose(0, 1.9, 0, 0, 0, 0, 0.5), PAL.coral, { glow: 0.7 });
+  } else if (variant === 3){ /* habitat can */
+    kit.prim(GeoKit.G.cyl, compose(0, 0, 0, 0, 0, Math.PI / 2, 2.4, 6.4, 2.4), iron);
+    kit.prim(GeoKit.G.cyl, compose(3.4, 0, 0, 0, 0, Math.PI / 2, 1.5, 1.2, 1.5), umber);
+    kit.prim(GeoKit.G.cyl, compose(-3.5, 0, 0, 0, 0, Math.PI / 2, 2.55, 0.5, 2.55), umber);
+    for (const sd of [-1, 1]) kit.box(2.6, 0.06, 3.4, compose(0.4, sd * 1.9, 0, 0.5 * sd, 0, 0), plum);   // radiators
+    winRow(0.8, 0.6, -1.05, 4, 0.7); winRow(-1.4, 0.6, -1.05, 3, 0.7);
+    kit.box(0.4, 0.6, 0.4, compose(1.4, 1.35, 0.6), slate);
+    kit.prim(GeoKit.G.oct, compose(4.2, 0, 0, 0, 0, 0, 0.24), PAL.gold, { glow: 1.0 });
+  } else if (variant === 4){ /* array raft */
+    kit.box(7.0, 0.24, 1.1, compose(0, 0, 0), iron);
+    for (let i = 0; i < 5; i++){
+      const x = -2.8 + i * 1.4;
+      strut(kit, new THREE.Vector3(x, 0.1, 0), new THREE.Vector3(x, 1.1, 0), 0.10, umber);
+      kit.box(1.15, 1.5, 0.07, compose(x, 1.9, 0, 0.15, 0, 0), plum);
+      kit.box(1.2, 0.08, 0.09, compose(x, 1.25, 0.02, 0.15, 0, 0), HULL.brass);
+    }
+    strut(kit, new THREE.Vector3(-3.5, 0, 0), new THREE.Vector3(-4.8, -1.4, 0.4), 0.12, iron);
+    kit.prim(GeoKit.G.dish, compose(-5.1, -1.7, 0.5, -2.2, 0, 0, 1.6), slate);
+    kit.prim(GeoKit.G.oct, compose(3.6, -0.3, 0, 0, 0, 0, 0.2), PAL.raspberry, { glow: 0.7 });
+  } else { /* derelict */
+    kit.box(2.8, 2.0, 2.4, compose(0, 0, 0, 0.3, 0.2, 0.5), iron);
+    kit.box(2.9, 0.5, 0.6, compose(0.4, 1.1, 0.4, 0.3, 0.2, 0.5), HULL.rust);
+    kit.box(3.2, 0.07, 1.5, compose(2.4, -0.6, 0, 0.2, 0.4, 1.1), plum);
+    strut(kit, new THREE.Vector3(0.6, -0.8, 0.3), new THREE.Vector3(1.6, -2.6, 1.1), 0.06, HULL.rust);
+    strut(kit, new THREE.Vector3(1.6, -2.6, 1.1), new THREE.Vector3(1.2, -4.0, 1.6), 0.05, HULL.rust);
+    kit.prim(GeoKit.G.dish, compose(-1.6, 0.9, -0.6, 2.6, 0.5, 0, 1.9), slate);
+    /* one stubborn little window still lit */
+    kit.box(0.16, 0.3, 0.1, compose(1.42, -0.3, 0.6), PAL.gold, { glow: 0.55 });
+  }
+  /* shared close-up garnish: seams + fasteners */
+  for (let i = 0; i < 4; i++)
+    kit.box(0.1, 0.1, 0.1, compose(rr.range(-1.2, 1.2), rr.range(-0.9, 0.9), rr.range(-1.2, 1.2)), HULL.brass);
+  return kit.build();
+}
+
+/* --------------------------- station builders ------------------------------ */
+function buildDepartStation(kit, plan, route){
+  const fr = makeFrame(); const st = plan.stations.depart;
+  const iron = HULL.iron, umber = HULL.umber, slate = HULL.slate;
+  /* portal gantries over the first stretch — the enclosure that teaches scale */
+  for (let i = 0; i < st.gantries; i++){
+    const s = 14 + i * (110 / st.gantries) + (i % 2) * 4;
+    route.frameAt(s, 'base', fr);
+    const w = st.width / 2 - i * 0.8, h = 9.5 - i * 0.35;
+    const L0 = fr.pos.clone().addScaledVector(fr.right, -w);
+    const R0 = fr.pos.clone().addScaledVector(fr.right, w);
+    const Lt = L0.clone().addScaledVector(fr.nrm, h), Rt = R0.clone().addScaledVector(fr.nrm, h);
+    strut(kit, L0.clone().addScaledVector(fr.nrm, -3), Lt, 0.55, iron, { s });
+    strut(kit, R0.clone().addScaledVector(fr.nrm, -3), Rt, 0.55, iron, { s });
+    strut(kit, Lt, Rt, 0.5, umber, { s });
+    strut(kit, Lt.clone().addScaledVector(fr.nrm, -1.2), Rt.clone().addScaledVector(fr.nrm, -1.2), 0.16, iron, { s });
+    const mid = Lt.clone().lerp(Rt, 0.5);
+    kit.prim(GeoKit.G.box, M4().compose(mid.clone().addScaledVector(fr.nrm, -0.65),
+      new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), fr.right.clone()), new THREE.Vector3(2.2, 0.8, 0.8)), slate, { s });
+    kit.prim(GeoKit.G.oct, M4().compose(mid.clone().addScaledVector(fr.nrm, -1.3), new THREE.Quaternion(), new THREE.Vector3(0.26, 0.26, 0.26)), PAL.gold, { glow: 0.9, wake: 1, s });
+  }
+  /* side repair platforms with dead instruments */
+  for (let i = 0; i < st.platforms + 2; i++){
+    const s = 20 + i * 34;
+    route.frameAt(s, 'base', fr);
+    const sd = (i % 2) ? 1 : -1;
+    const px = 12 + (i % 3) * 3;
+    const base = fr.pos.clone().addScaledVector(fr.right, sd * px);
+    const put = (dx, dy, dz, w, h, d, c, opt) => {
+      const p = base.clone().addScaledVector(fr.right, dx).addScaledVector(fr.nrm, dy).addScaledVector(fr.tan, dz);
+      kit.prim(GeoKit.G.box, M4().compose(p, new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), fr.right.clone()), new THREE.Vector3(w, h, d)), c, opt || { s });
+    };
+    put(0, -0.3, 0, 8.5, 0.4, 12, slate);
+    put(0, -2.6, 0, 1.2, 4.5, 1.2, iron);
+    put(2.2, 0.6, 2.0, 1.4, 1.4, 2.0, umber);
+    put(-1.8, 0.5, -3.0, 0.9, 1.1, 0.9, iron);
+    put(2.2, 1.5, 2.0, 1.0, 0.5, 1.6, HULL.plum);
+    put(-1.5, 0.9, 3.8, 0.16, 1.6, 0.16, HULL.rust);
+    /* one dark instrument screen, faint teal — dead but not gone */
+    put(0.4, 1.0, -1.2, 0.06, 0.8, 1.3, PAL.teal, { glow: 0.16, s });
+  }
+  /* the monumental dead departure relay behind the rider */
+  route.frameAt(4, 'base', fr);
+  const back = fr.pos.clone().addScaledVector(fr.tan, -95).addScaledVector(fr.right, 26);
+  const q0 = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), fr.right.clone());
+  const put2 = (dx, dy, dz, w, h, d, c, opt) => {
+    const p = back.clone().add(new THREE.Vector3(dx, dy, dz));
+    kit.prim(GeoKit.G.box, M4().compose(p, q0, new THREE.Vector3(w, h, d)), c, opt);
+  };
+  put2(0, 22, 0, 7, 78, 7, iron);
+  put2(0, 55, 0, 11, 5, 11, umber);
+  put2(0, 34, 0, 14, 2.5, 3, umber);
+  kit.prim(GeoKit.G.ring, M4().compose(back.clone().add(new THREE.Vector3(0, 66, 0)), q0, new THREE.Vector3(34, 34, 34)), slate);
+  kit.prim(GeoKit.G.ring, M4().compose(back.clone().add(new THREE.Vector3(0, 66, 0)), q0, new THREE.Vector3(26, 26, 26)), HULL.plum);
+  kit.prim(GeoKit.G.cyl, M4().compose(back.clone().add(new THREE.Vector3(0, 66, 0)),
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)), new THREE.Vector3(21, 0.4, 21)), PAL.raspberry, { glow: 0.05 });
+  for (let i = 0; i < 5; i++)
+    strut(kit, back.clone().add(new THREE.Vector3((i - 2) * 9, -6, 0)), back.clone().add(new THREE.Vector3((i - 2) * 3.2, 16, 0)), 0.7, iron);
+}
+
+function buildReceiveStation(kit, plan, route){
+  const st = plan.stations.receive;
+  const fr = makeFrame();
+  route.frameAt(plan.L - 4, 'base', fr);
+  const C = fr.pos.clone().addScaledVector(fr.tan, 210).addScaledVector(fr.right, st.tilt * 160);
+  C.y += 20;
+  const q0 = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), fr.right.clone());
+  const iron = HULL.iron, umber = HULL.umber, slate = HULL.slate;
+  const P = (v) => C.clone().add(v);
+  /* central spire */
+  kit.prim(GeoKit.G.box, M4().compose(P(new THREE.Vector3(0, st.spireH * 0.5 - 40, 0)), q0, new THREE.Vector3(10, st.spireH, 10)), iron);
+  kit.prim(GeoKit.G.box, M4().compose(P(new THREE.Vector3(0, st.spireH - 36, 0)), q0, new THREE.Vector3(16, 7, 16)), umber);
+  kit.prim(GeoKit.G.cone, M4().compose(P(new THREE.Vector3(0, st.spireH - 26, 0)), q0, new THREE.Vector3(6, 14, 6)), umber);
+  /* rings — each tilted differently: the station's signature */
+  for (let r = 0; r < st.rings; r++){
+    const rr2 = st.ringR * (1 - r * 0.22);
+    const y = st.spireH * (0.24 + 0.3 * r) - 40;
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2 + (r % 2 ? 0.24 : -0.14) + st.tilt, r * 0.8, 0));
+    kit.prim(GeoKit.G.ring, M4().compose(P(new THREE.Vector3(0, y, 0)), q, new THREE.Vector3(rr2 * 2, rr2 * 2, rr2 * 2)), r % 2 ? slate : umber);
+    for (let k2 = 0; k2 < 8; k2++){
+      const a = k2 * TAU / 8 + r;
+      const lp = new THREE.Vector3(Math.cos(a) * rr2, y, Math.sin(a) * rr2).applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler((r % 2 ? 0.24 : -0.14) + st.tilt, 0, 0)));
+      kit.prim(GeoKit.G.oct, M4().compose(P(lp), q0, new THREE.Vector3(1.5, 1.5, 1.5)), PAL.gold, { glow: 0.35, wake: 2 });
+    }
+  }
+  /* cantilever arms with dishes */
+  for (let a2 = 0; a2 < st.armN; a2++){
+    const ang = a2 * TAU / st.armN + 0.5;
+    const dir = new THREE.Vector3(Math.cos(ang), 0.12, Math.sin(ang));
+    const tip = P(dir.clone().multiplyScalar(st.ringR * 1.35).add(new THREE.Vector3(0, 30, 0)));
+    strut(kit, P(new THREE.Vector3(0, 32, 0)), tip, 2.2, iron);
+    strut(kit, P(new THREE.Vector3(0, 62, 0)), tip, 0.8, umber);
+    kit.prim(GeoKit.G.box, M4().compose(tip, q0, new THREE.Vector3(6, 4, 6)), slate);
+    if (a2 < st.dishN)
+      kit.prim(GeoKit.G.dish, M4().compose(tip.clone().add(new THREE.Vector3(0, 4, 0)),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.9, ang, 0)), new THREE.Vector3(9, 9, 9)), HULL.plum);
+    /* window rhythm along the arm */
+    for (let w = 1; w < 5; w++){
+      const wp = P(new THREE.Vector3(0, 32, 0)).lerp(tip, w / 5);
+      kit.prim(GeoKit.G.box, M4().compose(wp.clone().add(new THREE.Vector3(0, -1.6, 0)), q0, new THREE.Vector3(0.5, 0.9, 0.5)), PAL.gold, { glow: 0.30, wake: 2 });
+    }
+  }
+  /* the receiving aperture — dead raspberry until the beacon wakes */
+  const ap = P(new THREE.Vector3(0, st.spireH * 0.62 - 40, 0));
+  kit.prim(GeoKit.G.ring, M4().compose(ap, q0, new THREE.Vector3(st.apertureR * 2.4, st.apertureR * 2.4, st.apertureR * 2.4)), umber);
+  kit.prim(GeoKit.G.cyl, M4().compose(ap, new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)).premultiply(q0), new THREE.Vector3(st.apertureR * 1.9, 0.6, st.apertureR * 1.9)), PAL.raspberry, { glow: 0.5, wake: 2 });
+  kit.prim(GeoKit.G.cyl, M4().compose(ap, new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI / 2, 0, 0)).premultiply(q0), new THREE.Vector3(st.apertureR * 2.2, 0.2, st.apertureR * 2.2)), PAL.raspberry, { glow: 0.06 });
+  /* side lobes / precinct sheds near the overlook */
+  for (let i = 0; i <= st.sideLobes; i++){
+    route.frameAt(plan.L - 60 - i * 55, 'base', fr);
+    const sd = i % 2 ? 1 : -1;
+    const b = fr.pos.clone().addScaledVector(fr.right, sd * (16 + i * 4));
+    kit.prim(GeoKit.G.box, M4().compose(b.clone().addScaledVector(fr.nrm, 1.4), q0, new THREE.Vector3(6, 3.4, 9)), iron, { s: plan.L - 60 - i * 55 });
+    kit.prim(GeoKit.G.dish, M4().compose(b.clone().addScaledVector(fr.nrm, 4.4),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.7, sd, 0)), new THREE.Vector3(4, 4, 4)), slate);
+    kit.prim(GeoKit.G.box, M4().compose(b.clone().addScaledVector(fr.nrm, 2.2).addScaledVector(fr.right, sd * -3.04), q0, new THREE.Vector3(0.1, 0.5, 1.1)), PAL.gold, { glow: 0.4, wake: 2 });
+  }
+}
+
+/* --------------------------- underside pods -------------------------------- */
+function buildPod(kit, s, route){
+  const fr = makeFrame();
+  route.frameAt(s, 'base', fr);
+  const sd = (Math.floor(s / 100) % 2) ? 1 : -1;
+  const q0 = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), fr.right.clone());
+  const b = fr.pos.clone().addScaledVector(fr.nrm, -6.5).addScaledVector(fr.right, sd * 2.2);
+  strut(kit, fr.pos.clone().addScaledVector(fr.nrm, -2.3), b.clone().addScaledVector(fr.nrm, 1.4), 0.5, HULL.iron, { s });
+  kit.prim(GeoKit.G.box, M4().compose(b, q0, new THREE.Vector3(4.4, 2.8, 3.2)), HULL.umber, { s });
+  kit.prim(GeoKit.G.box, M4().compose(b.clone().addScaledVector(fr.nrm, -1.7), q0, new THREE.Vector3(2.2, 0.7, 2.0)), HULL.slate, { s });
+  kit.prim(GeoKit.G.cyl, M4().compose(b.clone().addScaledVector(fr.right, sd * 2.6), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI / 2)).premultiply(q0), new THREE.Vector3(1.2, 0.8, 1.2)), HULL.iron, { s });
+  kit.prim(GeoKit.G.box, M4().compose(b.clone().addScaledVector(fr.right, sd * -2.24).addScaledVector(fr.nrm, 0.3), q0, new THREE.Vector3(0.08, 0.5, 0.9)), PAL.gold, { glow: 0.5, s });
+  strut(kit, b.clone().addScaledVector(fr.nrm, -0.5), b.clone().addScaledVector(fr.nrm, -3.2).addScaledVector(fr.tan, 2), 0.08, HULL.rust, { s });
+}
+
+/* the twin lantern gates that announce the fork */
+function buildForkFurniture(kit, plan, route){
+  const f = plan.fork; const fr = makeFrame();
+  /* approach heralds: paired pylons flanking the widening, 140 m of warning */
+  for (const ds of [-140, -70]){
+    const s = f.sFork + ds;
+    route.frameAt(s, 'base', fr);
+    const hw = route.halfWidth(s, 'base');
+    for (const sd of [-1, 1]){
+      const b = fr.pos.clone().addScaledVector(fr.right, sd * (hw + 3.5));
+      strut(kit, b.clone().addScaledVector(fr.nrm, -2), b.clone().addScaledVector(fr.nrm, 7.5), 0.4, HULL.iron, { s });
+      kit.prim(GeoKit.G.box, M4().compose(b.clone().addScaledVector(fr.nrm, 6.4),
+        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), fr.right.clone()), new THREE.Vector3(0.3, 2.2, 1.4)), HULL.umber, { s });
+      kit.prim(GeoKit.G.box, M4().compose(b.clone().addScaledVector(fr.nrm, 6.4).addScaledVector(fr.right, sd * -0.2),
+        new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), fr.right.clone()), new THREE.Vector3(0.06, 1.8, 1.0)), PAL.gold, { glow: 0.8, wake: 1, s });
+    }
+  }
+  /* twin lanterns over each arm mouth — equal, warm, neither is "correct" */
+  for (const lane of ['inner', 'outer']){
+    const s = f.sFork + 26;
+    route.frameAt(s, lane, fr);
+    for (const sd of [-1, 1]){
+      const b = fr.pos.clone().addScaledVector(fr.right, sd * (ROAD_HALF + 3.5));
+      strut(kit, b.clone().addScaledVector(fr.nrm, -1.5), b.clone().addScaledVector(fr.nrm, 5.6), 0.3, HULL.iron, { s });
+      kit.prim(GeoKit.G.oct, M4().compose(b.clone().addScaledVector(fr.nrm, 5.9), new THREE.Quaternion(), new THREE.Vector3(0.6, 0.85, 0.6)), PAL.gold, { glow: 1.5, wake: 1, s });
+    }
+  }
+}
+
+/* ============================================================================
+   STRUCTURE SYSTEM — placement, merging, instancing, animation, clearance.
+   ========================================================================= */
+
+const SAIL_VERT = `
+  attribute float aPhase; attribute float aHue;
+  varying vec2 vUv; varying float vHue; varying vec3 vWorld;
+  uniform float uTime;
+  void main(){
+    vUv = uv; vHue = aHue;
+    vec3 p = position;
+    float belly = sin(uv.x * 3.14159) * sin(uv.y * 3.14159);
+    p.z += belly * 0.09 + 0.03 * belly * sin(uTime * 0.4 + aPhase);
+    vec4 q = vec4(p, 1.0);
+    #ifdef USE_INSTANCING
+      q = instanceMatrix * q;
+    #endif
+    vec4 w = modelMatrix * q;
+    vWorld = w.xyz;
+    gl_Position = projectionMatrix * viewMatrix * w;
+  }`;
+
+const SAIL_FRAG = `
+  varying vec2 vUv; varying float vHue; varying vec3 vWorld;
+  uniform vec3 uSun; uniform float uTime;
+  void main(){
+    vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+    float NdL = abs(dot(n, uSun));
+    vec3 warmA = vec3(0.30, 0.075, 0.045);
+    vec3 warmB = vec3(0.42, 0.26, 0.11);
+    vec3 cold  = vec3(0.05, 0.16, 0.15);
+    vec3 tint = mix(warmA, warmB, smoothstep(0.2, 0.8, vHue));
+    tint = mix(tint, cold, step(0.92, vHue));
+    float grad = 0.45 + 0.55 * vUv.y;
+    float edge = smoothstep(0.0, 0.05, vUv.x) * smoothstep(1.0, 0.95, vUv.x)
+               * smoothstep(0.0, 0.05, vUv.y) * smoothstep(1.0, 0.95, vUv.y);
+    float seam = smoothstep(0.05, 0.02, abs(fract(vUv.y * 5.0 + 0.5) - 0.5));
+    vec3 col = tint * grad * (0.28 + 0.9 * NdL);
+    col *= 1.0 - 0.30 * seam;
+    col += tint * 0.35 * pow(NdL, 6.0);
+    col = mix(vec3(0.02, 0.01, 0.012), col, edge);
+    gl_FragColor = vec4(col, 1.0);
+  }`;
+
+class StructureSystem {
+  constructor(plan, route, scene){
+    this.plan = plan; this.route = route; this.scene = scene;
+    this.mat = makeStructMaterial();
+    this.disposables = [this.mat];
+    this.meshes = [];
+    this.minClearance = 1e9;
+    this.counts = { gates: 0, pylons: 0, cairns: 0, sats: 0, sails: 0, pods: 0, trackers: 0 };
+    this._fr = makeFrame();
+    this._tmpM = new THREE.Matrix4();
+    this._build();
+  }
+
+  _clear(pos, radius, sHint){
+    const c = this.route.clearanceOf(pos, sHint) - radius;
+    if (c < this.minClearance) this.minClearance = c;
+    return c;
+  }
+
+  _addMesh(geo, mat = this.mat){
+    const m = new THREE.Mesh(geo, mat);
+    m.matrixAutoUpdate = false;
+    this.scene.add(m);
+    this.meshes.push(m);
+    this.disposables.push(geo);
+    return m;
+  }
+
+  _build(){
+    const plan = this.plan, route = this.route;
+    const fr = this._fr;
+
+    /* ---- region-merged static furniture: gates, pylons, cairns, pods ---- */
+    const REGION = 800;
+    const regions = new Map();
+    const kitFor = (s) => {
+      const r = Math.floor(s / REGION);
+      if (!regions.has(r)) regions.set(r, new GeoKit());
+      return regions.get(r);
+    };
+    const local = new THREE.Matrix4();
+    const world = new THREE.Vector3();
+
+    /* backward-signal anomaly: mirror the wake anchor for the flagged run */
+    const backGates = plan.gates.filter(g => g.backward);
+    if (backGates.length){
+      const anchor = Math.min(...backGates.map(g => g.s));
+      for (const g of backGates) g.wakeS = 2 * anchor - g.s;
+    }
+
+    for (const g of plan.gates){
+      route.frameAt(g.s, 'base', fr);
+      const hw = route.halfWidth(g.s, 'base');
+      const kit = kitFor(g.s);
+      const mark = kit.base;
+      buildGate(kit, g, hw);
+      /* transform the local-frame vertices into world space */
+      local.makeBasis(fr.right, fr.nrm, fr.tan).setPosition(fr.pos);
+      for (let i = mark; i < kit.base; i++){
+        world.set(kit.pos[i * 3], kit.pos[i * 3 + 1], kit.pos[i * 3 + 2]).applyMatrix4(local);
+        kit.pos[i * 3] = world.x; kit.pos[i * 3 + 1] = world.y; kit.pos[i * 3 + 2] = world.z;
+      }
+      world.copy(fr.pos).addScaledVector(fr.right, g.side * (hw + PARA_T + 3.6));
+      this._clear(world, 1.2, g.s);
+      if (g.variant === 4) this.counts.pylons++; else this.counts.gates++;
+    }
+
+    for (const c of plan.cairns){
+      route.frameAt(c.s, 'base', fr);
+      const hw = route.halfWidth(c.s, 'base');
+      const kit = kitFor(c.s);
+      const mark = kit.base;
+      buildCairn(kit, c, hw);
+      local.makeBasis(fr.right, fr.nrm, fr.tan).setPosition(fr.pos);
+      for (let i = mark; i < kit.base; i++){
+        world.set(kit.pos[i * 3], kit.pos[i * 3 + 1], kit.pos[i * 3 + 2]).applyMatrix4(local);
+        kit.pos[i * 3] = world.x; kit.pos[i * 3 + 1] = world.y; kit.pos[i * 3 + 2] = world.z;
+      }
+      world.copy(fr.pos).addScaledVector(fr.right, c.side * (hw + PARA_T + 4.05));
+      this._clear(world, 1.3, c.s);
+      this.counts.cairns++;
+    }
+
+    /* underside pods */
+    { const ps = new Stream(plan.seed, 'real:pods');
+      let s = 500 + ps.range(0, 300);
+      while (s < plan.L - 500){
+        const f2 = plan.fork;
+        if (!(s > f2.sFork - 100 && s < f2.sRejoin + 100)){
+          buildPod(kitFor(s), s, route);
+          this.counts.pods++;
+        }
+        s += ps.range(520, 900);
+      } }
+
+    { const kit = new GeoKit();
+      buildDepartStation(kit, plan, route);
+      buildForkFurniture(kit, plan, route);
+      this._addMesh(kit.build()); }
+
+    { const kit = new GeoKit();
+      buildReceiveStation(kit, plan, route);
+      const g = kit.build();
+      const m = this._addMesh(g);
+      m.frustumCulled = true;
+      this.stationMesh = m; }
+
+    for (const kit of regions.values()) this._addMesh(kit.build());
+
+    /* ---- satellites: instanced per variant, trackers individual ---------- */
+    this.satGeos = [];
+    for (let v = 0; v < 6; v++) this.satGeos.push(buildSatGeo(v, plan.seed));
+    const byVariant = [[], [], [], [], [], []];
+    this.trackers = [];
+    this.satWorld = [];
+    for (const s of plan.sats){
+      route.frameAt(s.s, 'base', fr);
+      const p = fr.pos.clone().addScaledVector(fr.right, s.lat).add(new THREE.Vector3(0, s.h, 0));
+      const c = this._clear(p, 14 * s.scale, s.s);
+      if (c < CLEAR_R + 4){
+        const push = Math.sign(s.lat) * (CLEAR_R + 20 + 14 * s.scale);
+        p.copy(fr.pos).addScaledVector(fr.right, push).add(new THREE.Vector3(0, s.h, 0));
+        this._clear(p, 14 * s.scale, s.s);
+      }
+      this.satWorld.push(p);
+      if (s.tracker){ this.trackers.push({ plan: s, pos: p }); this.counts.trackers++; }
+      else byVariant[s.variant].push({ plan: s, pos: p });
+      this.counts.sats++;
+    }
+    this.satInst = [];
+    for (let v = 0; v < 6; v++){
+      const list = byVariant[v];
+      if (!list.length) continue;
+      const im = new THREE.InstancedMesh(this.satGeos[v], this.mat, list.length);
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.scene.add(im);
+      this.satInst.push({ im, list });
+      this.meshes.push(im);
+    }
+    /* trackers: body + articulated dish */
+    this.trackerMeshes = [];
+    const dishG = new GeoKit()
+      .prim(GeoKit.G.dish, compose(0, 0, 0, -Math.PI / 2, 0, 0, 6.5), HULL.plum)
+      .prim(GeoKit.G.cyl, compose(0, 0.4, 0, 0, 0, 0, 0.3, 2.6, 0.3), HULL.umber)
+      .prim(GeoKit.G.oct, compose(0, 1.8, 0, 0, 0, 0, 0.5), PAL.teal, { glow: 0.8 })
+      .build();
+    this.disposables.push(dishG);
+    for (const t of this.trackers){
+      const body = new THREE.Mesh(this.satGeos[1], this.mat);
+      body.position.copy(t.pos);
+      body.scale.setScalar(t.plan.scale * 1.4);
+      body.rotation.y = t.plan.phase;
+      const dish = new THREE.Mesh(dishG, this.mat);
+      dish.position.copy(t.pos).add(new THREE.Vector3(0, 6 * t.plan.scale, 0));
+      this.scene.add(body, dish);
+      this.meshes.push(body, dish);
+      this.trackerMeshes.push({ body, dish });
+    }
+    for (const g of this.satGeos) this.disposables.push(g);
+
+    /* ---- solar sails ------------------------------------------------------ */
+    this.sailMat = new THREE.ShaderMaterial({
+      vertexShader: SAIL_VERT, fragmentShader: SAIL_FRAG, side: THREE.DoubleSide,
+      uniforms: { uTime: { value: 0 }, uSun: { value: new THREE.Vector3(0, 1, 0) } },
+    });
+    this.disposables.push(this.sailMat);
+    const sailG = new THREE.PlaneGeometry(1, 1, QUALITY.sailSeg, QUALITY.sailSeg);
+    const nSail = plan.sails.length;
+    const phases = new Float32Array(sailG.attributes.position.count);
+    const iPhase = new THREE.InstancedBufferAttribute(new Float32Array(nSail), 1);
+    const iHue = new THREE.InstancedBufferAttribute(new Float32Array(nSail), 1);
+    const sailIG = new THREE.InstancedBufferGeometry().copy(sailG);
+    sailIG.instanceCount = nSail;
+    sailIG.setAttribute('aPhase', iPhase);
+    sailIG.setAttribute('aHue', iHue);
+    this.sailMesh = new THREE.InstancedMesh(sailIG, this.sailMat, nSail);
+    this.sailMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.sailMesh.frustumCulled = false;
+    this.sailWorld = [];
+    const frameKit = new GeoKit();
+    for (let i = 0; i < nSail; i++){
+      const sl = plan.sails[i];
+      route.frameAt(sl.s, 'base', fr);
+      const p = fr.pos.clone().addScaledVector(fr.right, sl.lat).add(new THREE.Vector3(0, sl.h, 0));
+      const c = this._clear(p, sl.size * 0.75, sl.s);
+      if (c < CLEAR_R + 4){
+        p.copy(fr.pos).addScaledVector(fr.right, Math.sign(sl.lat) * (CLEAR_R + 18 + sl.size * 0.75)).add(new THREE.Vector3(0, sl.h, 0));
+        this._clear(p, sl.size * 0.75, sl.s);
+      }
+      this.sailWorld.push(p);
+      iPhase.setX(i, sl.phase); iHue.setX(i, sl.hue);
+      /* spar cross + boom counterweight, merged static */
+      const w = sl.size, h2 = sl.size * sl.aspect;
+      strut(frameKit, p.clone().add(new THREE.Vector3(0, -h2 * 0.58, 0)), p.clone().add(new THREE.Vector3(0, h2 * 0.58, 0)), 0.30, HULL.iron);
+      strut(frameKit, p.clone().add(new THREE.Vector3(-w * 0.55, 0, 0)), p.clone().add(new THREE.Vector3(w * 0.55, 0, 0)), 0.24, HULL.umber);
+      frameKit.prim(GeoKit.G.oct, compose(p.x, p.y - h2 * 0.62, p.z, 0, 0, 0, 1.1), HULL.slate);
+      frameKit.prim(GeoKit.G.oct, compose(p.x, p.y - h2 * 0.66, p.z, 0, 0, 0, 0.4), PAL.coral, { glow: 0.5 });
+      this.counts.sails++;
+    }
+    this.scene.add(this.sailMesh);
+    this.meshes.push(this.sailMesh);
+    this.disposables.push(sailG, sailIG);
+    this._addMesh(frameKit.build());
+
+    /* ---- tether lines ----------------------------------------------------- */
+    const tPos = [];
+    for (let i = 0; i < nSail; i++){
+      const sl = plan.sails[i];
+      if (sl.tetherSat >= 0 && this.satWorld[sl.tetherSat]){
+        const a = this.sailWorld[i], b = this.satWorld[sl.tetherSat];
+        if (a.distanceTo(b) < 900){ tPos.push(a.x, a.y, a.z, b.x, b.y, b.z); }
+      }
+    }
+    if (tPos.length){
+      const tg = new THREE.BufferGeometry();
+      tg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(tPos), 3));
+      const tm = new THREE.LineBasicMaterial({ color: 0x2c1e18, transparent: true, opacity: 0.55 });
+      this.tethers = new THREE.LineSegments(tg, tm);
+      this.scene.add(this.tethers);
+      this.meshes.push(this.tethers);
+      this.disposables.push(tg, tm);
+    }
+
+    this._q = new THREE.Quaternion();
+    this._e = new THREE.Euler();
+    this._sc = new THREE.Vector3();
+  }
+
+  /* per-frame: satellite spin, sail tilt, tracker dishes follow the giant */
+  update(t, dt, sunDir, wakeS, breath, amber, beacon, giantDim, giantPos, crown){
+    const u = this.mat.uniforms;
+    u.uSun.value.copy(sunDir); u.uWakeS.value = wakeS; u.uBreath.value = breath;
+    u.uAmber.value = amber; u.uBeacon.value = beacon; u.uGiantDim.value = giantDim;
+    u.uCrown.value = crown || 0;
+    u.uTime.value = t;
+    this.sailMat.uniforms.uTime.value = t;
+    this.sailMat.uniforms.uSun.value.copy(sunDir);
+
+    for (const { im, list } of this.satInst){
+      for (let i = 0; i < list.length; i++){
+        const { plan: sp, pos } = list[i];
+        this._e.set(Math.sin(sp.phase) * 0.3, sp.phase + t * sp.spin, Math.cos(sp.phase * 2) * 0.2);
+        this._q.setFromEuler(this._e);
+        this._sc.setScalar(sp.scale * 2.2);
+        this._tmpM.compose(pos, this._q, this._sc);
+        im.setMatrixAt(i, this._tmpM);
+      }
+      im.instanceMatrix.needsUpdate = true;
+    }
+    const sails = this.plan.sails;
+    for (let i = 0; i < sails.length; i++){
+      const sl = sails[i];
+      this._e.set(Math.sin(t * sl.tiltRate + sl.phase) * 0.35 + 0.2,
+                  sl.phase + t * sl.tiltRate * 0.4,
+                  Math.cos(t * sl.tiltRate * 0.7 + sl.phase) * 0.2);
+      this._q.setFromEuler(this._e);
+      this._sc.set(sl.size, sl.size * sl.aspect, 1);
+      this._tmpM.compose(this.sailWorld[i], this._q, this._sc);
+      this.sailMesh.setMatrixAt(i, this._tmpM);
+    }
+    this.sailMesh.instanceMatrix.needsUpdate = true;
+
+    for (const { body, dish } of this.trackerMeshes){
+      body.rotation.y += dt * 0.02;
+      if (giantPos) dish.lookAt(giantPos);
+      else dish.rotation.y += dt * 0.05;
+    }
+  }
+
+  dispose(){
+    for (const m of this.meshes) this.scene.remove(m);
+    for (const d of this.disposables) d.dispose && d.dispose();
+  }
+}
+
+/* ============================================================================
+   AMBIENT LIFE — transit caravans, maintenance drones, kite-rays, the giant,
+   and the anomalies. The world keeps moving whether or not the rider does.
+   ========================================================================= */
+
+/* ------------------------- caravan module geometry ------------------------- */
+function buildCaravanModule(variant, seed){
+  const kit = new GeoKit();
+  const iron = HULL.iron, umber = HULL.umber, slate = HULL.slate;
+  const win = (x, y, z, n, dx, g = 0.9) => {
+    for (let i = 0; i < n; i++) kit.box(0.42, 0.5, 0.06, compose(x + i * dx, y, z), PAL.gold, { glow: g });
+  };
+  if (variant === 0){        /* ridge coach */
+    kit.box(7.4, 2.0, 2.4, compose(0, 0, 0), iron);
+    kit.box(6.6, 0.7, 1.8, compose(0, 1.3, 0), umber);
+    win(-2.7, 0.25, 1.24, 5, 1.35);
+    win(-2.7, 0.25, -1.24, 5, 1.35);
+    kit.box(0.6, 0.3, 2.5, compose(0, 1.05, 0), slate);
+  } else if (variant === 1){ /* tanker */
+    kit.prim(GeoKit.G.cyl, compose(0, 0.1, 0, 0, 0, Math.PI / 2, 2.1, 6.8, 2.1), umber);
+    for (const x of [-2.2, 0, 2.2]) kit.box(0.5, 2.3, 2.3, compose(x, -0.1, 0), iron);
+    kit.box(0.9, 0.5, 0.9, compose(2.9, 1.2, 0), slate);
+    kit.prim(GeoKit.G.oct, compose(-3.1, 1.25, 0, 0, 0, 0, 0.3), PAL.raspberry, { glow: 0.8 });
+  } else if (variant === 2){ /* lattice flat + cargo */
+    kit.box(7.6, 0.5, 2.3, compose(0, -0.7, 0), iron);
+    for (let i = 0; i < 3; i++)
+      kit.box(1.9, 1.4, 1.9, compose(-2.4 + i * 2.4, 0.25, (i % 2) * 0.3 - 0.15, 0, (i * 0.4), 0), i % 2 ? slate : umber);
+    strut(kit, new THREE.Vector3(-3.5, -0.4, 1.0), new THREE.Vector3(3.5, -0.4, 1.0), 0.1, HULL.rust);
+  } else if (variant === 3){ /* double-deck cabin */
+    kit.box(6.8, 2.9, 2.2, compose(0, 0.3, 0), iron);
+    kit.box(7.0, 0.4, 2.4, compose(0, -1.2, 0), umber);
+    win(-2.4, 1.0, 1.14, 4, 1.5, 0.8);
+    win(-2.4, -0.2, 1.14, 5, 1.2, 0.55);
+    win(-2.4, 1.0, -1.14, 4, 1.5, 0.8);
+    kit.box(1.2, 0.5, 1.6, compose(0.2, 2.0, 0), slate);
+  } else {                   /* power module */
+    kit.box(5.6, 1.8, 2.0, compose(0, 0, 0), umber);
+    for (const x of [-1.6, 0, 1.6]) kit.box(0.08, 2.8, 2.6, compose(x, 0.2, 0), HULL.plum);
+    kit.prim(GeoKit.G.cyl, compose(0, 0, 0, 0, 0, Math.PI / 2, 1.0, 6.0, 1.0), slate);
+    kit.prim(GeoKit.G.oct, compose(2.9, 0, 0, 0, 0, 0, 0.5), PAL.coral, { glow: 1.4 });
+  }
+  /* shared undercarriage: skids, bogies, magnetic shoes */
+  for (const x of [-2.6, 2.6]){
+    kit.box(1.6, 0.4, 1.6, compose(x, -1.45, 0), slate);
+    kit.prim(GeoKit.G.cyl, compose(x, -1.75, 0, 0, 0, Math.PI / 2, 0.5, 1.7, 0.5), iron);
+    kit.prim(GeoKit.G.oct, compose(x, -1.95, 0, 0, 0, 0, 0.22), PAL.teal, { glow: 0.5 });
+  }
+  kit.box(7.0, 0.22, 1.0, compose(0, -1.25, 0), HULL.rust);
+  return kit.build();
+}
+
+function buildProw(){
+  const kit = new GeoKit();
+  kit.box(4.6, 1.9, 2.2, compose(-0.8, 0, 0), HULL.iron);
+  kit.prim(GeoKit.G.cone, compose(1.9, 0, 0, 0, 0, -Math.PI / 2, 2.2, 2.6, 1.9), HULL.umber);
+  kit.box(2.0, 0.6, 1.6, compose(-0.4, 1.25, 0), HULL.slate);
+  kit.prim(GeoKit.G.oct, compose(2.6, 0.2, 0, 0, 0, 0, 0.42), PAL.bone, { glow: 1.35 });
+  kit.prim(GeoKit.G.oct, compose(1.6, -0.9, 0.9, 0, 0, 0, 0.18), PAL.raspberry, { glow: 0.85 });
+  kit.prim(GeoKit.G.oct, compose(1.6, -0.9, -0.9, 0, 0, 0, 0.18), PAL.raspberry, { glow: 0.85 });
+  for (const x of [-2.6, 1.0]){
+    kit.box(1.6, 0.4, 1.6, compose(x, -1.45, 0), HULL.slate);
+    kit.prim(GeoKit.G.oct, compose(x, -1.9, 0, 0, 0, 0, 0.22), PAL.teal, { glow: 0.5 });
+  }
+  return kit.build();
+}
+
+class LifeSystem {
+  constructor(plan, route, scene, structs, mat){
+    this.plan = plan; this.route = route; this.scene = scene; this.structs = structs;
+    this.mat = mat;                       // shared struct material
+    this.disposables = [];
+    this.meshes = [];
+    this._fr = makeFrame();
+    this._v = new THREE.Vector3(); this._v2 = new THREE.Vector3(); this._v3 = new THREE.Vector3();
+    this._q = new THREE.Quaternion(); this._m = new THREE.Matrix4();
+    this.giantPos = null; this.giantDim = 1; this.giantCloseness = 0;
+    this.events = { caravanNear: 0, giantAudio: 0 };
+    this._buildCaravans();
+    this._buildDrones();
+    this._buildFauna();
+    this._buildGiant();
+    this._buildAnomalies();
+  }
+
+  /* ---------------------------- caravans -------------------------------- */
+  _railFrame(sc, out){
+    /* caravan rail: offset line beside the route that crosses overhead once */
+    const t = this.plan.transit;
+    const s = clamp(sc, 0, this.plan.L);
+    this.route.frameAt(s, 'base', this._fr);
+    const u = clamp((s - (t.sCross - 210)) / 420, 0, 1);
+    const railLat = t.railSide * t.railLat * Math.cos(u * Math.PI);
+    const bulge = Math.sin(u * Math.PI);
+    out.copy(this._fr.pos)
+      .addScaledVector(this._fr.right, railLat)
+      .addScaledVector(this._fr.nrm, t.railH + bulge * 2.5);
+    return out;
+  }
+
+  _buildCaravans(){
+    this.modGeos = [];
+    for (let v = 0; v < 5; v++) this.modGeos.push(buildCaravanModule(v, this.plan.seed));
+    this.prowGeo = buildProw();
+    this.disposables.push(...this.modGeos, this.prowGeo);
+    /* caravan A: articulated, will overtake */
+    this.cavA = { mods: [], offs: [] };
+    let off = 0;
+    const prow = new THREE.Mesh(this.prowGeo, this.mat);
+    this.scene.add(prow); this.meshes.push(prow);
+    this.cavA.mods.push(prow); this.cavA.offs.push(0);
+    off = 7.2;
+    for (const m of this.plan.transit.modulesA){
+      const mesh = new THREE.Mesh(this.modGeos[m.variant], this.mat);
+      this.scene.add(mesh); this.meshes.push(mesh);
+      this.cavA.mods.push(mesh);
+      this.cavA.offs.push(off + m.len * 0.5);
+      off += m.len + 1.6;
+    }
+    this.cavA.len = off;
+    /* linkage beads */
+    const linkG = new THREE.OctahedronGeometry(0.3, 0);
+    const linkKit = new GeoKit();
+    linkKit.prim(linkG, compose(0, 0, 0, 0, 0, 0, 1), PAL.coral, { glow: 1.5 });
+    this.linkGeo = linkKit.build(); linkG.dispose();
+    this.cavA.links = new THREE.InstancedMesh(this.linkGeo, this.mat, this.cavA.mods.length - 1);
+    this.scene.add(this.cavA.links); this.meshes.push(this.cavA.links);
+    this.disposables.push(this.linkGeo);
+
+    /* caravan B: merged rigid body, far away near the receiving station */
+    { const kit = new GeoKit();
+      const bs = new Stream(this.plan.seed, 'real:caravanB');
+      let x = 0;
+      for (let i = 0; i < this.plan.transit.caravanB.modN; i++){
+        kit.merge(this.modGeos[bs.int(5)], compose(x, 0, 0));
+        x -= 9.6;
+      }
+      this.cavB = { mesh: new THREE.Mesh(kit.build(), this.mat), frozen: false, len: -x };
+      this.scene.add(this.cavB.mesh); this.meshes.push(this.cavB.mesh);
+      this.disposables.push(this.cavB.mesh.geometry);
+    }
+
+    /* caravan C — the Dawn Service: crosses the opening vista on a slow circle */
+    { const kit = new GeoKit();
+      const cs = new Stream(this.plan.seed, 'real:caravanC');
+      const cc = this.plan.transit.caravanC;
+      kit.merge(this.prowGeo, compose(4, 0, 0));
+      let x = -5;
+      for (let i = 0; i < cc.modN; i++){ kit.merge(this.modGeos[cs.int(5)], compose(x, 0, 0)); x -= 9.6; }
+      const fr0 = makeFrame();
+      this.route.frameAt(30, 'base', fr0);
+      const center = fr0.pos.clone().addScaledVector(fr0.tan, cc.ahead);
+      center.y += cc.h;
+      /* start angle: place the caravan crossing the forward view at t = 0 */
+      const seen = fr0.pos.clone().addScaledVector(fr0.tan, cc.ahead - 60).addScaledVector(fr0.right, -120);
+      const rel = seen.sub(center);
+      const a0 = Math.atan2(rel.z, rel.x);
+      this.cavC = { mesh: new THREE.Mesh(kit.build(), this.mat), center, a0, cc };
+      this.cavC.mesh.scale.setScalar(1.5);
+      this.scene.add(this.cavC.mesh); this.meshes.push(this.cavC.mesh);
+      this.disposables.push(this.cavC.mesh.geometry);
+    }
+
+    /* moving shadow decal for the crossing */
+    const shG = new THREE.PlaneGeometry(30, 12);
+    const shM = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0,
+      depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
+    this.shadow = new THREE.Mesh(shG, shM);
+    this.shadow.renderOrder = 3;
+    this.scene.add(this.shadow); this.meshes.push(this.shadow);
+    this.disposables.push(shG, shM);
+  }
+
+  _updateCaravans(t, dt, riderS, riderChapter){
+    const tr = this.plan.transit;
+    const head = tr.startS + tr.vCav * t;
+    const wrap = this.plan.L + 1600;
+    const headS = (((head + 400) % wrap) + wrap) % wrap - 400;
+    const up = this._v3.set(0, 1, 0);
+    for (let i = 0; i < this.cavA.mods.length; i++){
+      const s = headS - this.cavA.offs[i];
+      const mesh = this.cavA.mods[i];
+      if (s < -380 || s > this.plan.L + 380){ mesh.visible = false; continue; }
+      mesh.visible = true;
+      this._railFrame(s, this._v);
+      this._railFrame(s + 4, this._v2);
+      mesh.position.copy(this._v);
+      this._m.lookAt(this._v2, this._v, up);
+      mesh.quaternion.setFromRotationMatrix(this._m);
+      mesh.rotateY(Math.PI / 2);   /* module geometry runs along +x */
+      mesh.position.y += Math.sin(t * 1.7 + i) * 0.06;
+    }
+    for (let i = 0; i < this.cavA.mods.length - 1; i++){
+      const s = headS - (this.cavA.offs[i] + this.cavA.offs[i + 1]) / 2;
+      this._railFrame(s, this._v);
+      this._m.compose(this._v, this._q.identity(), this._v2.set(1, 1, 1));
+      this.cavA.links.setMatrixAt(i, this._m);
+    }
+    this.cavA.links.instanceMatrix.needsUpdate = true;
+    this.cavA.links.visible = headS > -300 && headS < this.plan.L + 300;
+
+    /* shadow while the caravan straddles the overhead crossing */
+    const envIn = smooth((headS - (tr.sCross - 50)) / 130);
+    const envOut = smooth(((tr.sCross + 50) - (headS - this.cavA.len)) / 130);
+    const env = Math.min(envIn, envOut);
+    if (env > 0.01){
+      const sh = clamp(tr.sCross + (headS - this.cavA.len * 0.5 - tr.sCross) * 0.2, 0, this.plan.L);
+      this.route.frameAt(sh, 'base', this._fr);
+      this.shadow.position.copy(this._fr.pos).addScaledVector(this._fr.nrm, 0.08);
+      this.shadow.quaternion.setFromRotationMatrix(this._m.makeBasis(this._fr.right, this._fr.tan, this._fr.nrm));
+      this.shadow.rotateX(-Math.PI / 2);
+      this.shadow.material.opacity = env * 0.4;
+    } else this.shadow.material.opacity = 0;
+
+    /* how near is the caravan to the rider (for audio) */
+    const dNear = Math.abs(headS - this.cavA.len * 0.5 - riderS);
+    this.events.caravanNear = clamp(1 - dNear / 260, 0, 1);
+
+    /* caravan B: distant loop near the receiving station */
+    const cb = tr.caravanB;
+    const anomWait = this.anom.waitingCaravan;
+    let bt = t;
+    if (anomWait) bt = anomWait.frozen ? anomWait.tFroze : (t - (anomWait.tOffset || 0));
+    const a = (bt / cb.period) * TAU + cb.phase;
+    this.route.frameAt(this.plan.L - 30, 'base', this._fr);
+    const cx = this._fr.pos.clone().addScaledVector(this._fr.tan, 500).addScaledVector(this._fr.right, cb.orbitR * 0.4);
+    this.cavB.mesh.position.set(cx.x + Math.cos(a) * cb.orbitR, cx.y + 60 + Math.sin(a * 2) * 30, cx.z + Math.sin(a) * cb.orbitR);
+    this.cavB.mesh.rotation.y = -a;
+
+    /* caravan C circles slowly; tangent orientation, no corridor contact */
+    const C = this.cavC;
+    const ca = C.a0 + C.cc.omega * t;
+    C.mesh.position.set(C.center.x + Math.cos(ca) * C.cc.r, C.center.y,
+                        C.center.z + Math.sin(ca) * C.cc.r);
+    C.mesh.rotation.y = -ca - Math.PI / 2 * Math.sign(C.cc.omega);
+  }
+
+  /* ----------------------------- drones ---------------------------------- */
+  _buildDrones(){
+    const kit = new GeoKit();
+    kit.prim(GeoKit.G.oct, compose(0, 0, 0, 0, 0, 0, 0.55, 0.75, 0.55), HULL.iron);
+    kit.box(0.9, 0.05, 0.35, compose(0, 0.12, 0, 0, 0, 0.2), HULL.umber);
+    kit.box(0.35, 0.05, 0.9, compose(0, -0.05, 0, 0.2, 0, 0), HULL.plum);
+    kit.prim(GeoKit.G.oct, compose(0, -0.28, 0, 0, 0, 0, 0.14), PAL.gold, { glow: 1.6 });
+    this.droneGeo = kit.build();
+    this.disposables.push(this.droneGeo);
+    this.droneCount = this.plan.drones.length + QUALITY.droneExtra;
+    this.droneInst = new THREE.InstancedMesh(this.droneGeo, this.mat, this.droneCount);
+    this.droneInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.droneInst.frustumCulled = false;
+    this.scene.add(this.droneInst); this.meshes.push(this.droneInst);
+    /* cosmetic extras (quality realization only): more rib inspectors */
+    const er = new Stream(this.plan.seed, 'real:dronesExtra');
+    this.droneExtras = [];
+    for (let i = 0; i < QUALITY.droneExtra; i++)
+      this.droneExtras.push({ fam: 0, s: er.range(0.05, 0.95) * this.plan.L, side: er.sign(),
+                              r: er.range(2.5, 4.5), rate: er.range(0.25, 0.6), phase: er.range(0, TAU) });
+  }
+
+  _droneAt(d, t, out, qOut){
+    const fr = this._fr;
+    if (d.fam === 0){
+      this.route.frameAt(d.s, 'base', fr);
+      const hw = this.route.halfWidth(d.s, 'base');
+      const a = t * d.rate + d.phase;
+      out.copy(fr.pos)
+        .addScaledVector(fr.right, d.side * (hw + PARA_T + 2.4 + d.r + Math.sin(a * 2) * 1.2))
+        .addScaledVector(fr.nrm, 1.6 + Math.sin(a) * 1.1)
+        .addScaledVector(fr.tan, Math.cos(a) * d.r * 2.2);
+      qOut.setFromEuler(new THREE.Euler(0, a * 0.6, Math.sin(a) * 0.15));
+    } else if (d.fam === 1){
+      const A = this.structs.satWorld[d.a], B = this.structs.satWorld[d.b];
+      let u2 = (t * d.rate + d.phase) % 2;
+      if (u2 > 1) u2 = 2 - u2;
+      const u = smooth(smooth(u2));
+      out.lerpVectors(A, B, u);
+      out.y += Math.sin(u * Math.PI) * d.bow;
+      qOut.setFromEuler(new THREE.Euler(0, t * 0.4 + d.phase, 0));
+    } else {
+      const S = this.structs.sailWorld[d.sail];
+      const a = t * d.rate + d.phase;
+      out.set(S.x + Math.cos(a) * d.r, S.y + Math.sin(a * 1.3) * d.r * 0.5 * d.tilt + Math.sin(a) * 2, S.z + Math.sin(a) * d.r);
+      qOut.setFromEuler(new THREE.Euler(0, -a, 0));
+    }
+  }
+
+  _updateDrones(t){
+    let idx = 0;
+    const sc = this._v2.set(1, 1, 1);
+    for (const d of this.plan.drones){
+      this._droneAt(d, t, this._v, this._q);
+      this._m.compose(this._v, this._q, sc);
+      this.droneInst.setMatrixAt(idx++, this._m);
+    }
+    for (const d of this.droneExtras){
+      this._droneAt(d, t, this._v, this._q);
+      this._m.compose(this._v, this._q, sc);
+      this.droneInst.setMatrixAt(idx++, this._m);
+    }
+    this.droneInst.instanceMatrix.needsUpdate = true;
+  }
+
+  /* ----------------------------- kite-rays ------------------------------- */
+  _buildFauna(){
+    const g0 = new THREE.PlaneGeometry(2.4, 2.0, 8, 4);
+    g0.rotateX(-Math.PI / 2);
+    const count = this.plan.fauna.reduce((a, f) => a + f.n, 0);
+    const g = new THREE.InstancedBufferGeometry().copy(g0);
+    const aPhase = new Float32Array(count), aFlap = new Float32Array(count), aTint = new Float32Array(count);
+    g.setAttribute('aPhase', new THREE.InstancedBufferAttribute(aPhase, 1));
+    g.setAttribute('aFlap', new THREE.InstancedBufferAttribute(aFlap, 1));
+    g.setAttribute('aTint', new THREE.InstancedBufferAttribute(aTint, 1));
+    this.rayMat = new THREE.ShaderMaterial({
+      side: THREE.DoubleSide,
+      uniforms: { uTime: { value: 0 }, uSun: { value: new THREE.Vector3(0, 1, 0) } },
+      vertexShader: `
+        attribute float aPhase; attribute float aFlap; attribute float aTint;
+        varying vec2 vUv; varying float vTint; varying vec3 vWorld;
+        uniform float uTime;
+        void main(){
+          vUv = uv; vTint = aTint;
+          vec3 p = position;
+          p.z *= 1.0 - 0.55 * clamp(-p.x / 1.2, 0.0, 1.0);       /* delta taper */
+          float span = abs(p.z) / 1.0;
+          p.y += sin(uTime * aFlap + aPhase + p.x * 1.2) * span * span * 0.55;
+          p.y += sin(uTime * aFlap * 0.5 + aPhase) * 0.1;
+          vec4 q = vec4(p, 1.0);
+          #ifdef USE_INSTANCING
+            q = instanceMatrix * q;
+          #endif
+          vec4 w = modelMatrix * q;
+          vWorld = w.xyz;
+          gl_Position = projectionMatrix * viewMatrix * w;
+        }`,
+      fragmentShader: `
+        varying vec2 vUv; varying float vTint; varying vec3 vWorld;
+        uniform vec3 uSun;
+        void main(){
+          vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+          float NdL = abs(dot(n, uSun));
+          vec3 body = vec3(0.012, 0.008, 0.014);
+          vec3 edgeWarm = vec3(0.60, 0.34, 0.12);
+          vec3 edgeCold = vec3(0.10, 0.34, 0.30);
+          vec3 edgeC = mix(edgeWarm, edgeCold, step(0.8, vTint));
+          float rim = smoothstep(0.75, 0.98, abs(vUv.y - 0.5) * 2.0);
+          float tail = smoothstep(0.3, 0.0, vUv.x) * 0.5;
+          vec3 col = body * (0.4 + 0.8 * NdL) + edgeC * (rim * 0.55 + tail * 0.2);
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    });
+    this.rayInst = new THREE.InstancedMesh(g, this.rayMat, count);
+    this.rayInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.rayInst.frustumCulled = false;
+    this.scene.add(this.rayInst); this.meshes.push(this.rayInst);
+    this.disposables.push(g0, g, this.rayMat);
+
+    /* world-space loop paths */
+    this.rayPaths = [];
+    const fr = this._fr;
+    let iInst = 0;
+    for (const f of this.plan.fauna){
+      const pts = [];
+      for (const p of f.pts){
+        const s = clamp(p.s, 0, this.plan.L);
+        this.route.frameAt(s, 'base', fr);
+        pts.push(fr.pos.clone().addScaledVector(fr.right, p.lat).add(new THREE.Vector3(0, p.h, 0)));
+      }
+      const curve = new THREE.CatmullRomCurve3(pts, true, 'centripetal', 0.6);
+      for (let m = 0; m < f.n; m++){
+        aPhase[iInst] = f.phase + m * 1.7;
+        aFlap[iInst] = f.flap;
+        aTint[iInst] = f.tint;
+        iInst++;
+      }
+      this.rayPaths.push({ f, curve });
+    }
+    /* gather point near the receiving station for the afterglow */
+    this.route.frameAt(this.plan.L - 60, 'base', fr);
+    this.gatherC = fr.pos.clone().addScaledVector(fr.tan, 160).add(new THREE.Vector3(0, 70, 0));
+  }
+
+  _updateFauna(t, riderS){
+    const gatherWin = smooth((riderS - (this.plan.L - 700)) / 260) *
+                      (1 - smooth((riderS - (this.plan.L - 180)) / 140));
+    let idx = 0;
+    for (const { f, curve } of this.rayPaths){
+      for (let m = 0; m < f.n; m++){
+        const u = ((t / f.period) + f.phase / TAU + m * 0.045) % 1;
+        curve.getPointAt(u, this._v);
+        curve.getTangentAt(u, this._v2);
+        if (gatherWin > 0.001){
+          const ga = m * 2.1 + f.phase + t * 0.1;
+          this._v3.set(this.gatherC.x + Math.cos(ga) * 60, this.gatherC.y + Math.sin(ga * 1.3) * 22,
+                       this.gatherC.z + Math.sin(ga) * 60);
+          this._v.lerp(this._v3, gatherWin * 0.85);
+        }
+        this._m.lookAt(this._v, this._v2.add(this._v), this._v3.set(0, 1, 0));
+        this._q.setFromRotationMatrix(this._m);
+        this._m.compose(this._v, this._q, this._v3.setScalar(f.size));
+        this.rayInst.setMatrixAt(idx++, this._m);
+      }
+    }
+    this.rayInst.instanceMatrix.needsUpdate = true;
+  }
+
+  /* ----------------------------- the giant -------------------------------- */
+  _buildGiant(){
+    const kit = new GeoKit();
+    const ink = new THREE.Color(0x070409);
+    const deep = new THREE.Color(0x110a16);
+    /* an unresolved shape: whale-hull, sail-fin, machine-keel */
+    kit.prim(GeoKit.G.sph, compose(0, 0, 0, 0, 0, 0.1, 440, 130, 120), ink);
+    kit.prim(GeoKit.G.sph, compose(150, 24, 0, 0, 0, 0.35, 210, 80, 70), deep);
+    kit.prim(GeoKit.G.sph, compose(-260, 10, 0, 0, 0, -0.2, 180, 60, 54), ink);
+    kit.box(180, 240, 6, compose(-40, 130, 0, 0, 0, -0.25), deep);
+    kit.box(120, 6, 300, compose(-180, -40, 0, 0.35, 0.2, 0), ink);
+    kit.box(90, 5, 200, compose(120, -30, 30, -0.3, -0.15, 0), deep);
+    /* spine lights — dim constellation along the back */
+    for (let i = 0; i < 9; i++)
+      kit.prim(GeoKit.G.oct, compose(-320 + i * 70, 40 + Math.sin(i * 1.2) * 26, 0, 0, 0, 0, 3.2),
+               i % 3 ? PAL.raspberry : PAL.gold, { glow: 0.5 });
+    this.giantGeo = kit.build();
+    this.disposables.push(this.giantGeo);
+    this.giant = new THREE.Mesh(this.giantGeo, this.mat);
+    this.giant.visible = false;
+    this.scene.add(this.giant); this.meshes.push(this.giant);
+    this.giantIdx = 0;
+  }
+
+  _updateGiant(t){
+    const evs = this.plan.giants;
+    this.giantPos = null; this.giantDim = 1; this.giantCloseness = 0;
+    let active = null;
+    for (const ev of evs){
+      if (t >= ev.t0 && t <= ev.t0 + ev.dur){ active = ev; break; }
+      if (ev.t0 > t) break;
+    }
+    if (!active){ this.giant.visible = false; this.events.giantAudio = 0; return; }
+    const u = (t - active.t0) / active.dur;
+    const sRef = clamp(active.t0 * 10.5, 200, this.plan.L - 200);
+    this.route.frameAt(sRef, 'base', this._fr);
+    const center = this._v2.copy(this._fr.pos)
+      .addScaledVector(this._fr.right, active.side * active.dist);
+    center.y += active.alt;
+    const travel = active.dist * 1.15;
+    const dir = this._v3.copy(this._fr.tan).multiplyScalar(-1);
+    this.giant.position.copy(center).addScaledVector(dir, (u - 0.5) * travel);
+    this.giant.quaternion.setFromRotationMatrix(this._m.lookAt(this._v.set(0, 0, 0), dir, this._v2.set(0, 1, 0)));
+    this.giant.rotateY(Math.PI / 2);
+    this.giant.scale.setScalar(active.scale);
+    this.giant.position.y += Math.sin(t * 0.14) * 24;
+    this.giant.visible = true;
+    this.giantPos = this.giant.position;
+    const close = clamp(1 - active.dist / 4200, 0, 1);
+    const env = Math.sin(u * Math.PI);
+    this.giantCloseness = close * env;
+    this.giantDim = 1 - (active.dist < 1600 ? 0.24 : 0.08) * env;
+    this.events.giantAudio = (u > 0.06 && u < 0.9) ? close * env : 0; /* delayed voice */
+  }
+
+  /* ----------------------------- anomalies -------------------------------- */
+  _buildAnomalies(){
+    const an = this.plan.anomalies;
+    this.anom = { missing: 0, lost: 0, echo: 0, borrowed: null, waitingCaravan: null, doneMissing: false };
+    if (an.subtle.includes('waitingCaravan'))
+      this.anom.waitingCaravan = { frozen: true, tFroze: 8, chapterEntered: -1 };
+    if (an.impossible === 'borrowedStar'){
+      /* a star descends and docks into a dark pylon lamp */
+      const g = new THREE.OctahedronGeometry(1.1, 1);
+      const kit = new GeoKit();
+      kit.prim(g, compose(0, 0, 0, 0, 0, 0, 1), PAL.bone, { glow: 3.0 });
+      g.dispose();
+      const geo = kit.build();
+      const star = new THREE.Mesh(geo, this.mat);
+      star.visible = false;
+      this.scene.add(star); this.meshes.push(star);
+      this.disposables.push(geo);
+      /* target: the pylon-gate nearest to 400 m past the trigger */
+      const trig = this.plan.anomalies.trigS.borrowedStar;
+      let target = null, bd = 1e9;
+      for (const gg of this.plan.gates){
+        const d = Math.abs(gg.s - (trig + 420));
+        if (gg.variant === 4 && d < bd){ bd = d; target = gg; }
+      }
+      if (!target) target = this.plan.gates[this.plan.gates.length - 1];
+      this.route.frameAt(target.s, 'base', this._fr);
+      const hw = this.route.halfWidth(target.s, 'base');
+      const dockPos = this._fr.pos.clone()
+        .addScaledVector(this._fr.right, target.side * (hw + PARA_T + 3.6))
+        .addScaledVector(this._fr.nrm, target.h + 0.6);
+      const skyPos = dockPos.clone().add(new THREE.Vector3(1800, 5200, -2400));
+      this.anom.borrowed = { star, dockPos, skyPos, state: 0, u: 0 };
+    }
+  }
+
+  _updateAnomalies(t, dt, riderS, riderChapter){
+    const an = this.plan.anomalies;
+    const A = this.anom;
+    /* echo road window */
+    if (an.impossible === 'echoRoad'){
+      const trig = an.trigS.echoRoad;
+      const w = smooth((riderS - trig) / 120) * (1 - smooth((riderS - trig - 900) / 260));
+      A.echo = w;
+    }
+    /* missing constellation binds to the second giant passage */
+    if (an.subtle.includes('missingConstellation') && this.plan.giants.length > 1){
+      const ev = this.plan.giants[1];
+      if (t > ev.t0 && t < ev.t0 + ev.dur){
+        const u = (t - ev.t0) / ev.dur;
+        A.missing = Math.sin(clamp(u, 0, 1) * Math.PI);
+        A.doneMissing = true;
+      } else A.missing = 0;
+      if (A.doneMissing && t > ev.t0 + ev.dur) A.lost = 1;
+    }
+    /* waiting caravan unfreezes on the next chapter entry */
+    if (A.waitingCaravan){
+      const wc = A.waitingCaravan;
+      if (wc.chapterEntered < 0) wc.chapterEntered = riderChapter;
+      if (wc.frozen && riderChapter > wc.chapterEntered){
+        wc.frozen = false;
+        wc.tOffset = t - wc.tFroze;
+      }
+      if (!wc.frozen) wc.tFroze = t - (wc.tOffset || 0);
+    }
+    /* borrowed star */
+    if (A.borrowed){
+      const B = A.borrowed;
+      const trig = an.trigS.borrowedStar;
+      if (B.state === 0 && riderS > trig){ B.state = 1; B.u = 0; B.star.visible = true; }
+      if (B.state === 1){
+        B.u = Math.min(1, B.u + dt / 34);
+        const e = smooth(B.u);
+        B.star.position.lerpVectors(B.skyPos, B.dockPos, e);
+        B.star.scale.setScalar(lerp(2.6, 0.55, e));
+        if (B.u >= 1) B.state = 2;   /* docked: stays lit forever, cold-white in a warm world */
+      }
+    }
+  }
+
+  update(t, dt, riderS, riderChapter, sunDir){
+    this.rayMat.uniforms.uTime.value = t;
+    if (sunDir) this.rayMat.uniforms.uSun.value.copy(sunDir);
+    this._updateCaravans(t, dt, riderS, riderChapter);
+    this._updateDrones(t);
+    this._updateFauna(t, riderS);
+    this._updateGiant(t);
+    this._updateAnomalies(t, dt, riderS, riderChapter);
+  }
+
+  dispose(){
+    for (const m of this.meshes) this.scene.remove(m);
+    for (const d of this.disposables) d.dispose && d.dispose();
+  }
+}
+
+/* ============================================================================
+   RIDER — a tired cyclist on a suspended night ribbon. Smooth route follow,
+   gentle steering, one meaningful choice, and a designed exhale at the end.
+   ========================================================================= */
+
+const CRUISE = 10.5, VMAX = 17.5, VMIN = 0, EYE = 1.58, LAT_MAX = 2.6;
+
+class Rider {
+  constructor(plan, route, input, startS){
+    this.plan = plan; this.route = route; this.input = input;
+    this.s = clamp(startS, 0, plan.L - 6);
+    this.speed = 0;
+    this.lat = 0; this.latVel = 0;
+    this.lane = this._laneForS(this.s);
+    this.phase = 'hold';                 // hold -> ride -> overlook
+    this.holdT = 2.8;
+    this.overlookT = 0;
+    this.lookYaw = 0; this.lookPitch = 0;
+    this.autoYaw = 0;
+    this.rollSm = 0;
+    this._fr = makeFrame(); this._frAhead = makeFrame();
+    this._camPos = new THREE.Vector3();
+    this._camTarget = new THREE.Vector3();
+    this.ended = false;
+    if (this.lane !== 'base' && this.s > plan.fork.sFork)
+      this.committed = true;
+    else this.committed = false;
+  }
+
+  _laneForS(s){
+    const f = this.plan.fork;
+    if (s > f.sFork && s < f.sRejoin) return 'inner';   // jump into the fork defaults inner
+    return 'base';
+  }
+
+  update(dt, worldT){
+    const inp = this.input;
+    const f = this.plan.fork;
+
+    if (this.phase === 'hold'){
+      this.holdT -= dt;
+      if (this.holdT <= 0 || inp.keys['KeyW'] || inp.keys['ArrowUp']) this.phase = 'ride';
+    }
+
+    /* ---- speed ---------------------------------------------------------- */
+    let target = 0;
+    if (this.phase === 'ride'){
+      target = CRUISE;
+      if (inp.keys['KeyW'] || inp.keys['ArrowUp']) target = VMAX;
+      if (inp.keys['KeyS'] || inp.keys['ArrowDown']) target = VMIN;
+      if (inp.paused) target = 0;
+    } else if (this.phase === 'overlook') target = 0;
+    const accel = target > this.speed ? 2.6 : 4.2;
+    this.speed += clamp(target - this.speed, -accel * dt, accel * dt);
+
+    /* ---- steering ------------------------------------------------------- */
+    let steer = 0;
+    if (inp.keys['KeyA'] || inp.keys['ArrowLeft']) steer -= 1;
+    if (inp.keys['KeyD'] || inp.keys['ArrowRight']) steer += 1;
+    /* widened approach lets the rider drift toward a mouth */
+    let latRange = LAT_MAX;
+    if (this.lane === 'base' && this.s > f.sFork - WIDEN && this.s < f.sFork)
+      latRange = this.route.halfWidth(this.s, 'base') - 2.9;
+    const steerRate = 3.1;
+    this.latVel += (steer * steerRate - this.latVel) * Math.min(1, dt * 6);
+    if (this.phase === 'ride' && !inp.paused) this.lat += this.latVel * dt * Math.min(1, this.speed / 4);
+    this.lat = clamp(this.lat, -latRange, latRange);
+
+    /* ---- advance & fork mapping ----------------------------------------- */
+    if (this.phase !== 'hold' && !inp.paused){
+      const prevS = this.s;
+      this.s = Math.min(this.s + this.speed * dt, this.plan.L - 0.5);
+      /* commit at the split nose: the side you drifted to is the arm you get */
+      if (!this.committed && prevS <= f.sFork && this.s > f.sFork){
+        const side = this.lat >= 0 ? 1 : -1;
+        this.lane = (side === f.side) ? 'outer' : 'inner';
+        this.lat = clamp(this.lat - side * FORK_GAP, -LAT_MAX, LAT_MAX);
+        this.committed = true;
+      }
+      /* rejoin: fold back onto the base line */
+      if (this.committed && prevS <= f.sRejoin && this.s > f.sRejoin){
+        const off = this.route.laneOffset(f.sRejoin - 0.5, this.lane);
+        this.lane = 'base';
+        this.lat = clamp(this.lat + off.d, -(this.route.halfWidth(this.s, 'base') - 2.9), this.route.halfWidth(this.s, 'base') - 2.9);
+        this.committed = false;
+      }
+      /* after the merge zone, relax back to ordinary bounds */
+      if (this.lane === 'base' && (this.s < f.sFork - WIDEN || this.s > f.sRejoin)){
+        const hw = this.route.halfWidth(this.s, 'base');
+        const lim = Math.min(LAT_MAX + (hw - ROAD_HALF), Math.max(LAT_MAX, hw - 2.9));
+        this.lat = clamp(this.lat, -lim, lim);
+        if (hw <= ROAD_HALF + 0.01 && Math.abs(this.lat) > LAT_MAX)
+          this.lat = lerp(this.lat, clamp(this.lat, -LAT_MAX, LAT_MAX), Math.min(1, dt * 2.5));
+      }
+      if (this.s >= this.plan.L - 1 && this.phase === 'ride'){
+        this.phase = 'overlook';
+      }
+    }
+
+    if (this.phase === 'overlook'){
+      this.overlookT += dt;
+      /* slow turn to see the whole lit Asterline behind */
+      const turn = smooth(clamp((this.overlookT - 2.0) / 9.0, 0, 1));
+      this.autoYaw = turn * Math.PI * 0.94;
+      if (!this.ended && this.overlookT > 2.5) this.ended = true;
+    }
+
+    /* ---- look ------------------------------------------------------------ */
+    this.lookYaw += (inp.lookX * 0.62 - this.lookYaw) * Math.min(1, dt * 5);
+    this.lookPitch += (inp.lookY * 0.34 - this.lookPitch) * Math.min(1, dt * 5);
+
+    /* ---- camera ---------------------------------------------------------- */
+    const rt = this.route;
+    rt.frameAt(this.s, this.lane, this._fr);
+    const ahead = 16 + this.speed * 0.9;
+    rt.frameAt(Math.min(this.s + ahead, this.plan.L), this.lane, this._frAhead);
+    this._camPos.copy(this._fr.pos)
+      .addScaledVector(this._fr.nrm, EYE)
+      .addScaledVector(this._fr.right, this.lat);
+    this._camTarget.copy(this._frAhead.pos)
+      .addScaledVector(this._frAhead.nrm, EYE * 0.92)
+      .addScaledVector(this._frAhead.right, this.lat * 0.55);
+
+    /* gentle roll into curves, capped well under 2.5 degrees */
+    const k = rt.curvatureAt(this.s, this.lane);
+    const lean = clamp(-Math.sign(this._fr.right.dot(this._frAhead.tan)) * k * this.speed * this.speed * 0.02, -0.035, 0.035);
+    this.rollSm += (lean - this.rollSm) * Math.min(1, dt * 2);
+    return {
+      s: this.s, lane: this.lane, speed: this.speed,
+      camPos: this._camPos, camTarget: this._camTarget,
+      yaw: this.lookYaw + this.autoYaw, pitch: this.lookPitch, roll: this.rollSm,
+      phase: this.phase,
+    };
+  }
+}
+
+/* ---------------------------------- input ---------------------------------- */
+class Input {
+  constructor(){
+    this.keys = {};
+    this.paused = false;
+    this.lookX = 0; this.lookY = 0;
+    this._drag = null;
+    this.onRestart = null; this.onDiag = null; this.onGesture = null;
+    this._bound = [];
+  }
+  bind(){
+    const on = (el, ev, fn, opt) => { el.addEventListener(ev, fn, opt); this._bound.push([el, ev, fn]); };
+    on(window, 'keydown', (e) => {
+      if (e.repeat) return;
+      this.keys[e.code] = true;
+      if (e.code === 'Space'){ this.paused = !this.paused; e.preventDefault(); }
+      if (e.code === 'KeyR' && this.onRestart) this.onRestart();
+      if (e.code === 'KeyH' && this.onDiag) this.onDiag();
+      if (this.onGesture) this.onGesture();
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+    });
+    on(window, 'keyup', (e) => { this.keys[e.code] = false; });
+    on(window, 'pointerdown', (e) => {
+      this._drag = { x: e.clientX, y: e.clientY, lx: this.lookX, ly: this.lookY };
+      if (this.onGesture) this.onGesture();
+    });
+    on(window, 'pointermove', (e) => {
+      if (!this._drag) return;
+      this.lookX = clamp(this._drag.lx + (e.clientX - this._drag.x) / innerWidth * 2.4, -1.2, 1.2);
+      this.lookY = clamp(this._drag.ly + (e.clientY - this._drag.y) / innerHeight * 1.6, -0.8, 0.8);
+    });
+    on(window, 'pointerup', () => {
+      this._drag = null;
+      /* look eases home when released */
+    });
+    on(window, 'blur', () => { this.keys = {}; this._drag = null; });
+  }
+  update(dt){
+    if (!this._drag){
+      this.lookX *= Math.max(0, 1 - dt * 1.6);
+      this.lookY *= Math.max(0, 1 - dt * 1.6);
+    }
+  }
+  unbind(){ for (const [el, ev, fn] of this._bound) el.removeEventListener(ev, fn); this._bound = []; }
+}
+
+/* ---------------------------------- hud ------------------------------------ */
+class Hud {
+  constructor(){
+    this.el = {
+      title: document.getElementById('title'), chapter: document.getElementById('chapter'),
+      hint: document.getElementById('hint'), diag: document.getElementById('diag'),
+      end: document.getElementById('endcard'), fade: document.getElementById('fade'),
+      err: document.getElementById('err'),
+    };
+    this.lastChapter = -1;
+    this.chapterTimer = 0;
+    this.diagOn = false;
+  }
+  boot(){ requestAnimationFrame(() => { this.el.fade.style.opacity = '0'; }); }
+  gesture(){ this.el.hint.style.opacity = '0'; }
+  showChapter(idx){
+    const c = CHAPTERS[idx];
+    const roman = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'][idx];
+    this.el.chapter.innerHTML = `${roman} · ${c.name}<em>${c.sub}</em>`;
+    this.el.chapter.style.opacity = '0.9';
+    this.chapterTimer = 4.6;
+  }
+  update(dt, chapter, phase){
+    if (chapter !== this.lastChapter){
+      this.lastChapter = chapter;
+      this.showChapter(chapter);
+    }
+    if (this.chapterTimer > 0){
+      this.chapterTimer -= dt;
+      if (this.chapterTimer <= 0) this.el.chapter.style.opacity = '0';
+    }
+    if (phase === 'overlook') this.el.end.style.opacity = '1';
+    else this.el.end.style.opacity = '0';
+  }
+  toggleDiag(){
+    this.diagOn = !this.diagOn;
+    this.el.diag.style.display = this.diagOn ? 'block' : 'none';
+  }
+  setDiag(text){ if (this.diagOn) this.el.diag.textContent = text; }
+  error(msg){ this.el.err.textContent = msg; this.el.err.style.display = 'block'; }
+}
+
+/* ============================================================================
+   AUDIO — procedural, gesture-gated, sparse. Silence is part of the score.
+   One context, one graph, torn down and rebuilt cleanly on restart.
+   ========================================================================= */
+
+class AudioEngine {
+  constructor(plan){
+    this.plan = plan;
+    this.ctx = null;
+    this.layers = null;
+    this.enabled = false;
+    this.oneShots = 0;
+    this.beaconPlayed = false;
+    this.replyPlayed = false;
+  }
+
+  /* first user gesture (or re-arm after restart) */
+  start(){
+    if (!this.ctx){
+      try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (e) { return; }
+    }
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    if (this.layers) return;
+    const c = this.ctx;
+    this.master = c.createGain(); this.master.gain.value = 0.0;
+    this.comp = c.createDynamicsCompressor();
+    this.comp.threshold.value = -20; this.comp.ratio.value = 6;
+    this.master.connect(this.comp).connect(c.destination);
+    this.master.gain.setTargetAtTime(0.9, c.currentTime, 2.5);
+
+    const L = this.layers = {};
+    /* low orbital hum — two detuned voices through a dark filter */
+    L.humGain = c.createGain(); L.humGain.gain.value = 0.0;
+    const humF = c.createBiquadFilter(); humF.type = 'lowpass'; humF.frequency.value = 220; humF.Q.value = 0.7;
+    const o1 = c.createOscillator(); o1.type = 'sine'; o1.frequency.value = 55;
+    const o2 = c.createOscillator(); o2.type = 'triangle'; o2.frequency.value = 82.4 + this.plan.audioPlan.humDetune;
+    const o2g = c.createGain(); o2g.gain.value = 0.4;
+    o1.connect(humF); o2.connect(o2g).connect(humF);
+    humF.connect(L.humGain).connect(this.master);
+    const lfo = c.createOscillator(); lfo.frequency.value = 0.05;
+    const lfoG = c.createGain(); lfoG.gain.value = 55;
+    lfo.connect(lfoG).connect(humF.frequency);
+    o1.start(); o2.start(); lfo.start();
+    L.humNodes = [o1, o2, lfo];
+
+    /* seeded brownish noise buffer, shared by wind / caravan / clicks */
+    if (!this.noiseBuf){
+      const nr = new Stream(this.plan.seed, 'real:audioNoise');
+      const nbuf = c.createBuffer(1, c.sampleRate * 2, c.sampleRate);
+      const nd = nbuf.getChannelData(0);
+      let v = 0;
+      for (let i = 0; i < nd.length; i++){ v = v * 0.97 + (nr.float() * 2 - 1) * 0.03; nd[i] = v * 8; }
+      this.noiseBuf = nbuf;
+    }
+    const nsrc = c.createBufferSource(); nsrc.buffer = this.noiseBuf; nsrc.loop = true;
+    const nf = c.createBiquadFilter(); nf.type = 'bandpass'; nf.frequency.value = 620; nf.Q.value = 0.5;
+    L.windGain = c.createGain(); L.windGain.gain.value = 0.0;
+    nsrc.connect(nf).connect(L.windGain).connect(this.master);
+    nsrc.start();
+    L.windNodes = [nsrc];
+
+    /* caravan bed — dark rumble with a soft magnetic clack */
+    const csrc = c.createBufferSource(); csrc.buffer = this.noiseBuf; csrc.loop = true; csrc.playbackRate.value = 0.4;
+    const cf = c.createBiquadFilter(); cf.type = 'lowpass'; cf.frequency.value = 140;
+    const clack = c.createOscillator(); clack.type = 'square'; clack.frequency.value = 2.3;
+    const clackG = c.createGain(); clackG.gain.value = 0.25;
+    L.cavGain = c.createGain(); L.cavGain.gain.value = 0.0;
+    csrc.connect(cf).connect(L.cavGain);
+    clack.connect(clackG).connect(L.cavGain.gain);
+    L.cavGain.connect(this.master);
+    csrc.start(); clack.start();
+    L.cavNodes = [csrc, clack];
+
+    /* giant subharmonic */
+    const g1 = c.createOscillator(); g1.type = 'sine'; g1.frequency.value = 33;
+    const g2 = c.createOscillator(); g2.type = 'sine'; g2.frequency.value = 26.2;
+    L.giantGain = c.createGain(); L.giantGain.gain.value = 0.0;
+    g1.connect(L.giantGain); g2.connect(L.giantGain);
+    L.giantGain.connect(this.master);
+    g1.start(); g2.start();
+    L.giantNodes = [g1, g2];
+
+    this.enabled = true;
+  }
+
+  /* short filtered click for a waking gate */
+  click(side){
+    if (!this.enabled || this.oneShots > 24) return;
+    const c = this.ctx, t = c.currentTime;
+    const src = c.createBufferSource(); src.buffer = this.noiseBuf;
+    src.playbackRate.value = 2.5;
+    const f = c.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1900;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.11, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    const nodes = [src, f, g];
+    let tail = g;
+    if (c.createStereoPanner){
+      const p = c.createStereoPanner(); p.pan.value = side * 0.55; nodes.push(p);
+      src.connect(f).connect(g).connect(p).connect(this.master);
+    } else src.connect(f).connect(g).connect(this.master);
+    src.start(t); src.stop(t + 0.12);
+    this.oneShots++;
+    src.onended = () => { this.oneShots--; for (const n of nodes){ try { n.disconnect(); } catch (e) {} } };
+  }
+
+  /* one cairn note of the motif */
+  chime(note, side, gainMul = 1, transpose = 0){
+    if (!this.enabled || this.oneShots > 24) return;
+    const c = this.ctx, t = c.currentTime;
+    const f0 = this.plan.audioPlan.root * Math.pow(2, (note + transpose) / 12);
+    const o1 = c.createOscillator(); o1.type = 'sine'; o1.frequency.value = f0;
+    const o2 = c.createOscillator(); o2.type = 'sine'; o2.frequency.value = f0 * 2.005;
+    const o2g = c.createGain(); o2g.gain.value = 0.35;
+    const g = c.createGain();
+    const amp = 0.085 * this.plan.audioPlan.chimeGain * gainMul;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(amp, 0.001), t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0004, t + 2.9);
+    const nodes = [o1, o2, o2g, g];
+    o1.connect(g); o2.connect(o2g).connect(g);
+    if (c.createStereoPanner){
+      const p = c.createStereoPanner(); p.pan.value = side * 0.5; nodes.push(p);
+      g.connect(p).connect(this.master);
+    } else g.connect(this.master);
+    o1.start(t); o2.start(t);
+    o1.stop(t + 3.0); o2.stop(t + 3.0);
+    this.oneShots++;
+    o1.onended = () => { this.oneShots--; for (const n of nodes){ try { n.disconnect(); } catch (e) {} } };
+  }
+
+  /* the receiving beacon wakes: a slow chord, then the motif returns */
+  beacon(){
+    if (!this.enabled || this.beaconPlayed) return;
+    this.beaconPlayed = true;
+    const c = this.ctx, t = c.currentTime;
+    const root = this.plan.audioPlan.root * 0.5;
+    for (const [semi, amp, det] of [[0, 0.05, 0], [7, 0.035, 0.4], [12, 0.028, -0.3]]){
+      const o = c.createOscillator(); o.type = 'sine';
+      o.frequency.value = root * Math.pow(2, semi / 12) + det;
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(amp, t + 11);
+      g.gain.exponentialRampToValueAtTime(0.0004, t + 40);
+      o.connect(g).connect(this.master);
+      o.start(t); o.stop(t + 41);
+      o.onended = () => { try { o.disconnect(); g.disconnect(); } catch (e) {} };
+    }
+    const motif = this.plan.motif;
+    for (let i = 0; i < motif.length; i++){
+      const note = motif[i], pan = (i % 2) ? 0.4 : -0.4;
+      setTimeout(() => this.chime(note, pan, 0.85), 6000 + i * 460);
+    }
+  }
+
+  /* the Unsent Reply: an answer from much too far away, much too soon */
+  reply(){
+    if (!this.enabled || this.replyPlayed) return;
+    this.replyPlayed = true;
+    const motif = this.plan.motif;
+    for (let i = 0; i < motif.length; i++){
+      const note = motif[i];
+      setTimeout(() => this.chime(note, 0.85, 0.34, 12), i * 300);
+    }
+  }
+
+  update(dt, st){
+    if (!this.enabled) return;
+    const T = this.ctx.currentTime;
+    const L = this.layers;
+    /* chapter-shaped quiet: the viaduct and the afterglow breathe lower */
+    const quiet = (st.chapter === 2 || st.chapter === 6) ? 0.5 : 1.0;
+    L.humGain.gain.setTargetAtTime(0.040 * quiet * (st.phase === 'hold' ? 0.5 : 1), T, 1.5);
+    L.windGain.gain.setTargetAtTime(0.014 * quiet * clamp(st.speed / CRUISE, 0.2, 1.4), T, 1.2);
+    L.cavGain.gain.setTargetAtTime(0.15 * st.caravanNear * st.caravanNear, T, 0.4);
+    L.giantGain.gain.setTargetAtTime(0.14 * st.giantAudio, T, 2.2);
+  }
+
+  /* teardown for restart: keep the context, drop the graph */
+  reset(plan){
+    this.plan = plan;
+    if (this.layers){
+      for (const key of ['humNodes', 'windNodes', 'cavNodes', 'giantNodes'])
+        for (const n of (this.layers[key] || [])){ try { n.stop(); } catch (e) {} try { n.disconnect(); } catch (e) {} }
+      for (const key of ['humGain', 'windGain', 'cavGain', 'giantGain'])
+        if (this.layers[key]) { try { this.layers[key].disconnect(); } catch (e) {} }
+    }
+    if (this.master) { try { this.master.disconnect(); } catch (e) {} }
+    if (this.comp) { try { this.comp.disconnect(); } catch (e) {} }
+    this.layers = null;
+    this.noiseBuf = null;
+    this.enabled = false;
+    this.beaconPlayed = false; this.replyPlayed = false;
+    if (this.ctx) this.start();   // if a gesture already happened, re-arm immediately
+  }
+}
+
+/* ============================================================================
+   WORLD & APP — one renderer, one canvas, one loop, one resize owner, one
+   audio graph, one active world. R tears down and rebuilds deterministically.
+   ========================================================================= */
+
+class World {
+  constructor(scene, seed, input, jumpS){
+    this.scene = scene;
+    this.plan = buildPlan(seed);
+    this.route = new Route(this.plan);
+    this._audit();
+    this.sky = new SkySystem(this.plan, this.route);
+    scene.add(this.sky.group);
+    this.road = new RoadSystem(this.plan, this.route, scene);
+    this.structs = new StructureSystem(this.plan, this.route, scene);
+    this.life = new LifeSystem(this.plan, this.route, scene, this.structs, this.structs.mat);
+    this.rider = new Rider(this.plan, this.route, input, jumpS);
+    this.road.primeInitial(this.rider.s);
+    this.t = 0;
+    this.beaconV = 0;
+    this.replyT = -1;
+    this.gatePtr = this.plan.gates.findIndex(g => g.s - 95 > this.rider.s);
+    if (this.gatePtr < 0) this.gatePtr = this.plan.gates.length;
+    this.cairnPtr = this.plan.cairns.findIndex(c => c.s > this.rider.s);
+    if (this.cairnPtr < 0) this.cairnPtr = this.plan.cairns.length;
+    this.nanFlag = false;
+  }
+
+  _audit(){
+    const r = this.plan.route;
+    let finite = true;
+    for (let i = 0; i < r.n; i++){
+      if (!Number.isFinite(r.px[i]) || !Number.isFinite(r.pz[i]) || !Number.isFinite(r.py[i])){ finite = false; break; }
+    }
+    let maxGrade = 0;
+    for (let i = 5; i < r.n; i++){
+      const g = Math.abs(r.py[i] - r.py[i - 5]) / (5 * STEP);
+      if (g > maxGrade) maxGrade = g;
+    }
+    let kMax = 0;
+    for (let i = 0; i < r.n; i++) if (Math.abs(r.kProf[i]) > kMax) kMax = Math.abs(r.kProf[i]);
+    let minR = kMax > 1e-6 ? 1 / kMax : 1e9;
+    const f = this.plan.fork;
+    for (const lane of ['inner', 'outer']){
+      for (let s = f.sFork + 12; s < f.sRejoin - 12; s += 16){
+        const k = this.route.curvatureAt(s, lane);
+        if (k > 1e-6) minR = Math.min(minR, 1 / k);
+      }
+    }
+    this.audit = { finite, maxGrade, minTurnRadius: minR, selfOk: r.ok };
+  }
+
+  update(dt, audio, hud){
+    this.t += dt;
+    const t = this.t;
+    const rs = this.rider.update(dt, t);
+    const s = rs.s;
+    const chapter = this.route.chapterAt(s);
+    const spans = this.plan.spans;
+    const amber = smooth((s - spans[6].s0) / Math.max(1, (this.plan.L - spans[6].s0) * 0.55));
+    const breath = 0.5 + 0.5 * Math.sin(TAU * t / 12);
+    const crown = smooth((s - spans[5].s0) / 260) * (1 - smooth((s - spans[5].s1 + 60) / 260));
+
+    /* the receiving beacon wakes on distance travelled, never rider power */
+    this.beaconV = smooth((s - (spans[6].s0 + 60)) / 420);
+    if (this.beaconV > 0.45) audio.beacon();
+
+    /* the Unsent Reply at the overlook */
+    let replyV = 0;
+    if (this.rider.phase === 'overlook' && this.rider.overlookT > 4.0){
+      if (this.replyT < 0){ this.replyT = t; audio.reply(); }
+      const ru = (t - this.replyT) / 5.0;
+      replyV = ru < 1 ? Math.sin(ru * Math.PI) : 0;
+    }
+
+    this.road.update(s, s, breath, amber, this.sky.sunDir, t, crown);
+    this.structs.update(t, dt, this.sky.sunDir, s, breath, amber,
+                        Math.max(this.beaconV, replyV * 0.4), this.life.giantDim, this.life.giantPos, crown);
+    this.life.update(t, dt, s, chapter, this.sky.sunDir);
+    this.sky.update(dt, t, rs.camPos, {
+      missing: this.life.anom.missing, lost: this.life.anom.lost,
+      echo: this.life.anom.echo, reply: replyV,
+    });
+
+    /* relay clicks + the cairn chorale */
+    const gates = this.plan.gates;
+    while (this.gatePtr < gates.length && gates[this.gatePtr].s - 95 <= s){
+      audio.click(gates[this.gatePtr].side);
+      this.gatePtr++;
+    }
+    const cairns = this.plan.cairns;
+    while (this.cairnPtr < cairns.length && cairns[this.cairnPtr].s <= s){
+      audio.chime(cairns[this.cairnPtr].note, cairns[this.cairnPtr].side);
+      this.cairnPtr++;
+    }
+
+    audio.update(dt, {
+      chapter, speed: rs.speed, phase: rs.phase,
+      caravanNear: this.life.events.caravanNear,
+      giantAudio: this.life.events.giantAudio,
+    });
+    hud.update(dt, chapter, rs.phase);
+
+    if (!Number.isFinite(rs.camPos.x + rs.camPos.y + rs.camPos.z)) this.nanFlag = true;
+    return rs;
+  }
+
+  dispose(){
+    this.scene.remove(this.sky.group);
+    this.sky.dispose();
+    this.road.dispose();
+    this.structs.dispose();
+    this.life.dispose();
+  }
+}
+
+class App {
+  constructor(){
+    this.canvas = document.getElementById('view');
+    this.hud = new Hud();
+    let renderer = null;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false,
+        powerPreference: 'high-performance' });
+    } catch (e) {
+      this.hud.error('WebGL could not start — this world needs a GPU-capable browser.');
+      throw e;
+    }
+    this.renderer = renderer;
+    if (!renderer.capabilities.isWebGL2)
+      this.hud.error('WebGL2 unavailable — the Asterline needs it. Trying anyway…');
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.06;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.info.autoReset = false;
+    this.dpr = Math.min(window.devicePixelRatio || 1, QUALITY.dpr);
+    renderer.setPixelRatio(this.dpr);
+
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x050308);
+    this.camera = new THREE.PerspectiveCamera(66, 1, 0.3, 60000);
+
+    /* single-sample half-float target: no MSAA gamble, no black frames */
+    const rt = new THREE.WebGLRenderTarget(8, 8, { type: THREE.HalfFloatType, samples: 0 });
+    this.composer = new EffectComposer(renderer, rt);
+    this.renderPass = new RenderPass(this.scene, this.camera);
+    this.composer.addPass(this.renderPass);
+    if (QUALITY.bloom){
+      this.bloom = new UnrealBloomPass(new THREE.Vector2(8, 8), 0.55, 0.32, 0.82);
+      this.composer.addPass(this.bloom);
+    }
+    this.composer.addPass(new OutputPass());
+
+    this.input = new Input();
+    this.input.bind();
+    this.input.onRestart = () => this.restart();
+    this.input.onDiag = () => this.hud.toggleDiag();
+
+    this.audio = null;   // created with the world
+    this.world = null;
+    this._lastFrameT = 0;
+    this.frameTimes = new Float32Array(240);
+    this.frameIdx = 0; this.frameCount = 0;
+    this.lastDraws = 0; this.lastTris = 0;
+    this.diagTimer = 0;
+    this.contextLost = false;
+
+    window.addEventListener('resize', () => this.resize());
+    this.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.contextLost = true; });
+    this.canvas.addEventListener('webglcontextrestored', () => { this.contextLost = false; this.resize(); });
+    window.addEventListener('error', (e) => {
+      this.hud.error('a fault in the relay: ' + (e.message || 'unknown'));
+    });
+  }
+
+  buildWorld(){
+    this.world = new World(this.scene, CONFIG.seed, this.input, CONFIG.jump);
+    if (!this.audio) this.audio = new AudioEngine(this.world.plan);
+    this.input.onGesture = () => { this.audio.start(); this.hud.gesture(); };
+    this.sceneReady = true;
+  }
+
+  restart(){
+    if (!this.world) return;
+    this.world.dispose();
+    this.world = new World(this.scene, CONFIG.seed, this.input, CONFIG.jump);
+    this.audio.reset(this.world.plan);
+    this.hud.lastChapter = -1;
+    this.frameIdx = 0; this.frameCount = 0;
+    this._lastFrameT = 0;
+  }
+
+  resize(){
+    const w = window.innerWidth, h = window.innerHeight;
+    this.renderer.setSize(w, h, false);
+    this.composer.setSize(w, h);
+    this.camera.aspect = w / h;
+    this.camera.updateProjectionMatrix();
+    if (this.world) this.world.sky.setPixelScale(this.dpr);
+  }
+
+  start(){
+    this.buildWorld();
+    this.resize();
+    this.exposeProof();
+    this.hud.boot();
+    this.renderer.setAnimationLoop(() => this.frame());
+  }
+
+  frame(){
+    if (this.contextLost) return;
+    const nowT = performance.now();
+    const dtRaw = this._lastFrameT ? (nowT - this._lastFrameT) / 1000 : 0.016;
+    this._lastFrameT = nowT;
+    const dt = clamp(dtRaw, 0.0001, 0.05);
+    this.input.update(dt);
+    const rs = this.world.update(dt, this.audio, this.hud);
+
+    const cam = this.camera;
+    cam.position.copy(rs.camPos);
+    cam.up.set(0, 1, 0);
+    cam.lookAt(rs.camTarget);
+    cam.rotateY(-rs.yaw);
+    cam.rotateX(-rs.pitch);
+    cam.rotateZ(rs.roll);
+
+    this.renderer.info.reset();
+    this.composer.render();
+    this.lastDraws = this.renderer.info.render.calls;
+    this.lastTris = this.renderer.info.render.triangles;
+
+    this.frameTimes[this.frameIdx] = dtRaw * 1000;
+    this.frameIdx = (this.frameIdx + 1) % this.frameTimes.length;
+    this.frameCount++;
+
+    this.diagTimer -= dt;
+    if (this.diagTimer <= 0){ this.diagTimer = 0.5; this.updateDiag(); }
+  }
+
+  frameStats(){
+    const n = Math.min(this.frameCount, this.frameTimes.length);
+    if (!n) return { fps: 0, p50: 0, p95: 0 };
+    const a = Array.from(this.frameTimes.subarray(0, n)).sort((x, y) => x - y);
+    const sum = a.reduce((p, c) => p + c, 0);
+    return {
+      fps: Math.round(1000 / (sum / n) * 10) / 10,
+      p50: Math.round(a[Math.floor(n * 0.5)] * 100) / 100,
+      p95: Math.round(a[Math.min(n - 1, Math.floor(n * 0.95))] * 100) / 100,
+    };
+  }
+
+  glInfo(){
+    try {
+      const gl = this.renderer.getContext();
+      const ext = gl.getExtension('WEBGL_debug_renderer_info');
+      if (ext) return gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+      return gl.getParameter(gl.RENDERER);
+    } catch (e) { return 'unknown'; }
+  }
+
+  exposeProof(){
+    const app = this;
+    const proof = {
+      get seed(){ return app.world.plan.seed; },
+      get quality(){ return CONFIG.quality; },
+      get jump(){ return CONFIG.jump; },
+      get planHash(){ return app.world.plan.hashes.planHash; },
+      get routeHash(){ return app.world.plan.hashes.routeHash; },
+      get forkHash(){ return app.world.plan.hashes.forkHash; },
+      get chapterHash(){ return app.world.plan.hashes.chapterHash; },
+      get infraHash(){ return app.world.plan.hashes.infraHash; },
+      get transitHash(){ return app.world.plan.hashes.transitHash; },
+      get ambientHash(){ return app.world.plan.hashes.ambientHash; },
+      get rareHash(){ return app.world.plan.hashes.rareHash; },
+      get routeLength(){ return app.world.plan.L; },
+      get chapterSpans(){ return app.world.plan.spans.map((sp, i) => ({ chapter: CHAPTERS[i].name, s0: sp.s0, s1: sp.s1 })); },
+      get fork(){ const f = app.world.plan.fork;
+        return { side: f.side, sFork: f.sFork, sRejoin: f.sRejoin,
+                 outerOffset: Math.round(f.outerD * 10) / 10, innerOffset: Math.round(f.innerD * 10) / 10 }; },
+      get anomalies(){ return { impossible: app.world.plan.anomalies.impossible,
+                                subtle: app.world.plan.anomalies.subtle.slice(), unsentReply: true }; },
+      get counts(){
+        const c = app.world.structs.counts;
+        return {
+          gates: c.gates, pylons: c.pylons, cairns: c.cairns, satellites: c.sats,
+          sails: c.sails, undersidePods: c.pods, trackerObservatories: c.trackers,
+          caravans: 3, caravanAModules: app.world.plan.transit.modulesA.length + 1,
+          drones: app.world.life.droneCount,
+          faunaGroups: app.world.plan.fauna.length,
+          faunaRays: app.world.plan.fauna.reduce((a, f) => a + f.n, 0),
+          stars: app.world.sky.starCount, motes: QUALITY.motes,
+          giantPassagesScheduled: app.world.plan.giants.length,
+          meteorsScheduled: app.world.plan.meteors.length,
+        };
+      },
+      get minRoadClearance(){ return Math.round(app.world.structs.minClearance * 100) / 100; },
+      get audit(){ return { ...app.world.audit, runtimeNaN: app.world.nanFlag }; },
+      get finiteOk(){ return app.world.audit.finite && !app.world.nanFlag; },
+      get chunksActive(){ return app.world.road.live.size; },
+      get chunksRetained(){ return app.world.road.live.size; },
+      get chunksBuiltTotal(){ return app.world.road.built; },
+      get chunksDroppedTotal(){ return app.world.road.dropped; },
+      get drawCalls(){ return app.lastDraws; },
+      get triangles(){ return app.lastTris; },
+      get frame(){ return app.frameStats(); },
+      get routeDistance(){ return Math.round(app.world.rider.s * 10) / 10; },
+      get chapter(){ const c = app.world.route.chapterAt(app.world.rider.s);
+        return { index: c + 1, name: CHAPTERS[c].name }; },
+      get renderer(){ return app.glInfo(); },
+      get resolution(){ return [app.renderer.domElement.width, app.renderer.domElement.height]; },
+      get devicePixelRatio(){ return app.dpr; },
+      get audioNodes(){ return app.audio ? app.audio.oneShots : 0; },
+    };
+    Object.defineProperty(window, '__proof', { value: Object.freeze(proof), writable: false, configurable: false });
+  }
+
+  updateDiag(){
+    if (!this.hud.diagOn) return;
+    const p = window.__proof;
+    const f = p.frame;
+    this.hud.setDiag(
+`ASTERLINE RELAY · diagnostics
+seed        ${p.seed}   quality ${p.quality}
+plan        ${p.planHash}  route ${p.routeHash}  fork ${p.forkHash}
+chapters    ${p.chapterHash}  infra ${p.infraHash}  transit ${p.transitHash}
+ambient     ${p.ambientHash}  rare ${p.rareHash}
+length      ${p.routeLength} m   s ${p.routeDistance}   ch ${p.chapter.index} ${p.chapter.name}
+fork        side ${p.fork.side > 0 ? 'R' : 'L'}  ${p.fork.sFork}→${p.fork.sRejoin}
+anomalies   ${p.anomalies.impossible} + ${p.anomalies.subtle.join(', ')}
+clearance   ${p.minRoadClearance} m   finite ${p.finiteOk}
+grade max   ${(p.audit.maxGrade * 100).toFixed(1)}%   minR ${p.audit.minTurnRadius.toFixed(0)} m
+chunks      ${p.chunksActive} live · ${p.chunksBuiltTotal} built · ${p.chunksDroppedTotal} dropped
+draws       ${p.drawCalls}   tris ${(p.triangles / 1000).toFixed(0)}k
+frame       ${f.fps} fps · p50 ${f.p50} ms · p95 ${f.p95} ms
+gl          ${String(p.renderer).slice(0, 60)}
+res         ${p.resolution.join('×')} @ ${p.devicePixelRatio}x   audio 1-shots ${p.audioNodes}`);
+  }
+}
+
+/* --------------------------------- boot ------------------------------------ */
+const app = new App();
+app.start();
+window.__app = app;
+</script>
+</body>
+</html>
