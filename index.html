@@ -183,14 +183,19 @@ vec3 prismColor(float t, float amberBias){
    inhale/exhale of the already-lit line.                                    */
 const GLSL_WAKE = `
 uniform float uCrown;
+uniform float uRush;
+uniform float uPulseS;
+uniform float uPulseAmp;
 float wakeEnv(float s, float ws, float breath){
   float d = s - ws;
-  float aheadWin = 95.0 + uCrown * 130.0;
+  float aheadWin = 95.0 + uCrown * 130.0 + uRush * 55.0;
   float ahead  = smoothstep(aheadWin, 18.0, d) * step(0.0, d);
   float behind = step(d, 0.0);
-  float crest  = exp(-abs(d) * (0.028 - uCrown * 0.010));
+  float crest  = exp(-abs(d) * (0.025 - uCrown * 0.009));
   float after  = behind * (0.20 + 0.06 * breath + 0.15 * uCrown);
-  return max(after, crest * (0.55 + 0.45 * ahead));
+  float body   = max(after, crest * (0.55 + 0.45 * ahead) * (1.0 + 0.45 * uRush));
+  float pulse  = uPulseAmp * exp(-abs(s - uPulseS) * 0.045);
+  return max(body, pulse);
 }
 `;
 
@@ -831,6 +836,7 @@ class SkySystem {
     this._buildPlanet();
     this._buildEclipse();
     this._buildScrims();
+    this._buildAurora();
     this._buildNetwork();
     this._buildEcho();
     this._buildMotes();
@@ -884,7 +890,9 @@ class SkySystem {
       const m = rr.float();
       let c0 = PAL.bone;
       if (m < 0.16) c0 = PAL.gold; else if (m < 0.21) c0 = PAL.coral;
-      else if (m < 0.235) c0 = PAL.raspberry; else if (m < 0.245) c0 = PAL.teal;
+      else if (m < 0.235) c0 = PAL.raspberry; else if (m < 0.25) c0 = PAL.teal;
+      else if (m < 0.262) c0 = PAL.magenta;
+      else if (m < 0.272) c0 = new THREE.Color(0x9fe24f);
       const b = rr.range(0.35, 1.0) * (m < 0.06 ? 1.5 : 1.0);
       col[i * 3] = c0.r * b; col[i * 3 + 1] = c0.g * b; col[i * 3 + 2] = c0.b * b;
       attr[i * 3] = rr.range(1.1, 2.6) * (m < 0.06 ? 1.7 : 1.0);
@@ -1091,6 +1099,25 @@ class SkySystem {
     const disc = new THREE.Mesh(discG, discMat);
     disc.position.z = 40;
     grp.add(disc);
+    /* quiet rainbow halo — the light remembering it is many colours */
+    const haloG = new THREE.RingGeometry(R * 2.10, R * 2.62, 72, 1);
+    const haloMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      uniforms: { uR0: { value: R * 2.10 }, uR1: { value: R * 2.62 } },
+      vertexShader: `varying vec2 vP; void main(){ vP = position.xy;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        varying vec2 vP; uniform float uR0, uR1;
+        void main(){
+          float rr = clamp((length(vP) - uR0) / (uR1 - uR0), 0.0, 1.0);
+          vec3 hue = 0.55 + 0.45 * cos(6.28318 * (0.02 + rr * 0.72 + vec3(0.00, 0.33, 0.67)));
+          float a = pow(sin(rr * 3.14159), 1.6) * 0.20;
+          gl_FragColor = vec4(pow(hue, vec3(1.2)) * a * 1.6, a);
+        }`,
+    });
+    const halo = new THREE.Mesh(haloG, haloMat);
+    grp.add(halo);
+    this._track(haloG, haloMat);
     grp.scale.setScalar(1);
     this.eclipse = grp;
     this.group.add(grp);
@@ -1129,6 +1156,55 @@ class SkySystem {
       this._track(g);
     }
     this._track(mat);
+  }
+
+  /* ---- aurora veils — the sky's own slow rainbow ------------------------- */
+  _buildAurora(){
+    const rr = new Stream(this.plan.seed, 'real:aurora');
+    this.auroras = [];
+    const fr2 = makeFrame();
+    for (let i = 0; i < 3; i++){
+      const mat = new THREE.ShaderMaterial({
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+        uniforms: { uTime: { value: 0 }, uPhase: { value: rr.range(0, 10) } },
+        vertexShader: `
+          varying vec2 vUv; uniform float uTime, uPhase;
+          void main(){
+            vUv = uv;
+            vec3 p = position;
+            p.z += sin(uv.x * 9.0 + uTime * 0.05 + uPhase) * 60.0
+                 + sin(uv.x * 23.0 - uTime * 0.03 + uPhase * 2.0) * 24.0;
+            p.y += sin(uv.x * 5.0 + uTime * 0.04 + uPhase) * 0.03;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+          }`,
+        fragmentShader: `
+          varying vec2 vUv; uniform float uTime, uPhase;
+          void main(){
+            float bands = 0.5 + 0.5 * sin(vUv.x * 30.0 + uTime * 0.05 + uPhase * 7.0);
+            bands = pow(bands, 2.4);
+            float rays = 0.6 + 0.4 * sin(vUv.x * 90.0 - uTime * 0.02 + uPhase);
+            float vfade = smoothstep(0.02, 0.30, vUv.y) * (1.0 - smoothstep(0.55, 0.98, vUv.y));
+            float hfade = smoothstep(0.0, 0.14, vUv.x) * (1.0 - smoothstep(0.86, 1.0, vUv.x));
+            vec3 hue = 0.55 + 0.45 * cos(6.28318 * (vUv.x * 0.85 + uTime * 0.004 + uPhase + vec3(0.00, 0.33, 0.67)));
+            float a = bands * rays * vfade * hfade * 0.19;
+            gl_FragColor = vec4(pow(hue, vec3(1.25)) * a * 1.5, a);
+          }`,
+      });
+      const g = new THREE.PlaneGeometry(1, 1, 56, 1);
+      const m = new THREE.Mesh(g, mat);
+      const sFrac = i === 0 ? 0.13 : rr.range(0.3, 0.9);
+      this.route.frameAt(sFrac * this.plan.L, 'base', fr2);
+      const side = i === 0 ? -this.plan.celestial.planetSide : rr.sign();
+      const dist = rr.range(1700, 3100);
+      m.position.copy(fr2.pos).addScaledVector(fr2.right, side * dist);
+      m.position.y += rr.range(380, 780);
+      m.scale.set(rr.range(2200, 3800), rr.range(650, 1100), 1);
+      m.lookAt(fr2.pos.clone().add(new THREE.Vector3(0, m.position.y * 0.5, 0)));
+      m.renderOrder = -12;
+      this.auroras.push(m);
+      this.group.add(m);
+      this._track(g, mat);
+    }
   }
 
   /* ---- the wider network — faint far asterlines -------------------------- */
@@ -1264,17 +1340,18 @@ class SkySystem {
     const g = new THREE.PlaneGeometry(900, 14, 1, 1);
     this.meteorMat = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-      uniforms: { uLife: { value: 0 } },
+      uniforms: { uLife: { value: 0 }, uHue: { value: 0 } },
       vertexShader: `varying vec2 vUv; void main(){ vUv = uv;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: `
-        varying vec2 vUv; uniform float uLife;
+        varying vec2 vUv; uniform float uLife, uHue;
         void main(){
           float head = smoothstep(0.0, 0.85, vUv.x);
           float tail = 1.0 - smoothstep(0.85, 1.0, vUv.x);
           float w = smoothstep(0.0, 0.45, vUv.y) * smoothstep(1.0, 0.55, vUv.y);
           float a = head * tail * w * uLife;
-          gl_FragColor = vec4(vec3(0.95, 0.82, 0.6) * a * 1.4, a);
+          vec3 spectral = 0.55 + 0.45 * cos(6.28318 * (uHue + vUv.x * 0.22 + vec3(0.00, 0.33, 0.67)));
+          gl_FragColor = vec4(pow(spectral, vec3(1.15)) * a * 1.5, a);
         }`,
     });
     this.meteorPool = [];
@@ -1302,6 +1379,7 @@ class SkySystem {
     this.networkMat.uniforms.uTime.value = t;
     this.networkMat.uniforms.uReply.value = anomalyState.reply || 0;
     for (const s of this.scrims) s.rotation.z += dt * s.userData.drift * 0.01;
+    for (const a of this.auroras) a.material.uniforms.uTime.value = t;
     if (this.echo){
       this.echoMat.uniforms.uTime.value = t;
       this.echoMat.uniforms.uOn.value = anomalyState.echo;
@@ -1319,6 +1397,7 @@ class SkySystem {
         slot.mesh.position.y = Math.abs(slot.mesh.position.y) * 0.6 + 2500;
         slot.mesh.lookAt(camPos);
         slot.mesh.rotateZ(ev.roll);
+        slot.mat.uniforms.uHue.value = ev.az / 6.28318;
         slot.vel = new THREE.Vector3(Math.cos(ev.roll), Math.sin(ev.roll) * 0.4, 0.2).normalize().multiplyScalar(2600 * ev.spd);
         slot.mesh.visible = true;
       }
@@ -1402,9 +1481,21 @@ const ROAD_FRAG = `
       float paneCell = smoothstep(0.42, 0.34, abs(fract(vS / 9.0 + 0.5) - 0.5)) *
                        smoothstep(0.50, 0.40, abs(fract((abs(vLat) - 3.5) / 1.12 + 0.5) - 0.5));
       float pane = paneBand * paneBlock * paneCell;
-      vec3 paneC = vec3(0.006, 0.016, 0.020) + vec3(0.03, 0.05, 0.055) *
-                   step(0.997, hash(floor(vec2(vS * 3.0, vLat * 3.0))));
+      float paneHue = hash(vec2(floor(vS / 9.0), floor((abs(vLat) - 3.5) / 1.12) + sign(vLat) * 4.0));
+      vec3 paneC = prismColor(paneHue * 0.9 + uTime * 0.006, uAmber) * 0.10
+                 + vec3(0.004, 0.010, 0.012);
       col = mix(base, paneC, pane * 0.85);
+      /* the painted wake: the road remembers every metre in colour */
+      float dBack = vS - uWakeS;
+      float back = 1.0 - smoothstep(-26.0, -6.0, dBack);
+      if (back > 0.004){
+        vec2 cellId = vec2(floor(vS / 6.0), floor((vLat + 5.4) / 2.7));
+        float lucky = step(0.93, hash(cellId * 1.71 + 3.7));
+        float amberEff = uAmber * (1.0 - smoothstep(30.0, 140.0, -dBack));
+        vec3 pc = prismColor(cellId.x * 0.047 + cellId.y * 0.13 + uTime * 0.012, amberEff);
+        float mosaic = 1.0 - 0.42 * max(seamL, seamT);
+        col += pc * back * (0.24 + 0.10 * uBreath) * (1.0 + lucky) * mosaic;
+      }
       /* warm centre datum */
       float datum = smoothstep(0.10, 0.035, abs(vLat)) * uDatum;
       glow += datum * (0.06 + 0.13 * wake);
@@ -1468,6 +1559,7 @@ class RoadSystem {
       uniforms: {
         uWakeS: { value: 0 }, uBreath: { value: 0 }, uTime: { value: 0 },
         uAmber: { value: 0 }, uDatum: { value: 1 }, uCrown: { value: 0 },
+        uRush: { value: 0 }, uPulseS: { value: -1e6 }, uPulseAmp: { value: 0 },
         uSun: { value: new THREE.Vector3(0, 1, 0) },
       },
     });
@@ -1652,6 +1744,7 @@ class RoadSystem {
       uniforms: {
         uWakeS: { value: 0 }, uBreath: { value: 0 }, uAmber: { value: 0 },
         uCrown: { value: 0 }, uTime: { value: 0 },
+        uRush: { value: 0 }, uPulseS: { value: -1e6 }, uPulseAmp: { value: 0 },
       },
       vertexShader: `
         attribute float aS; attribute float aE;
@@ -1674,9 +1767,12 @@ class RoadSystem {
           float wake = wakeEnv(vS, uWakeS, uBreath);
           float edge = smoothstep(0.66, 0.96, abs(vE));
           vec3 body = vec3(0.0165, 0.0170, 0.0200);
-          vec3 prism = prismColor(vS * 0.0042 + (vS - uWakeS) * 0.0021 + uTime * 0.012, uAmber);
+          float amberEff = uAmber * (1.0 - smoothstep(60.0, 300.0, uWakeS - vS));
+          vec3 prism = prismColor(vS * 0.0042 + (vS - uWakeS) * 0.0021 + uTime * 0.012, amberEff);
           float farBoost = 1.0 + smoothstep(500.0, 2600.0, vD) * 1.6;
-          vec3 col = body + prism * edge * (0.085 + 0.9 * wake) * farBoost;
+          float back = 1.0 - smoothstep(-20.0, 20.0, vS - uWakeS);
+          vec3 col = body + prism * edge * (0.085 + 0.9 * wake) * farBoost
+                   + prism * back * 0.22 * (0.6 + 0.4 * farBoost);
           float a = show * (0.95 - 0.25 * smoothstep(3000.0, 9000.0, vD));
           gl_FragColor = vec4(col, a);
         }`,
@@ -1696,9 +1792,13 @@ class RoadSystem {
   }
 
   /* ------------------------------ streaming ------------------------------ */
-  update(riderS, wakeS, breath, amber, sunDir, time, crown){
-    this.mat.uniforms.uCrown.value = crown || 0;
-    this.proxyMat.uniforms.uCrown.value = crown || 0;
+  update(riderS, wakeS, breath, amber, sunDir, time, crown, rush, pulseS, pulseAmp){
+    for (const mm of [this.mat, this.proxyMat]){
+      mm.uniforms.uCrown.value = crown || 0;
+      mm.uniforms.uRush.value = rush || 0;
+      mm.uniforms.uPulseS.value = (pulseS === undefined) ? -1e6 : pulseS;
+      mm.uniforms.uPulseAmp.value = pulseAmp || 0;
+    }
     this.mat.uniforms.uWakeS.value = wakeS;
     this.mat.uniforms.uBreath.value = breath;
     this.mat.uniforms.uAmber.value = amber;
@@ -1810,6 +1910,7 @@ function makeStructMaterial(){
       uSun: { value: new THREE.Vector3(0, 1, 0) }, uWakeS: { value: -1e5 },
       uBreath: { value: 0 }, uAmber: { value: 0 }, uBeacon: { value: 0 },
       uGiantDim: { value: 1 }, uTime: { value: 0 }, uCrown: { value: 0 },
+      uRush: { value: 0 }, uPulseS: { value: -1e6 }, uPulseAmp: { value: 0 },
     },
   });
 }
@@ -1986,6 +2087,8 @@ function buildCairn(kit, c, hw){
   }
   /* the throat lantern — sings when the wake passes */
   kit.prim(GeoKit.G.oct, compose(bx, y + 0.22, 0, 0, 0, 0, 0.20), PAL.gold, { glow: 2.0, wake: 1, s });
+  /* song shard: a slender light column that keeps the note */
+  kit.prim(GeoKit.G.oct, compose(bx, y + 2.0, 0, 0, 0, 0, 0.20, 2.1, 0.20), PAL.bone, { glow: 1.5, wake: 1, s });
 }
 
 /* ---------------------------- satellite archetypes ------------------------- */
@@ -2544,11 +2647,14 @@ class StructureSystem {
   }
 
   /* per-frame: satellite spin, sail tilt, tracker dishes follow the giant */
-  update(t, dt, sunDir, wakeS, breath, amber, beacon, giantDim, giantPos, crown){
+  update(t, dt, sunDir, wakeS, breath, amber, beacon, giantDim, giantPos, crown, rush, pulseS, pulseAmp){
     const u = this.mat.uniforms;
     u.uSun.value.copy(sunDir); u.uWakeS.value = wakeS; u.uBreath.value = breath;
     u.uAmber.value = amber; u.uBeacon.value = beacon; u.uGiantDim.value = giantDim;
     u.uCrown.value = crown || 0;
+    u.uRush.value = rush || 0;
+    u.uPulseS.value = (pulseS === undefined) ? -1e6 : pulseS;
+    u.uPulseAmp.value = pulseAmp || 0;
     u.uTime.value = t;
     this.sailMat.uniforms.uTime.value = t;
     this.sailMat.uniforms.uSun.value.copy(sunDir);
@@ -3252,9 +3358,8 @@ class Rider {
 
     if (this.phase === 'overlook'){
       this.overlookT += dt;
-      /* slow turn to see the whole lit Asterline behind */
-      const turn = smooth(clamp((this.overlookT - 2.0) / 9.0, 0, 1));
-      this.autoYaw = turn * Math.PI * 0.94;
+      /* gentle rise while the view pans back down the painted Asterline */
+      this.rise = smooth(clamp((this.overlookT - 3.0) / 8.0, 0, 1)) * 7.5;
       if (!this.ended && this.overlookT > 2.5) this.ended = true;
     }
 
@@ -3268,11 +3373,16 @@ class Rider {
     const ahead = 16 + this.speed * 0.9;
     rt.frameAt(Math.min(this.s + ahead, this.plan.L), this.lane, this._frAhead);
     this._camPos.copy(this._fr.pos)
-      .addScaledVector(this._fr.nrm, EYE)
+      .addScaledVector(this._fr.nrm, EYE + (this.rise || 0))
       .addScaledVector(this._fr.right, this.lat);
     this._camTarget.copy(this._frAhead.pos)
       .addScaledVector(this._frAhead.nrm, EYE * 0.92)
       .addScaledVector(this._frAhead.right, this.lat * 0.55);
+    if (this.phase === 'overlook' && this.overlookT > 2.0){
+      const turn = smooth(clamp((this.overlookT - 2.0) / 9.0, 0, 1));
+      rt.frameAt(Math.max(this.s - 64, 0), 'base', this._frAhead);
+      this._camTarget.lerp(this._frAhead.pos, turn);
+    }
 
     /* gentle roll into curves, capped well under 2.5 degrees */
     const k = rt.curvatureAt(this.s, this.lane);
@@ -3531,6 +3641,16 @@ class AudioEngine {
     }
   }
 
+  /* quick ascending sparkle — arch crossings and spectrum runners */
+  arpeggio(transpose = 12, gainMul = 0.5){
+    if (!this.enabled) return;
+    const degs = [0, 4, 7];
+    for (let i = 0; i < 3; i++){
+      const d = degs[i], pan = (i - 1) * 0.4;
+      setTimeout(() => this.chime(d, pan, gainMul, transpose), i * 130);
+    }
+  }
+
   /* the Unsent Reply: an answer from much too far away, much too soon */
   reply(){
     if (!this.enabled || this.replyPlayed) return;
@@ -3598,6 +3718,12 @@ class World {
     if (this.gatePtr < 0) this.gatePtr = this.plan.gates.length;
     this.cairnPtr = this.plan.cairns.findIndex(c => c.s > this.rider.s);
     if (this.cairnPtr < 0) this.cairnPtr = this.plan.cairns.length;
+    this.archPtr = this.plan.arches.findIndex(a => a.s - 20 > this.rider.s);
+    if (this.archPtr < 0) this.archPtr = this.plan.arches.length;
+    this.pulse = null;
+    this.rushSm = 0;
+    this.rodeOnce = false;
+    this.beaconPulsed = false;
     this.nanFlag = false;
   }
 
@@ -3635,10 +3761,36 @@ class World {
     const amber = smooth((s - spans[6].s0) / Math.max(1, (this.plan.L - spans[6].s0) * 0.55));
     const breath = 0.5 + 0.5 * Math.sin(TAU * t / 12);
     const crown = smooth((s - spans[5].s0) / 260) * (1 - smooth((s - spans[5].s1 + 60) / 260));
+    const rushT = clamp((rs.speed - CRUISE) / (VMAX - CRUISE), 0, 1);
+    this.rushSm += (rushT - this.rushSm) * Math.min(1, dt * 2.5);
+
+    /* spectrum runners: the first pedal, every arch, and the beacon's answer */
+    if (!this.rodeOnce && rs.phase === 'ride'){
+      this.rodeOnce = true;
+      this.pulse = { s0: s, t0: t, dir: 1 };
+    }
+    const arches = this.plan.arches;
+    while (this.archPtr < arches.length && arches[this.archPtr].s - 20 <= s){
+      this.pulse = { s0: arches[this.archPtr].s, t0: t, dir: 1 };
+      audio.arpeggio(12, 0.5);
+      this.archPtr++;
+    }
+    let pulseS = -1e6, pulseAmp = 0;
+    if (this.pulse){
+      const age = t - this.pulse.t0;
+      pulseS = this.pulse.s0 + this.pulse.dir * 135 * age;
+      pulseAmp = Math.max(0, 1 - age / 3.4) * 1.15;
+      if (pulseAmp <= 0) this.pulse = null;
+    }
 
     /* the receiving beacon wakes on distance travelled, never rider power */
     this.beaconV = smooth((s - (spans[6].s0 + 60)) / 420);
     if (this.beaconV > 0.45) audio.beacon();
+    if (!this.beaconPulsed && this.beaconV > 0.5){
+      this.beaconPulsed = true;
+      this.pulse = { s0: this.plan.L, t0: t, dir: -1 };
+      audio.arpeggio(19, 0.4);
+    }
 
     /* the Unsent Reply at the overlook */
     let replyV = 0;
@@ -3648,9 +3800,10 @@ class World {
       replyV = ru < 1 ? Math.sin(ru * Math.PI) : 0;
     }
 
-    this.road.update(s, s, breath, amber, this.sky.sunDir, t, crown);
+    this.road.update(s, s, breath, amber, this.sky.sunDir, t, crown, this.rushSm, pulseS, pulseAmp);
     this.structs.update(t, dt, this.sky.sunDir, s, breath, amber,
-                        Math.max(this.beaconV, replyV * 0.4), this.life.giantDim, this.life.giantPos, crown);
+                        Math.max(this.beaconV, replyV * 0.4), this.life.giantDim, this.life.giantPos, crown,
+                        this.rushSm, pulseS, pulseAmp);
     this.life.update(t, dt, s, chapter, this.sky.sunDir);
     this.sky.update(dt, t, rs.camPos, {
       missing: this.life.anom.missing, lost: this.life.anom.lost,
