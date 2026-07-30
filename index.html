@@ -161,7 +161,8 @@ const PAL = {
   burnt:     new THREE.Color(0xd95f18),  // burnt orange
   gold:      new THREE.Color(0xe8d5a0),  // old gold
   bone:      new THREE.Color(0xf2e9d8),  // bone light
-  teal:      new THREE.Color(0x3fd2c7),  // rare cold counterpoint
+  teal:      new THREE.Color(0x3fd2c7),  // cold counterpoint
+  magenta:   new THREE.Color(0xe84fd0),  // neon magenta, night-market voltage
 };
 
 /* GLSL palette ramp shared by every signal shader: the prismwake sequence.
@@ -169,20 +170,9 @@ const PAL = {
    counterpoint window. Chapter 7 biases everything toward amber/bone.       */
 const GLSL_PRISM = `
 vec3 prismColor(float t, float amberBias){
-  t = fract(t);
-  vec3 rasp = vec3(0.771, 0.042, 0.145);
-  vec3 cor  = vec3(1.000, 0.196, 0.096);
-  vec3 brn  = vec3(0.700, 0.114, 0.007);
-  vec3 gld  = vec3(0.822, 0.665, 0.353);
-  vec3 tea  = vec3(0.049, 0.640, 0.575);
-  vec3 c = rasp;
-  c = mix(c, cor, smoothstep(0.18, 0.36, t));
-  c = mix(c, brn, smoothstep(0.40, 0.58, t));
-  c = mix(c, gld, smoothstep(0.62, 0.80, t));
-  c = mix(c, rasp, smoothstep(0.90, 1.00, t));
-  float tealWin = smoothstep(0.845, 0.862, t) * (1.0 - smoothstep(0.878, 0.895, t));
-  c = mix(c, tea, tealWin * (1.0 - amberBias));
-  vec3 amber = mix(gld, vec3(0.900, 0.815, 0.640), 0.35);
+  vec3 c = 0.55 + 0.45 * cos(6.28318 * (t + vec3(0.00, 0.33, 0.67)));
+  c = pow(c, vec3(1.35)) * 1.28;
+  vec3 amber = vec3(0.900, 0.815, 0.640);
   return mix(c, amber, amberBias);
 }
 `;
@@ -199,7 +189,7 @@ float wakeEnv(float s, float ws, float breath){
   float ahead  = smoothstep(aheadWin, 18.0, d) * step(0.0, d);
   float behind = step(d, 0.0);
   float crest  = exp(-abs(d) * (0.028 - uCrown * 0.010));
-  float after  = behind * (0.16 + 0.05 * breath + 0.14 * uCrown);
+  float after  = behind * (0.20 + 0.06 * breath + 0.15 * uCrown);
   return max(after, crest * (0.55 + 0.45 * ahead));
 }
 `;
@@ -392,6 +382,23 @@ function buildPlan(seedStr){
       gates.push({ s: Math.round(s2), side: gs.sign(), variant: 4, h: gs.range(16, 26), reach: 0, backward: 0 });
     }
     gates.sort((a, b) => a.s - b.s);
+  }
+
+  /* ---- spectrum arches: celebration thresholds between chapters --------- */
+  const asr = new Stream(seedStr, 'arches');
+  const arches = [];
+  {
+    for (let c = 1; c <= 5; c++){
+      let s = spans[c].s0 + asr.range(-40, 40);
+      const mid = (sFork + sRejoin) / 2;
+      if (s > sFork - WIDEN - 80 && s < mid) s = sFork - WIDEN - 130;
+      else if (s >= mid && s < sRejoin + WIDEN + 80) s = sRejoin + WIDEN + 110;
+      arches.push({ s: Math.round(clamp(s, 220, L - 260)), r: asr.range(10.6, 12.6) });
+    }
+    const c6b = spans[5];
+    arches.push({ s: Math.round(lerp(c6b.s0, c6b.s1, 0.38)), r: asr.range(10.6, 12.4) });
+    arches.push({ s: Math.round(lerp(c6b.s0, c6b.s1, 0.62)), r: asr.range(10.6, 12.4) });
+    arches.sort((a, b) => a.s - b.s);
   }
 
   /* ---- chime cairns — the Cairn Chorale --------------------------------- */
@@ -594,7 +601,7 @@ function buildPlan(seedStr){
   }
 
   const plan = {
-    seed: seedStr, L, spans, route, fork, gates, cairns, motif, sats, sails, stations,
+    seed: seedStr, L, spans, route, fork, gates, arches, cairns, motif, sats, sails, stations,
     transit, drones, fauna, giants, meteors, celestial, anomalies, audioPlan, chunks,
   };
   plan.hashes = hashPlan(plan);
@@ -615,6 +622,7 @@ function hashPlan(p){
   const chapterHash = hc.hex();
   const hi = new Hasher();
   for (const g of p.gates) hi.num(g.s).num(g.side).num(g.variant).num(g.h).num(g.backward);
+  for (const a of p.arches) hi.num(a.s).num(a.r);
   for (const c of p.cairns) hi.num(c.s).num(c.side).num(c.note);
   for (const s of p.sats) hi.num(s.s).num(s.lat).num(s.h).num(s.variant).num(s.scale).num(s.tracker);
   for (const s of p.sails) hi.num(s.s).num(s.lat).num(s.h).num(s.size);
@@ -1137,7 +1145,8 @@ class SkySystem {
           float body = 0.05;
           float lights = step(0.982, fract(vUv.x * 90.0 - uTime * 0.015)) * (0.5 + 5.0 * uReply);
           float edge = smoothstep(0.0, 0.25, vUv.y) * smoothstep(1.0, 0.75, vUv.y);
-          vec3 col = vec3(0.10, 0.05, 0.06) * body + vec3(0.75, 0.45, 0.2) * lights;
+          vec3 dash = 0.55 + 0.45 * cos(6.28318 * (vUv.x * 4.0 + uTime * 0.006 + vec3(0.00, 0.33, 0.67)));
+          vec3 col = vec3(0.10, 0.05, 0.06) * body + pow(dash, vec3(1.3)) * lights * 0.9;
           gl_FragColor = vec4(col, edge * (0.5 + 0.3 * uReply));
         }`,
     });
@@ -1238,7 +1247,9 @@ class SkySystem {
           if (vA < 0.01) discard;
           vec2 q = gl_PointCoord - 0.5;
           float a = smoothstep(0.5, 0.1, length(q)) * vA * 0.30;
-          vec3 col = mix(vec3(0.55, 0.42, 0.24), vec3(0.10, 0.30, 0.28), step(0.93, vT));
+          vec3 col = vec3(0.55, 0.42, 0.24);
+          col = mix(col, vec3(0.42, 0.09, 0.36), step(0.86, vT));
+          col = mix(col, vec3(0.10, 0.30, 0.28), step(0.93, vT));
           gl_FragColor = vec4(col, a);
         }`,
     });
@@ -1368,7 +1379,7 @@ const ROAD_FRAG = `
     vec3 V = normalize(cameraPosition - vWorld);
     if (dot(n, V) < 0.0) n = -n;
     float wake = wakeEnv(vS, uWakeS, uBreath);
-    vec3 prism = prismColor(vS * 0.00135 + 0.22, uAmber);
+    vec3 prism = prismColor(vS * 0.0042 + (vS - uWakeS) * 0.0021 + uTime * 0.012, uAmber);
     vec3 col;
     float glow = 0.0; vec3 glowC = prism;
 
@@ -1397,7 +1408,10 @@ const ROAD_FRAG = `
       /* warm centre datum */
       float datum = smoothstep(0.10, 0.035, abs(vLat)) * uDatum;
       glow += datum * (0.06 + 0.13 * wake);
-      glowC = mix(vec3(0.82, 0.66, 0.35), prism, 0.25);
+      glowC = mix(vec3(0.82, 0.66, 0.35), prism, 0.55);
+      /* faint spectral sheen outside the tire line — casino floor, barely */
+      float shBand = smoothstep(1.6, 2.7, abs(vLat));
+      col += prismColor(vLat * 0.06 + vS * 0.002 + uTime * 0.01, uAmber) * shBand * 0.010;
       /* restrained specular from the eclipse light */
       vec3 H = normalize(uSun + V);
       float spec = pow(max(dot(n, H), 0.0), 42.0) * (0.05 + 0.10 * pane);
@@ -1409,7 +1423,7 @@ const ROAD_FRAG = `
       float lit = wake * step(0.28, fh);
       col = base;
       glow += lit * (0.55 + 0.85 * fh);
-      glowC = prismColor(vS * 0.00135 + 0.22 + fh * 0.05, uAmber);
+      glowC = prismColor(vS * 0.0042 + (vS - uWakeS) * 0.0021 + uTime * 0.012 + fh * 0.09, uAmber);
       float NdL = max(dot(n, uSun), 0.0);
       col += vec3(0.30, 0.14, 0.06) * NdL * 0.25;
     } else if (vPart < 2.5){
@@ -1431,9 +1445,10 @@ const ROAD_FRAG = `
       glow += 0.02;
       glowC = vec3(0.62, 0.45, 0.25);
     } else if (vPart < 4.5){
-      /* rib light slit */
+      /* rib light slit — candy-offset so neighbouring ribs walk the wheel */
       col = vec3(0.010, 0.008, 0.012);
-      glow += 0.05 + 1.35 * wake;
+      glowC = prismColor(floor(vS / 4.0 + 0.5) * 0.088 + uTime * 0.012, uAmber);
+      glow += (0.05 + 1.45 * wake) * (0.82 + 0.18 * sin(6.28318 * vS * 0.05 - uTime * 4.2));
     } else {
       /* fork island nose */
       col = vec3(0.0150, 0.0154, 0.0182);
@@ -1522,6 +1537,8 @@ class RoadSystem {
       for (let s = Math.ceil(s0 / step) * step; s < s1; s += step){
         rt.frameAt(s, chunk.lane, fr);
         const hw = rt.halfWidth(s, chunk.lane);
+        const ribIdx = Math.round(s / step);
+        const hM = (ribIdx % 4 === 0) ? 1.3 : ((ribIdx % 2) ? 0.82 : 1.0);
         for (const sd of [-1, 1]){
           const eo = sd * (hw + PARA_T * 0.5);
           fwd.copy(fr.tan).multiplyScalar(RIB_L * 0.5);
@@ -1534,10 +1551,10 @@ class RoadSystem {
           };
           const oIn = out.clone().negate(), oOut = out.clone();
           const iA = mk(t0, 0, oOut, 3), iB = mk(t1, 0, oOut, 3),
-                iC = mk(t1, RIB_H, oOut, 3), iD = mk(t0, RIB_H * 0.8, oOut, 3);
+                iC = mk(t1, RIB_H * hM, oOut, 3), iD = mk(t0, RIB_H * 0.8 * hM, oOut, 3);
           if (sd > 0) quad(iA, iB, iC, iD); else quad(iD, iC, iB, iA);
           const jA = mk(t0, 0, oIn, 4), jB = mk(t1, 0, oIn, 4),
-                jC = mk(t1, RIB_H, oIn, 4), jD = mk(t0, RIB_H * 0.8, oIn, 4);
+                jC = mk(t1, RIB_H * hM, oIn, 4), jD = mk(t0, RIB_H * 0.8 * hM, oIn, 4);
           if (sd > 0) quad(jD, jC, jB, jA); else quad(jA, jB, jC, jD);
           quad(iD, iC, jC, jD);
         }
@@ -1634,7 +1651,7 @@ class RoadSystem {
       transparent: true, depthWrite: false, side: THREE.DoubleSide,
       uniforms: {
         uWakeS: { value: 0 }, uBreath: { value: 0 }, uAmber: { value: 0 },
-        uCrown: { value: 0 },
+        uCrown: { value: 0 }, uTime: { value: 0 },
       },
       vertexShader: `
         attribute float aS; attribute float aE;
@@ -1647,7 +1664,7 @@ class RoadSystem {
         }`,
       fragmentShader: `
         varying float vS; varying float vE; varying float vD;
-        uniform float uWakeS, uBreath, uAmber;
+        uniform float uWakeS, uBreath, uAmber, uTime;
         ${GLSL_PRISM}
         ${GLSL_WAKE}
         void main(){
@@ -1657,7 +1674,7 @@ class RoadSystem {
           float wake = wakeEnv(vS, uWakeS, uBreath);
           float edge = smoothstep(0.66, 0.96, abs(vE));
           vec3 body = vec3(0.0165, 0.0170, 0.0200);
-          vec3 prism = prismColor(vS * 0.00135 + 0.22, uAmber);
+          vec3 prism = prismColor(vS * 0.0042 + (vS - uWakeS) * 0.0021 + uTime * 0.012, uAmber);
           float farBoost = 1.0 + smoothstep(500.0, 2600.0, vD) * 1.6;
           vec3 col = body + prism * edge * (0.085 + 0.9 * wake) * farBoost;
           float a = show * (0.95 - 0.25 * smoothstep(3000.0, 9000.0, vD));
@@ -1688,6 +1705,7 @@ class RoadSystem {
     this.mat.uniforms.uTime.value = time;
     this.mat.uniforms.uSun.value.copy(sunDir);
     this.proxyMat.uniforms.uWakeS.value = wakeS;
+    this.proxyMat.uniforms.uTime.value = time;
     this.proxyMat.uniforms.uBreath.value = breath;
     this.proxyMat.uniforms.uAmber.value = amber;
 
@@ -1772,11 +1790,13 @@ const STRUCT_FRAG = `
     vec3 col = vCol * (0.30 + 0.85 * NdL) + vCol * fill * vec3(0.16, 0.05, 0.04);
     float e = vGlow;
     if (vWake > 1.5){
-      e *= uBeacon;                                  /* beacon channel */
-      col += prismColor(0.72, 1.0) * e * 2.2;
+      e *= uBeacon;                                  /* beacon channel: slow neon cycle */
+      col += prismColor(uTime * 0.03 + vS * 0.0008, 0.5) * e * 2.2;
     } else if (vWake > 0.5){
-      float w = wakeEnv(vS, uWakeS, uBreath);        /* relay channel */
-      col += prismColor(vS * 0.00135 + 0.22, uAmber) * e * (0.05 + 1.9 * w) * uGiantDim;
+      float w = wakeEnv(vS, uWakeS, uBreath);        /* relay channel: rainbow + marquee */
+      float mar = 0.82 + 0.18 * sin(uTime * 3.0 + vS * 0.5);
+      col += prismColor(vS * 0.0042 + (vS - uWakeS) * 0.0021 + uTime * 0.012, uAmber)
+             * e * (0.05 + 1.9 * w) * mar * uGiantDim;
     } else {
       col += vCol * e * uGiantDim;                   /* steady lamps: colour is the lamp */
     }
@@ -2181,6 +2201,35 @@ function buildPod(kit, s, route){
   strut(kit, b.clone().addScaledVector(fr.nrm, -0.5), b.clone().addScaledVector(fr.nrm, -3.2).addScaledVector(fr.tan, 2), 0.08, HULL.rust, { s });
 }
 
+/* spectrum arch: a full overhead celebration ring. every point of the arc
+   sits exactly a.r >= 10.6 m from the centreline, outside the protected
+   corridor by construction. legs end in floating counter-pods.             */
+function buildSpectrumArch(kit, a){
+  const iron = HULL.iron, umber = HULL.umber;
+  const torus = new THREE.TorusGeometry(a.r, 0.26, 6, 40, Math.PI);
+  kit.prim(torus, compose(0, 0, 0), iron, { s: a.s });
+  torus.dispose();
+  const inner = new THREE.TorusGeometry(a.r - 0.02, 0.09, 4, 40, Math.PI);
+  kit.prim(inner, compose(0, 0, 0.30), umber, { s: a.s });
+  kit.prim(inner, compose(0, 0, -0.30), umber, { s: a.s });
+  inner.dispose();
+  /* rainbow beads + glow slats along the arc, hue graded by pseudo-s */
+  const N = 15;
+  for (let i = 0; i < N; i++){
+    const th = (0.06 + 0.88 * i / (N - 1)) * Math.PI;
+    const x = Math.cos(th) * a.r, y = Math.sin(th) * a.r;
+    kit.prim(GeoKit.G.oct, compose(x, y, 0, 0, 0, th, 0.34), PAL.gold,
+             { glow: 1.7, wake: 1, s: a.s + i * 10.5 });
+    kit.box(1.5, 0.13, 0.13, compose(Math.cos(th + 0.055) * (a.r - 0.42), Math.sin(th + 0.055) * (a.r - 0.42), 0, 0, 0, th + 0.055 + Math.PI / 2), PAL.bone,
+            { glow: 1.0, wake: 1, s: a.s + i * 10.5 + 5.0 });
+  }
+  for (const sd of [-1, 1]){
+    kit.box(0.7, 2.6, 0.7, compose(sd * a.r, -1.3, 0), iron, { s: a.s });
+    kit.box(1.6, 1.1, 1.6, compose(sd * a.r, -3.0, 0), HULL.slate, { s: a.s });
+    kit.prim(GeoKit.G.oct, compose(sd * a.r, -3.8, 0, 0, 0, 0, 0.3), PAL.teal, { glow: 0.9, s: a.s });
+  }
+}
+
 /* the twin lantern gates that announce the fork */
 function buildForkFurniture(kit, plan, route){
   const f = plan.fork; const fr = makeFrame();
@@ -2238,11 +2287,8 @@ const SAIL_FRAG = `
   void main(){
     vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
     float NdL = abs(dot(n, uSun));
-    vec3 warmA = vec3(0.30, 0.075, 0.045);
-    vec3 warmB = vec3(0.42, 0.26, 0.11);
-    vec3 cold  = vec3(0.05, 0.16, 0.15);
-    vec3 tint = mix(warmA, warmB, smoothstep(0.2, 0.8, vHue));
-    tint = mix(tint, cold, step(0.92, vHue));
+    vec3 wheel = 0.55 + 0.45 * cos(6.28318 * (vHue + vec3(0.00, 0.33, 0.67)));
+    vec3 tint = pow(wheel, vec3(1.5)) * 0.55;
     float grad = 0.45 + 0.55 * vUv.y;
     float edge = smoothstep(0.0, 0.05, vUv.x) * smoothstep(1.0, 0.95, vUv.x)
                * smoothstep(0.0, 0.05, vUv.y) * smoothstep(1.0, 0.95, vUv.y);
@@ -2261,7 +2307,7 @@ class StructureSystem {
     this.disposables = [this.mat];
     this.meshes = [];
     this.minClearance = 1e9;
-    this.counts = { gates: 0, pylons: 0, cairns: 0, sats: 0, sails: 0, pods: 0, trackers: 0 };
+    this.counts = { gates: 0, pylons: 0, cairns: 0, sats: 0, sails: 0, pods: 0, trackers: 0, arches: 0 };
     this._fr = makeFrame();
     this._tmpM = new THREE.Matrix4();
     this._build();
@@ -2319,6 +2365,21 @@ class StructureSystem {
       world.copy(fr.pos).addScaledVector(fr.right, g.side * (hw + PARA_T + 3.6));
       this._clear(world, 1.2, g.s);
       if (g.variant === 4) this.counts.pylons++; else this.counts.gates++;
+    }
+
+    for (const a of plan.arches){
+      route.frameAt(a.s, 'base', fr);
+      const kit = kitFor(a.s);
+      const mark = kit.base;
+      buildSpectrumArch(kit, a);
+      local.makeBasis(fr.right, fr.nrm, fr.tan).setPosition(fr.pos);
+      for (let i = mark; i < kit.base; i++){
+        world.set(kit.pos[i * 3], kit.pos[i * 3 + 1], kit.pos[i * 3 + 2]).applyMatrix4(local);
+        kit.pos[i * 3] = world.x; kit.pos[i * 3 + 1] = world.y; kit.pos[i * 3 + 2] = world.z;
+      }
+      world.copy(fr.pos).addScaledVector(fr.nrm, a.r);
+      this._clear(world, 0.4, a.s);
+      this.counts.arches = (this.counts.arches || 0) + 1;
     }
 
     for (const c of plan.cairns){
@@ -2538,8 +2599,8 @@ class StructureSystem {
 function buildCaravanModule(variant, seed){
   const kit = new GeoKit();
   const iron = HULL.iron, umber = HULL.umber, slate = HULL.slate;
-  const win = (x, y, z, n, dx, g = 0.9) => {
-    for (let i = 0; i < n; i++) kit.box(0.42, 0.5, 0.06, compose(x + i * dx, y, z), PAL.gold, { glow: g });
+  const win = (x, y, z, n, dx, g = 0.9, c = PAL.gold) => {
+    for (let i = 0; i < n; i++) kit.box(0.42, 0.5, 0.06, compose(x + i * dx, y, z), c, { glow: g });
   };
   if (variant === 0){        /* ridge coach */
     kit.box(7.4, 2.0, 2.4, compose(0, 0, 0), iron);
@@ -2561,8 +2622,9 @@ function buildCaravanModule(variant, seed){
     kit.box(6.8, 2.9, 2.2, compose(0, 0.3, 0), iron);
     kit.box(7.0, 0.4, 2.4, compose(0, -1.2, 0), umber);
     win(-2.4, 1.0, 1.14, 4, 1.5, 0.8);
-    win(-2.4, -0.2, 1.14, 5, 1.2, 0.55);
+    win(-2.4, -0.2, 1.14, 5, 1.2, 0.65, PAL.teal);
     win(-2.4, 1.0, -1.14, 4, 1.5, 0.8);
+    win(-2.4, -0.2, -1.14, 5, 1.2, 0.65, PAL.magenta);
     kit.box(1.2, 0.5, 1.6, compose(0.2, 2.0, 0), slate);
   } else {                   /* power module */
     kit.box(5.6, 1.8, 2.0, compose(0, 0, 0), umber);
@@ -2767,18 +2829,28 @@ class LifeSystem {
 
   /* ----------------------------- drones ---------------------------------- */
   _buildDrones(){
-    const kit = new GeoKit();
-    kit.prim(GeoKit.G.oct, compose(0, 0, 0, 0, 0, 0, 0.55, 0.75, 0.55), HULL.iron);
-    kit.box(0.9, 0.05, 0.35, compose(0, 0.12, 0, 0, 0, 0.2), HULL.umber);
-    kit.box(0.35, 0.05, 0.9, compose(0, -0.05, 0, 0.2, 0, 0), HULL.plum);
-    kit.prim(GeoKit.G.oct, compose(0, -0.28, 0, 0, 0, 0, 0.14), PAL.gold, { glow: 1.6 });
-    this.droneGeo = kit.build();
-    this.disposables.push(this.droneGeo);
+    const famColors = [PAL.gold, PAL.magenta, PAL.teal];
+    this.droneGeos = famColors.map((c) => {
+      const kit = new GeoKit();
+      kit.prim(GeoKit.G.oct, compose(0, 0, 0, 0, 0, 0, 0.55, 0.75, 0.55), HULL.iron);
+      kit.box(0.9, 0.05, 0.35, compose(0, 0.12, 0, 0, 0, 0.2), HULL.umber);
+      kit.box(0.35, 0.05, 0.9, compose(0, -0.05, 0, 0.2, 0, 0), HULL.plum);
+      kit.prim(GeoKit.G.oct, compose(0, -0.28, 0, 0, 0, 0, 0.14), c, { glow: 1.7 });
+      const g = kit.build();
+      this.disposables.push(g);
+      return g;
+    });
+    const famCount = [0, 0, 0];
+    for (const d of this.plan.drones) famCount[d.fam]++;
+    famCount[0] += QUALITY.droneExtra;
     this.droneCount = this.plan.drones.length + QUALITY.droneExtra;
-    this.droneInst = new THREE.InstancedMesh(this.droneGeo, this.mat, this.droneCount);
-    this.droneInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.droneInst.frustumCulled = false;
-    this.scene.add(this.droneInst); this.meshes.push(this.droneInst);
+    this.droneInsts = famCount.map((n, f) => {
+      const im = new THREE.InstancedMesh(this.droneGeos[f], this.mat, Math.max(n, 1));
+      im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      im.frustumCulled = false;
+      this.scene.add(im); this.meshes.push(im);
+      return im;
+    });
     /* cosmetic extras (quality realization only): more rib inspectors */
     const er = new Stream(this.plan.seed, 'real:dronesExtra');
     this.droneExtras = [];
@@ -2815,19 +2887,16 @@ class LifeSystem {
   }
 
   _updateDrones(t){
-    let idx = 0;
+    const idx = [0, 0, 0];
     const sc = this._v2.set(1, 1, 1);
-    for (const d of this.plan.drones){
+    const place = (d) => {
       this._droneAt(d, t, this._v, this._q);
       this._m.compose(this._v, this._q, sc);
-      this.droneInst.setMatrixAt(idx++, this._m);
-    }
-    for (const d of this.droneExtras){
-      this._droneAt(d, t, this._v, this._q);
-      this._m.compose(this._v, this._q, sc);
-      this.droneInst.setMatrixAt(idx++, this._m);
-    }
-    this.droneInst.instanceMatrix.needsUpdate = true;
+      this.droneInsts[d.fam].setMatrixAt(idx[d.fam]++, this._m);
+    };
+    for (const d of this.plan.drones) place(d);
+    for (const d of this.droneExtras) place(d);
+    for (const im of this.droneInsts) im.instanceMatrix.needsUpdate = true;
   }
 
   /* ----------------------------- kite-rays ------------------------------- */
@@ -2869,9 +2938,8 @@ class LifeSystem {
           vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
           float NdL = abs(dot(n, uSun));
           vec3 body = vec3(0.012, 0.008, 0.014);
-          vec3 edgeWarm = vec3(0.60, 0.34, 0.12);
-          vec3 edgeCold = vec3(0.10, 0.34, 0.30);
-          vec3 edgeC = mix(edgeWarm, edgeCold, step(0.8, vTint));
+          vec3 wheel = 0.55 + 0.45 * cos(6.28318 * (vTint + vec3(0.00, 0.33, 0.67)));
+          vec3 edgeC = pow(wheel, vec3(1.4)) * 0.75;
           float rim = smoothstep(0.75, 0.98, abs(vUv.y - 0.5) * 2.0);
           float tail = smoothstep(0.3, 0.0, vUv.x) * 0.5;
           vec3 col = body * (0.4 + 0.8 * NdL) + edgeC * (rim * 0.55 + tail * 0.2);
@@ -3637,7 +3705,7 @@ class App {
     if (!renderer.capabilities.isWebGL2)
       this.hud.error('WebGL2 unavailable — the Asterline needs it. Trying anyway…');
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.06;
+    renderer.toneMappingExposure = 1.12;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.info.autoReset = false;
     this.dpr = Math.min(window.devicePixelRatio || 1, QUALITY.dpr);
@@ -3653,7 +3721,7 @@ class App {
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.composer.addPass(this.renderPass);
     if (QUALITY.bloom){
-      this.bloom = new UnrealBloomPass(new THREE.Vector2(8, 8), 0.55, 0.32, 0.82);
+      this.bloom = new UnrealBloomPass(new THREE.Vector2(8, 8), 0.78, 0.42, 0.72);
       this.composer.addPass(this.bloom);
     }
     this.composer.addPass(new OutputPass());
@@ -3789,7 +3857,7 @@ class App {
       get counts(){
         const c = app.world.structs.counts;
         return {
-          gates: c.gates, pylons: c.pylons, cairns: c.cairns, satellites: c.sats,
+          gates: c.gates, pylons: c.pylons, spectrumArches: c.arches, cairns: c.cairns, satellites: c.sats,
           sails: c.sails, undersidePods: c.pods, trackerObservatories: c.trackers,
           caravans: 3, caravanAModules: app.world.plan.transit.modulesA.length + 1,
           drones: app.world.life.droneCount,
