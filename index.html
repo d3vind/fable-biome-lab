@@ -647,7 +647,7 @@ function strataForm(B,x,z,y0,opt,G){
     const hL=(hTot/levels)*G.r(0.75,1.3);
     const rTop=r*lerp(1,taper,1/levels)*G.r(0.9,1.02);
     const leanX=Math.cos(lean.az)*Math.tan(lean.a), leanZ=Math.sin(lean.az)*Math.tan(lean.a);
-    const bot=prev||setY(ring(x,z,G.r(0,6.28),r,sides,jit,G),y);
+    const bot=prev||setY(ring(x,z,G.r(0,6.28),r,sides,jit,G),y-3);
     let top=setY(ring(x,z,G.r(0,6.28),rTop*G.r(0.82,0.98),sides,jit,G),y+hL);
     top=leanPts(top,x,z,(y+hL-y0),leanX,leanZ);
     const c=bandFor(t,dCam);
