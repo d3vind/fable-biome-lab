@@ -759,12 +759,16 @@ const SISTERS=(()=>{
   const vm=Math.atan2(Math.sin(a1)+Math.sin(a2),Math.cos(a1)+Math.cos(a2));
   const across=vm+Math.PI*0.5;
   const towardPond=Math.atan2(POND.cx-KNOLL.x,POND.cz-KNOLL.z);
-  const SCL=[2.7,3.4,2.0], OFF=[-33,1,29];
+  const SCL=[2.7,3.5,2.0], OFF=[-33,1,29];
+  // the group stands on the crown's NEAR shoulder, stepped toward the mean
+  // sight-line: at reveal distance the dome's near flank dominates the frame,
+  // and elders on the far crown read smaller than their stature
+  const cx0=KNOLL.x+Math.sin(vm)*24, cz0=KNOLL.z+Math.cos(vm)*24;
   const out=[];
   for(let i=0;i<3;i++){
     const st=subStream('sister',i);
-    const x=KNOLL.x+Math.sin(across)*OFF[i]+st.r(-3,3);
-    const z=KNOLL.z+Math.cos(across)*OFF[i]+st.r(-3,3);
+    const x=cx0+Math.sin(across)*OFF[i]+st.r(-3,3);
+    const z=cz0+Math.cos(across)*OFF[i]+st.r(-3,3);
     out.push({x,z,fam:'windshaped',scl:SCL[i],lean:1,
       leanDir:towardPond+st.r(-0.15,0.15),                // combed down the combe
       s:KNOLL.g,enc:0.06,formation:'wind-sisters',fruit:false});
@@ -861,7 +865,7 @@ const GROVES=[];
       if(ri.s>PANELS[0].s0-20&&ri.s<PANELS[0].s1+20&&ri.u*(-S_LAND)>10&&ri.u*(-S_LAND)<PANELS[0].u1+14) continue;
       // the mown panel was cut this season: nothing grows tall in it
       { const pa=panelAt(x,z,ri); if(pa&&pa.P.mown&&pa.w>0.3) continue; }
-      if(Math.hypot(x-KNOLL.x,z-KNOLL.z)<84) continue;   // the Sisters share their skyline with nobody
+      if(Math.hypot(x-KNOLL.x,z-KNOLL.z)<KNOLL.r*1.38) continue;   // the whole dome is theirs: three, not "some"
       if(inSight(x,z,ri.s,ri.d,Math.sign(ri.u)||1)) continue;
       if(treeNear(x,z,2.0*scl+st.r(0.4,2.4))) continue;
       treeAdd({ x,z,fam,scl,lean:st.r(-1,1),leanDir:st.r(0,TAU),
@@ -2531,8 +2535,8 @@ const cloudMeshes=[];
       }
     }
   }
-  for(const bandCfg of [{n:6,rr:[950,1700],h:[330,400],span:[300,470],speed:0.46},
-                        {n:6,rr:[1700,3100],h:[430,530],span:[210,340],speed:0.24}]){
+  for(const bandCfg of [{n:6,rr:[1250,2000],h:[350,420],span:[300,470],speed:0.46},
+                        {n:6,rr:[2000,3300],h:[440,540],span:[210,340],speed:0.24}]){
     const B=Buf(); B.sway=0;
     for(let i=0;i<bandCfg.n;i++){
       const st=subStream('cloud',bandCfg.n,i);
@@ -2550,7 +2554,7 @@ const cloudMeshes=[];
         lobes.push({x:cx+dx*t*span*0.78+CLOUD.r(-10,10),y:baseY+up*span*0.2,z:cz+dz*t*span*0.78+CLOUD.r(-10,10),
           rx:r*CLOUD.r(0.95,1.15),ry:r*CLOUD.r(0.62,0.8),rz:r*CLOUD.r(0.95,1.15)});
       }
-      weldedPuff(B,lobes,st,col(0xFFFFFF),mixc(PAL.cloud,PAL.sky,0.16));
+      weldedPuff(B,lobes,st,col(0xFFFFFF),mixc(PAL.cloud,PAL.sky,0.32));
     }
     const m=new THREE.Mesh(bufGeo(B),cloudMat);
     m.matrixAutoUpdate=true; m.frustumCulled=false;
@@ -3452,7 +3456,12 @@ window.__SUMMERGLASS_TEST__={
   // this one is comparable against a fixed ceiling.
   budgetSweep(step){
     const st=step||24;
-    const out={maxTris:0, maxCalls:0, atG:0, stations:0, stepM:st, from:40, to:Math.floor(ROUTE_LEN-20)};
+    // five bearings per station: forward, and the drag-look range the island's
+    // own reveal is composed around. A bound that excludes the peak view is a
+    // bound on the wrong thing.
+    const YAWS=[0,0.38,-0.38,0.75,-0.75];
+    const out={maxTris:0, maxCalls:0, atG:0, atYawRad:0, stations:0, bearings:YAWS.length,
+      stepM:st, from:40, to:Math.floor(ROUTE_LEN-20)};
     const saveG=rider.g;
     for(let g=40; g<ROUTE_LEN-20; g+=st){
       let guard=0;
@@ -3461,15 +3470,17 @@ window.__SUMMERGLASS_TEST__={
       camera.position.set(fr.x+fr.lx*0.9, fr.y+EYE_H, fr.z+fr.lz*0.9);
       const la=frameAtG(Math.min(g+30,ROUTE_LEN-1));
       const pitch=clamp(Math.atan2(la.y-fr.y,30)*0.42+PITCH_BIAS,-0.55,0.5);
-      const yaw=Math.atan2(-fr.tx,-fr.tz);
-      camera.quaternion.setFromEuler(new THREE.Euler(pitch,yaw,0,'YXZ'));
-      camera.updateMatrixWorld();
-      refreshFrustum(camera);
+      const yaw0=Math.atan2(-fr.tx,-fr.tz);
       const isl=islandLocalOf(g);
-      const c=countIsland(isl?isl.copy:0);
+      for(const dy of YAWS){
+        camera.quaternion.setFromEuler(new THREE.Euler(pitch,yaw0+dy,0,'YXZ'));
+        camera.updateMatrixWorld();
+        refreshFrustum(camera);
+        const c=countIsland(isl?isl.copy:0);
+        if(c.tris>out.maxTris){ out.maxTris=c.tris; out.atG=Math.round(g); out.atYawRad=dy; }
+        out.maxCalls=Math.max(out.maxCalls,c.calls);
+      }
       out.stations++;
-      if(c.tris>out.maxTris){ out.maxTris=c.tris; out.atG=Math.round(g); }
-      out.maxCalls=Math.max(out.maxCalls,c.calls);
     }
     let guard=0;
     while(updateResidency(saveG,4)>0&&guard++<60){}

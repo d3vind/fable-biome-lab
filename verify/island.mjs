@@ -187,6 +187,7 @@ async function checkBudget(quality) {
   record(`budget/${quality}`,
     r.maxTris <= 120000 && r.maxCalls <= 45 && r.maxTris === r2.maxTris && P.errors.length === 0,
     {sweptMaxTriangles: r.maxTris, sweptMaxCalls: r.maxCalls, atG: r.atG,
+     atYawRad: r.atYawRad, bearings: r.bearings,
      stations: r.stations, stepM: r.stepM, repeatIdentical: r.maxTris === r2.maxTris,
      renderer: P.render.renderer, software: P.render.softwareRenderer, errors: P.errors.length});
 }
