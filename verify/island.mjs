@@ -175,20 +175,19 @@ async function checkResidencyAndPause() {
 }
 
 async function checkBudget(quality) {
-  const p = await open(browser, `iseed=ISLE-8421&quality=${quality}`);
-  let calls = 0, tris = 0, at = null;
-  const len = await p.evaluate(() => window.__SUMMERGLASS_TEST__.state().routeLen);
-  for (let g = 20; g < len - 20; g += 80) {
-    await p.evaluate(x => window.__SUMMERGLASS_TEST__.warp(x), g);
-    await p.waitForTimeout(120);
-    const r = await p.evaluate(() => window.__SUMMERGLASS_TEST__.budgetIsland());
-    if (r.calls > calls) calls = r.calls;
-    if (r.tris > tris) { tris = r.tris; at = g; }
-  }
+  // Deterministic swept maximum, not a sample: fixed stations every 24 m from
+  // g=40 to route end, rider camera posed analytically at each, residency
+  // settled synchronously, maximum over the sweep. A visible-triangle count is
+  // camera-dependent; only a stated sweep is comparable against a ceiling.
+  const p = await open(browser, `iseed=ISLE-8421&quality=${quality}`, {width: 1440, height: 900});
+  const r = await p.evaluate(() => window.__SUMMERGLASS_TEST__.budgetSweep(24));
+  const r2 = await p.evaluate(() => window.__SUMMERGLASS_TEST__.budgetSweep(24));
   const P = await proof(p);
   await p.close();
-  record(`budget/${quality}`, calls <= 45 && tris <= 120000 && P.errors.length === 0,
-    {peakIslandDrawCalls: calls, peakIslandTriangles: tris, worstAtG: at,
+  record(`budget/${quality}`,
+    r.maxTris <= 120000 && r.maxCalls <= 45 && r.maxTris === r2.maxTris && P.errors.length === 0,
+    {sweptMaxTriangles: r.maxTris, sweptMaxCalls: r.maxCalls, atG: r.atG,
+     stations: r.stations, stepM: r.stepM, repeatIdentical: r.maxTris === r2.maxTris,
      renderer: P.render.renderer, software: P.render.softwareRenderer, errors: P.errors.length});
 }
 

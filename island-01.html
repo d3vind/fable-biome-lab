@@ -457,13 +457,15 @@ H.terrain.feed(POND.g,POND.cx,POND.cz,POND.rx,POND.rz,POND.y);
 const KNOLL=(()=>{
   const g=POND.g+FORM.r(140,190);
   const fr=getFrame(LFRAME,g);
-  const off=(FORM.r(118,148))*S_LAND;
+  const off=(FORM.r(150,172))*S_LAND;
   return { x:fr.x+fr.lx*off, z:fr.z+fr.lz*off, g,
-           r:FORM.r(85,110), h:FORM.r(17,23) };
+           r:FORM.r(85,110), h:FORM.r(20,26) };
 })();
 const COMBE=(()=>{
   const pts=[];
-  pts.push([KNOLL.x,KNOLL.z]);
+  // the spring rises on the knoll's flank, forty metres downslope — a combe
+  // that begins at the summit would carve the knoll out from under its own trees
+  pts.push([lerp(KNOLL.x,POND.cx,0.26),lerp(KNOLL.z,POND.cz,0.26)]);
   pts.push([lerp(KNOLL.x,POND.cx,0.5)+FORM.r(-14,14),lerp(KNOLL.z,POND.cz,0.5)+FORM.r(-14,14)]);
   pts.push([POND.cx,POND.cz]);
   // downstream: away from the road, off the island's shoulder
@@ -540,8 +542,9 @@ function reliefL(x,z,d){
   r+=(fbmL(x/188+31.1,z/188+17.4)-0.5)*46;
   r+=(fbmL(x/62+7.7,z/62+41.3)-0.5)*12;
   r*=g;
-  { const dx=x-KNOLL.x, dz=z-KNOLL.z;
-    r+=KNOLL.h*Math.exp(-(dx*dx+dz*dz)/(KNOLL.r*KNOLL.r))*smooth(30,110,d); }
+  // (the knoll is imposed in groundL, not added here: a bump summed onto
+  // unconstrained noise stood eight metres BELOW the road on this seed, and a
+  // sunken knoll is how three forty-metre elders vanish from their own skyline)
   for(const b of THRESH_BANK){
     const dx=x-b.x, dz=z-b.z;
     r+=b.h*Math.exp(-(dx*dx+dz*dz)/(b.r*b.r))*smooth(EXCL+4,EXCL+16,d);
@@ -616,6 +619,12 @@ function groundL(x,z){
         y=lerp(y,Math.max(y,rim),smooth(RH+9,RH+26,ri.d)*(1-smooth(2.3,2.7,pr)));
       }
     } }
+  // the Sisters' knoll: its summit is DECLARED against the road's own height,
+  // so the crowns break the skyline from the lane at every station. The noise
+  // around it stays low, which gives the rise its prominence for free.
+  { const kdx=x-KNOLL.x, kdz=z-KNOLL.z, kd2=kdx*kdx+kdz*kdz;
+    const kw=Math.exp(-kd2/(KNOLL.r*KNOLL.r));
+    if(kw>0.02) y=lerp(y,ri.y+KNOLL.h,smooth(0.06,0.75,kw)); }
   y=shelfY(x,z,y);
   // within the shoulder the ground is never permitted above the lane's edge,
   // and the metre beside the stone always carries it
@@ -735,11 +744,22 @@ const BOUNDARY={ s0:movStart('headland')+FORM.r(10,50), s1:movEnd('headland')+FO
   }
 }
 
-// ---- wind-sisters: three elders on the knoll at the head of the combe ----
+// ---- wind-sisters: three elders on the knoll at the head of the combe.
+// A landmark has to be a shape you can name, so the line is laid ACROSS the
+// rider's own sight-lines — one designed viewpoint in the rows, one on the
+// headland — so the group reads side-on as one silhouette from both, never
+// end-on as three trunks. Tall, taller, short: a relationship, not a row.
 const SISTERS=(()=>{
+  // both sight-lines are FORWARD views a rider actually holds: one from the
+  // water-aperture approach (the composite: pond below, elders above), one
+  // from the early climb where the knoll stands off the shoulder
+  const vA=getFrame(LFRAME,clamp(POND.apertureG-45,0,LFRAME.len-1));
+  const vB=getFrame(LFRAME,clamp(POND.g+185,0,LFRAME.len-1));
+  const a1=Math.atan2(vA.x-KNOLL.x,vA.z-KNOLL.z), a2=Math.atan2(vB.x-KNOLL.x,vB.z-KNOLL.z);
+  const vm=Math.atan2(Math.sin(a1)+Math.sin(a2),Math.cos(a1)+Math.cos(a2));
+  const across=vm+Math.PI*0.5;
   const towardPond=Math.atan2(POND.cx-KNOLL.x,POND.cz-KNOLL.z);
-  const across=towardPond+Math.PI*0.5;
-  const SCL=[2.15,2.85,1.65], OFF=[-26,2,23];
+  const SCL=[2.7,3.4,2.0], OFF=[-33,1,29];
   const out=[];
   for(let i=0;i<3;i++){
     const st=subStream('sister',i);
@@ -809,7 +829,7 @@ const GROVES=[];
     const beyond=Math.abs((POND.cx-fr.x)*fr.lx+(POND.cz-fr.z)*fr.lz)+POND.rx+st.r(10,16);
     GROVES.push({ id:GROVES.length, s:POND.g+st.r(-24,10), side:S_LAND, off:beyond, rx:st.r(34,44), rz:st.r(38,52),
       rot:st.r(0,TAU), role:'wall', dens:1.0, mix:['beech','oak','beech','leaning'], enc:0.85, hero:false, pondWall:true });
-    GROVES.push({ id:GROVES.length, s:POND.g+st.r(46,90), side:S_LAND, off:beyond*st.r(0.8,0.95), rx:st.r(22,30), rz:st.r(26,36),
+    GROVES.push({ id:GROVES.length, s:POND.g+st.r(78,120), side:S_LAND, off:beyond*st.r(1.0,1.15), rx:st.r(22,30), rz:st.r(26,36),
       rot:st.r(0,TAU), role:'wall', dens:1.0, mix:['beech','oak','leaning'], enc:0.8, hero:false, pondWall:true });
   }
   for(const gr of GROVES) H.eco.feed(gr.s,gr.off,gr.side,gr.role);
@@ -841,7 +861,7 @@ const GROVES=[];
       if(ri.s>PANELS[0].s0-20&&ri.s<PANELS[0].s1+20&&ri.u*(-S_LAND)>10&&ri.u*(-S_LAND)<PANELS[0].u1+14) continue;
       // the mown panel was cut this season: nothing grows tall in it
       { const pa=panelAt(x,z,ri); if(pa&&pa.P.mown&&pa.w>0.3) continue; }
-      if(Math.hypot(x-KNOLL.x,z-KNOLL.z)<52) continue;
+      if(Math.hypot(x-KNOLL.x,z-KNOLL.z)<84) continue;   // the Sisters share their skyline with nobody
       if(inSight(x,z,ri.s,ri.d,Math.sign(ri.u)||1)) continue;
       if(treeNear(x,z,2.0*scl+st.r(0.4,2.4))) continue;
       treeAdd({ x,z,fam,scl,lean:st.r(-1,1),leanDir:st.r(0,TAU),
@@ -2192,7 +2212,11 @@ for(let k=0;k<XFORMS.length;k++){
     if(t.formation==='dappled-gate'){ tier=2; FORMATION_STAT.gates++; }
     else if(t.formation==='wind-sisters'){ tier=1; FORMATION_STAT.sisters++; }
     else if(t.fam==='orchard'){ tier=(t.d<30)?1:0; round=(t.d<30); FORMATION_STAT.orchard++; }
-    else { tier=1; FORMATION_STAT.boundary++; }   // ~20 m out: articulated crowns, welded trunks
+    else { tier=1; FORMATION_STAT.boundary++; }
+    // Boundary row stays tier 1, re-decided against the deterministic swept
+    // maximum: articulating it reads 118.3k on the default seed but 120.5k on
+    // COMBE-777 at high tier — over the ceiling on reachable seeds. At its
+    // honest twenty metres, welded tier-1 trunks carry the line.
     const overhang=(t.d<EXCL+10)?(t.roadY+9.0):undefined;
     buildTree(tier===2?nearB:massB,t,tier,overhang,round);
     FORMATION_STAT.built++;
@@ -2337,7 +2361,8 @@ function realizeBand(copy,bi){
         if(r2<0.62){ addFern(uB,x,y,z,st,mixc(PAL.woodDeep,PAL.leafShade,0.4),mixc(PAL.leafShade,PAL.meadow,0.35),st.r(0.46,0.92)); local.ferns++; }
         else if(r2<0.86){ addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.leafShade),0.34),gc.clone().lerp(col(PAL.meadow),0.34),st.r(0.28,0.58),st.i(4,6)); local.understory++; }
         else { addBlob(uB,x,y+0.18,z,st,st.r(0.42,0.78),st.r(0.30,0.52),st.r(0.42,0.78),mixc(PAL.meadow,PAL.leafShade,0.30),mixc(PAL.leafShade,PAL.woodDeep,0.26),0.18); local.shrubs++; }
-      } else if(enc<0.30&&slope<0.30&&r2<(ri.d>10?0.16:0.30)){
+      } else if(enc<0.30&&slope<0.30&&moist<0.28&&r2<(ri.d>10?0.16:0.30)){
+        // seedheads are a dry-field form: none stand in the combe's damp ground
         // seedheads in twos and threes: a lone stalk in open field is a post
         const nSt=st.i(2,3);
         for(let q=0;q<nSt;q++)
@@ -2506,8 +2531,8 @@ const cloudMeshes=[];
       }
     }
   }
-  for(const bandCfg of [{n:6,rr:[700,1500],h:[260,330],span:[300,470],speed:0.46},
-                        {n:6,rr:[1500,3000],h:[340,470],span:[210,340],speed:0.24}]){
+  for(const bandCfg of [{n:6,rr:[950,1700],h:[330,400],span:[300,470],speed:0.46},
+                        {n:6,rr:[1700,3100],h:[430,530],span:[210,340],speed:0.24}]){
     const B=Buf(); B.sway=0;
     for(let i=0;i<bandCfg.n;i++){
       const st=subStream('cloud',bandCfg.n,i);
@@ -3419,6 +3444,37 @@ window.__SUMMERGLASS_TEST__={
   budgetIsland(){ camera.updateMatrixWorld(); refreshFrustum(camera);
     const isl=islandLocalOf(rider.g);
     return countIsland(isl?isl.copy:0); },
+  // The honest budget number: a deterministic sweep, not a sample. Fixed
+  // stations every `step` metres along the whole route, the rider's camera
+  // posed analytically at each (same eye, lat, pitch law as the ride), full
+  // residency settled synchronously before each count, maximum reported.
+  // A visible-triangle count is camera-dependent; only a stated sweep like
+  // this one is comparable against a fixed ceiling.
+  budgetSweep(step){
+    const st=step||24;
+    const out={maxTris:0, maxCalls:0, atG:0, stations:0, stepM:st, from:40, to:Math.floor(ROUTE_LEN-20)};
+    const saveG=rider.g;
+    for(let g=40; g<ROUTE_LEN-20; g+=st){
+      let guard=0;
+      while(updateResidency(g,4)>0&&guard++<60){}
+      const fr=frameAtG(g);
+      camera.position.set(fr.x+fr.lx*0.9, fr.y+EYE_H, fr.z+fr.lz*0.9);
+      const la=frameAtG(Math.min(g+30,ROUTE_LEN-1));
+      const pitch=clamp(Math.atan2(la.y-fr.y,30)*0.42+PITCH_BIAS,-0.55,0.5);
+      const yaw=Math.atan2(-fr.tx,-fr.tz);
+      camera.quaternion.setFromEuler(new THREE.Euler(pitch,yaw,0,'YXZ'));
+      camera.updateMatrixWorld();
+      refreshFrustum(camera);
+      const isl=islandLocalOf(g);
+      const c=countIsland(isl?isl.copy:0);
+      out.stations++;
+      if(c.tris>out.maxTris){ out.maxTris=c.tris; out.atG=Math.round(g); }
+      out.maxCalls=Math.max(out.maxCalls,c.calls);
+    }
+    let guard=0;
+    while(updateResidency(saveG,4)>0&&guard++<60){}
+    return out;
+  },
   groundingProbe(){
     let worst=null, floating=0, maxAbove=-1e9, sampled=0;
     for(const t of TREES){
@@ -3434,6 +3490,17 @@ window.__SUMMERGLASS_TEST__={
       seated:{lowered:GROUND_STAT.lowered,raised:GROUND_STAT.raised,unseatable:GROUND_STAT.culled}};
   },
   markDebug(){ markProvenance('debug'); return RUN.provenance; },
+  knollProbe(){
+    const sis=TREES.filter(t=>t.formation==='wind-sisters');
+    return {
+      knoll:{x:+KNOLL.x.toFixed(1),z:+KNOLL.z.toFixed(1),g:Math.round(KNOLL.g),r:+KNOLL.r.toFixed(1),h:+KNOLL.h.toFixed(1)},
+      knollD:+routeInfoL(KNOLL.x,KNOLL.z).d.toFixed(1),
+      groundAtKnoll:+groundL(KNOLL.x,KNOLL.z).toFixed(2),
+      groundNearby:+groundL(KNOLL.x+60,KNOLL.z+60).toFixed(2),
+      roadYatG:+getFrame(LFRAME,clamp(KNOLL.g,0,LFRAME.len-1)).y.toFixed(2),
+      sisters:sis.map(t=>({x:+t.x.toFixed(1),z:+t.z.toFixed(1),y:t.y===undefined?null:+t.y.toFixed(2),scl:t.scl,uns:!!t.unseatable,d:+t.d.toFixed(1)})),
+    };
+  },
   // where the pond actually lands on screen, and the ground profile out to it
   pondProbe(){
     camera.updateMatrixWorld();
