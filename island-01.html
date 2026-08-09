@@ -1,0 +1,3411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Summerglass Island 01 — The Orchard Combe</title>
+<style>
+  html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#5EC2E8; }
+  canvas { display:block; }
+  #hint {
+    position:fixed; left:14px; bottom:12px; user-select:none; pointer-events:none;
+    color:#F2E3BC; text-shadow:0 1px 3px rgba(22,52,44,0.6);
+    font:14px system-ui, sans-serif; letter-spacing:0.02em; opacity:0.9; z-index:9;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.185.1/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hint">W/S ride &middot; A/D drift &middot; drag to look &middot; Space pause &middot; R restart</div>
+<script type="module">
+import * as THREE from 'three';
+// ============================================================
+// SUMMERGLASS ISLAND 01 — THE ORCHARD COMBE
+// A bounded, composable segment of road and land: an old worked
+// hillside — orchard rows above a spring-cut combe holding a
+// stock pond, a mown hay panel opposite, and an aged planted
+// boundary row on the climb out. Authored once, in LOCAL
+// coordinates, to be placed many times by a host that knows
+// nothing about the interior.
+//
+// Two stages, as in the keeper: the PLAN freezes the island's
+// identity from its seed, entirely in the local frame, before
+// either the quality tier or the placement is read; the
+// REALIZATION spends geometry on it at the chosen quality,
+// through whatever rigid transform the host hands down.
+// ============================================================
+
+const capturedErrors=[];
+window.addEventListener('error',(e)=>{ capturedErrors.push(String(e.message||e)); });
+window.addEventListener('unhandledrejection',(e)=>{ capturedErrors.push('rejection: '+String((e.reason&&e.reason.message)||e.reason)); });
+// three.js reports shader compile failures through console.error, which is not
+// a page error — capture those too, or the proof would miss a broken material
+{
+  const orig=console.error.bind(console);
+  console.error=(...args)=>{ try{
+    const s=args.map(a=>String(a)).join(' ');
+    if(/shader|program|webgl/i.test(s)) capturedErrors.push('console: '+s.slice(0,180));
+  }catch(e){} orig(...args); };
+}
+
+// ---------- island identity, quality, placement ----------
+const qs=new URLSearchParams(location.search);
+const ISLAND_ID='summerglass-island-01';
+const SEED_TEXT=(qs.get('iseed')&&qs.get('iseed').length)?qs.get('iseed'):'ISLE-8421';
+// the tier and the placement are not read until the plan is frozen; both
+// counters record when they first were, and the plan records what it saw
+let QUALITY_READS=0, QUALITY_READS_AT_PLAN=-1;
+let PLACEMENT_READS=0, PLACEMENT_READS_AT_PLAN=-1;
+const QUALITY=(()=>{ const q=(qs.get('quality')||'standard').toLowerCase();
+  return (q==='low'||q==='high')?q:'standard'; })();
+const readQuality=()=>{ QUALITY_READS++; return QUALITY; };
+const PLACEMENT_RAW={
+  headingDeg:(()=>{ const v=parseFloat(qs.get('heading')); return isFinite(v)?v:0; })(),
+  entryGradePct:(()=>{ const v=parseFloat(qs.get('egrade')); return isFinite(v)?Math.max(-2,Math.min(2,v)):0; })(),
+  copies:(qs.get('copies')==='2')?2:1,
+};
+const readPlacement=()=>{ PLACEMENT_READS++; return PLACEMENT_RAW; };
+
+function xmur3(str){ let h=1779033703^str.length;
+  for(let i=0;i<str.length;i++){ h=Math.imul(h^str.charCodeAt(i),3432918353); h=(h<<13)|(h>>>19); }
+  return ()=>{ h=Math.imul(h^(h>>>16),2246822507); h=Math.imul(h^(h>>>13),3266489909); return (h^=h>>>16)>>>0; };
+}
+const SEED_HASH=xmur3(ISLAND_ID+'::'+SEED_TEXT)();
+function mb32(a){ return ()=>{ a|=0; a=(a+0x6D2B79F5)|0;
+  let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t; return ((t^(t>>>14))>>>0)/4294967296; }; }
+function streamFrom(f){
+  return {
+    f, r:(a,b)=>a+(b-a)*f(), i:(a,b)=>Math.floor(a+(b-a+1)*f()),
+    chance:(p)=>f()<p, pick:(arr)=>arr[Math.floor(f()*arr.length)],
+    gauss:()=>{ let s=0; for(let k=0;k<4;k++) s+=f(); return (s-2)*0.72; },
+  };
+}
+// named, independent streams on the island's own seed channel — a change in
+// one can never perturb another
+function makeStream(name){ return streamFrom(mb32(xmur3(ISLAND_ID+'::'+SEED_TEXT+'::'+name)())); }
+// positional sub-stream: identity depends on (islandId, seed, name, ids) only,
+// never on realization order — so an object is the same object every time the
+// band re-enters residency, and the same object under every placement
+function subStream(name,...ids){ return streamFrom(mb32(xmur3(ISLAND_ID+'::'+SEED_TEXT+'::'+name+'#'+ids.join(','))())); }
+
+const ROUTE=makeStream('plan/route'), ELEV=makeStream('plan/elevation'),
+      LANDF=makeStream('plan/landform'), WATER=makeStream('plan/water'),
+      GROVE=makeStream('plan/groves'), ECO=makeStream('plan/ecology'),
+      FORM=makeStream('plan/formations'), LIFE=makeStream('plan/life'),
+      CLOUD=makeStream('host/clouds');
+
+// ---------- hashes ----------
+function fnv(){ let h=0x811C9DC5; return {
+  feed(...vals){ for(const v of vals){ const s=(typeof v==='number')?(Math.abs(v)<1e-7?'0.0000':v.toFixed(4)):String(v);
+    for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,0x01000193); } } },
+  hex(){ return (h>>>0).toString(16).padStart(8,'0'); } }; }
+const H={ route:fnv(), elev:fnv(), terrain:fnv(), eco:fnv(), life:fnv(), plan:fnv(), real:fnv() };
+
+// ---------- palette: the keeper's eight colours, one summer ----------
+const PAL={
+  sky:0x5EC2E8, cloud:0xFFFBEF, sunGrass:0xC3E56A, meadow:0x74B851,
+  leafShade:0x3C7A55, woodDeep:0x1B4239, bark:0x6B4A34, road:0xE9DCB4,
+  blossom:0xEBAFB9,
+};
+const EYE_H=1.86, PITCH_BIAS=0.052;
+const col=(h)=>new THREE.Color(h);
+const mixc=(a,b,t)=>col(a).lerp(col(b),t);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const lerp=(a,b,t)=>a+(b-a)*t;
+const smooth=(a,b,v)=>{ const t=clamp((v-a)/(b-a||1e-6),0,1); return t*t*(3-2*t); };
+const TAU=Math.PI*2;
+const lumOf=(c)=>0.2126*c.r+0.7152*c.g+0.0722*c.b;
+
+// ---------- frozen value noise (island-local: sampled in LOCAL coordinates
+// only, so the land is the same land under every placement) ----------
+function noiseTable(stream){ const T=new Float32Array(1024); for(let i=0;i<1024;i++) T[i]=stream.f(); return T; }
+function makeNoise2(T){
+  const hash=(x,y)=>{ let n=(x*374761393+y*668265263)|0; n=(n^(n>>>13))|0; n=Math.imul(n,1274126177); return T[((n^(n>>>16))>>>0)&1023]; };
+  return (x,y)=>{
+    const xi=Math.floor(x), yi=Math.floor(y), xf=x-xi, yf=y-yi;
+    const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+    return lerp(lerp(hash(xi,yi),hash(xi+1,yi),u),lerp(hash(xi,yi+1),hash(xi+1,yi+1),u),v);
+  };
+}
+const nLand=makeNoise2(noiseTable(LANDF)), nEco=makeNoise2(noiseTable(ECO));
+function fbmL(x,y){ return nLand(x,y)*0.53+nLand(x*2.07+7.7,y*2.07+3.1)*0.29+nLand(x*4.31+17.9,y*4.31+11.3)*0.18; }
+function fbmE(x,y){ return nEco(x,y)*0.62+nEco(x*2.51+5.1,y*2.51+9.7)*0.38; }
+
+// ============================================================
+// PLAN — MOVEMENTS
+// Five movements over roughly two kilometres: Threshold, The Rows,
+// The Spring Combe, The Headland, Handover. Not chapters of a journey —
+// one place, read in passing at ten metres a second.
+// ============================================================
+const CRUISE=10.0;
+const L_ISL=ROUTE.r(1900,2060);
+const MOV=[
+  {key:'threshold', name:'Threshold',        end:0.13},
+  {key:'rows',      name:'The Rows',         end:0.38},
+  {key:'combe',     name:'The Spring Combe', end:0.59},
+  {key:'headland',  name:'The Headland',     end:0.79},
+  {key:'handover',  name:'Handover',         end:1.0},
+];
+for(let i=0;i<MOV.length-1;i++) MOV[i].end=clamp(MOV[i].end+ROUTE.r(-0.012,0.012),(i?MOV[i-1].end:0)+0.06,0.96);
+const MOVS={}; for(const m of MOV) MOVS[m.key]=m.end*L_ISL;
+const movEnd=(k)=>MOVS[k];
+const movStart=(k)=>{ const i=MOV.findIndex(m=>m.key===k); return i?MOV[i-1].end*L_ISL:0; };
+function movementOf(s){ const f=clamp(s,0,L_ISL)/L_ISL;
+  for(const m of MOV) if(f<=m.end) return m.name; return MOV[MOV.length-1].name; }
+H.route.feed(L_ISL); for(const m of MOV) H.route.feed(m.end);
+
+const GRADE_CAP=0.066;
+const MIN_RADIUS=158;
+const SDS=2;
+
+// ============================================================
+// PLAN — CENTRELINE (LOCAL)
+// Entry at the local origin, tangent along +Z. Curvature is three broad
+// composed bows — out along the rows, back around the pool, out again on
+// the climb — plus a small seeded wobble, faded at both ends so the
+// boundary tangents are exact.
+// ============================================================
+const BOWS=[];
+{
+  // deliberate bows: sign convention measured, budget enforced numerically
+  const b=(s0,s1,deg)=>BOWS.push({s0,s1,a:(deg*Math.PI/180)/((s1-s0)*2/Math.PI)});
+  const j=(lo,hi)=>ROUTE.r(lo,hi);
+  b(j(110,150), j(660,720),  j(30,40));     // out along the rows
+  b(j(640,690), j(1250,1310),-j(44,54));    // the bow around the pool
+  b(j(1230,1280),j(1780,1840), j(30,40));   // out again along the headland
+  for(const w of BOWS) H.route.feed(w.s0,w.s1,w.a);
+}
+const WOB={ wl:ROUTE.r(300,420), a:1/ROUTE.r(1600,2400), ph:ROUTE.r(0,TAU) };
+H.route.feed(WOB.wl,WOB.a,WOB.ph);
+function curvatureAt(s){
+  let k=0;
+  for(const w of BOWS){
+    if(s<w.s0||s>w.s1) continue;
+    k+=w.a*Math.sin(Math.PI*(s-w.s0)/(w.s1-w.s0));
+  }
+  k+=WOB.a*Math.sin(TAU*s/WOB.wl+WOB.ph)*smooth(40,180,s)*(1-smooth(L_ISL-180,L_ISL-40,s));
+  return k;
+}
+
+// ============================================================
+// PLAN — ELEVATION (LOCAL)
+// A rise through the rows, a fall into the combe, the climb over the
+// headland, and an easing to the exit. Grades are zero at both ends by
+// construction; the keeper's grade cap and vertical easing still apply.
+// ============================================================
+const ELEV_P={
+  rise:ELEV.r(5.4,6.8), fall:ELEV.r(7.2,8.8), climb:ELEV.r(9.6,11.4), ease:ELEV.r(3.8,5.0),
+  r1:[ELEV.r(70,100),ELEV.r(520,580)], r2:[ELEV.r(600,650),ELEV.r(990,1040)],
+  r3:[ELEV.r(1100,1150),ELEV.r(1460,1510)], r4:[ELEV.r(1540,1590),ELEV.r(1870,1920)],
+};
+const ROLLERS=[
+  {wl:ELEV.r(230,300),a:ELEV.r(0.55,0.95),ph:ELEV.r(0,TAU)},
+  {wl:ELEV.r(380,470),a:ELEV.r(0.5,0.9),ph:ELEV.r(0,TAU)},
+];
+H.elev.feed(ELEV_P.rise,ELEV_P.fall,ELEV_P.climb,ELEV_P.ease);
+for(const r of ROLLERS) H.elev.feed(r.wl,r.a,r.ph);
+function baseElev(s){
+  let y=ELEV_P.rise*smooth(ELEV_P.r1[0],ELEV_P.r1[1],s)
+       -ELEV_P.fall*smooth(ELEV_P.r2[0],ELEV_P.r2[1],s)
+       +ELEV_P.climb*smooth(ELEV_P.r3[0],ELEV_P.r3[1],s)
+       -ELEV_P.ease*smooth(ELEV_P.r4[0],ELEV_P.r4[1],s);
+  const fade=smooth(30,170,s)*(1-smooth(L_ISL-170,L_ISL-30,s));
+  for(const r of ROLLERS) y+=r.a*Math.sin(TAU*s/r.wl+r.ph)*fade;
+  return y;
+}
+function blurArray(y,passes){
+  const n=y.length, t=new Float32Array(n);
+  for(let p=0;p<passes;p++){
+    t[0]=y[0]; t[n-1]=y[n-1];
+    for(let i=1;i<n-1;i++) t[i]=(y[i-1]+y[i]*2+y[i+1])*0.25;
+    y.set(t);
+  }
+}
+const EDS=2;
+const ELEVATION=(()=>{
+  const n=Math.ceil(L_ISL/EDS)+1;
+  const y=new Float32Array(n);
+  for(let i=0;i<n;i++) y[i]=baseElev(i*EDS);
+  for(let i=1;i<n;i++){ const d=y[i]-y[i-1], m=GRADE_CAP*EDS;
+    if(d> m) y[i]=y[i-1]+m; else if(d<-m) y[i]=y[i-1]-m; }
+  for(let i=n-2;i>=0;i--){ const d=y[i]-y[i+1], m=GRADE_CAP*EDS;
+    if(d> m) y[i]=y[i+1]+m; else if(d<-m) y[i]=y[i+1]-m; }
+  blurArray(y,44);
+  let asc=0,desc=0,maxG=0;
+  for(let i=1;i<n;i++){ const d=y[i]-y[i-1];
+    if(d>0) asc+=d; else desc-=d;
+    maxG=Math.max(maxG,Math.abs(d)/EDS); }
+  return {y,asc,desc,maxG,n};
+})();
+function spineY(s){
+  const i=clamp(s/EDS,0,ELEVATION.n-1), i0=Math.floor(i), t=i-i0, i1=Math.min(i0+1,ELEVATION.n-1);
+  return lerp(ELEVATION.y[i0],ELEVATION.y[i1],t);
+}
+H.elev.feed(ELEVATION.asc,ELEVATION.desc,ELEVATION.maxG);
+
+// ---------- the local spine walk: entry at origin, tangent +Z ----------
+const NS=Math.ceil(L_ISL/SDS)+1;
+const spine={x:new Float32Array(NS),y:new Float32Array(NS),z:new Float32Array(NS),hd:new Float32Array(NS)};
+{
+  let x=0,z=0,hd=0;
+  for(let i=0;i<NS;i++){
+    const s=i*SDS;
+    spine.x[i]=x; spine.z[i]=z; spine.y[i]=spineY(s); spine.hd[i]=hd;
+    const k=curvatureAt(s+SDS*0.5);
+    hd+=k*SDS;
+    x+=Math.sin(hd)*SDS; z+=Math.cos(hd)*SDS;
+    if((i%32)===0) H.route.feed(x,z,spine.y[i]);
+  }
+}
+function spineAt(s){
+  const i=clamp(s/SDS,0,NS-1), i0=Math.floor(i), t=i-i0, i1=Math.min(i0+1,NS-1);
+  return { x:lerp(spine.x[i0],spine.x[i1],t), y:lerp(spine.y[i0],spine.y[i1],t),
+           z:lerp(spine.z[i0],spine.z[i1],t), hd:lerp(spine.hd[i0],spine.hd[i1],t) };
+}
+
+// ---------- frame table: 2 m arc-length samples, eight channels, matching
+// the keeper exactly: x, y, z, tx, tz, lx, lz, k ----------
+function framesFromPoints(pts){
+  const RS=2;
+  const X=[],Y=[],Z=[];
+  let prev=pts[0], acc=0, target=0;
+  X.push(prev[0]); Y.push(prev[1]); Z.push(prev[2]);
+  for(let i=1;i<pts.length;i++){
+    const p=pts[i], d=Math.hypot(p[0]-prev[0],p[2]-prev[2]);
+    if(d<1e-7) continue;
+    while(target+RS<=acc+d){ target+=RS; const t=(target-acc)/d;
+      X.push(lerp(prev[0],p[0],t)); Y.push(lerp(prev[1],p[1],t)); Z.push(lerp(prev[2],p[2],t)); }
+    acc+=d; prev=p;
+  }
+  const F={x:Float32Array.from(X),y:Float32Array.from(Y),z:Float32Array.from(Z),RS};
+  F.N=F.x.length-1; F.len=F.N*RS;
+  const tmp=new Float32Array(F.N+1);
+  const blur=(arr,passes)=>{ for(let p=0;p<passes;p++){
+    tmp[0]=arr[0]; tmp[F.N]=arr[F.N];
+    for(let i=1;i<F.N;i++) tmp[i]=(arr[i-1]+arr[i]*2+arr[i+1])*0.25;
+    arr.set(tmp); } };
+  blur(F.x,5); blur(F.z,5); blur(F.y,40);
+  F.tx=new Float32Array(F.N+1); F.tz=new Float32Array(F.N+1);
+  F.lx=new Float32Array(F.N+1); F.lz=new Float32Array(F.N+1); F.k=new Float32Array(F.N+1);
+  for(let i=0;i<=F.N;i++){
+    const i0=Math.max(0,i-1), i1=Math.min(F.N,i+1);
+    let tx=F.x[i1]-F.x[i0], tz=F.z[i1]-F.z[i0];
+    const L=Math.hypot(tx,tz)||1; tx/=L; tz/=L;
+    F.tx[i]=tx; F.tz[i]=tz; F.lx[i]=tz; F.lz[i]=-tx;
+  }
+  for(let i=1;i<F.N;i++){
+    const cr=F.tx[i-1]*F.tz[i+1]-F.tz[i-1]*F.tx[i+1];
+    F.k[i]=cr/(2*RS);
+  }
+  return F;
+}
+function getFrame(F,s){
+  s=clamp(s,0,F.len-0.001);
+  const i=s/F.RS, i0=Math.floor(i), t=i-i0, i1=Math.min(i0+1,F.N);
+  return { x:lerp(F.x[i0],F.x[i1],t), y:lerp(F.y[i0],F.y[i1],t), z:lerp(F.z[i0],F.z[i1],t),
+    tx:lerp(F.tx[i0],F.tx[i1],t), tz:lerp(F.tz[i0],F.tz[i1],t),
+    lx:lerp(F.lx[i0],F.lx[i1],t), lz:lerp(F.lz[i0],F.lz[i1],t), k:lerp(F.k[i0],F.k[i1],t) };
+}
+const LFRAME=(()=>{
+  const pts=[];
+  for(let s=0;s<=L_ISL;s+=SDS){ const p=spineAt(s); pts.push([p.x,p.y,p.z]); }
+  return framesFromPoints(pts);
+})();
+H.route.feed(LFRAME.len);
+
+// declared boundary poses, measured on the built frames rather than assumed
+const ENTRY_POSE=(()=>{
+  const a=getFrame(LFRAME,0), b=getFrame(LFRAME,6);
+  return { x:0,y:0,z:0, headingRad:Math.atan2(a.tx,a.tz), gradePct:(b.y-a.y)/6*100 };
+})();
+const EXIT_POSE=(()=>{
+  const a=getFrame(LFRAME,LFRAME.len-6.01), b=getFrame(LFRAME,LFRAME.len-0.01);
+  return { x:b.x,y:b.y,z:b.z, headingRad:Math.atan2(b.tx,b.tz), gradePct:(b.y-a.y)/6*100 };
+})();
+const HEADING_STAT=(()=>{
+  let maxAbs=0;
+  for(let i=0;i<=LFRAME.N;i++){
+    const h=Math.atan2(LFRAME.tx[i],LFRAME.tz[i]);
+    maxAbs=Math.max(maxAbs,Math.abs(h));
+  }
+  return { netDeg:EXIT_POSE.headingRad*180/Math.PI, maxAbsDeg:maxAbs*180/Math.PI };
+})();
+
+const ROAD_W=ROUTE.r(4.62,4.94), RH=ROAD_W/2, SHOULDER=3.0, EXCL=RH+SHOULDER;
+const APRON=66;
+H.route.feed(ROAD_W,ENTRY_POSE.gradePct,EXIT_POSE.gradePct,HEADING_STAT.netDeg);
+
+// ============================================================
+// PLAN — ENCLOSURE
+// One pulse at the threshold gate, open air along the rows, the combe
+// closing over the road, the headland thinning, and a light handover.
+// The road stays legible everywhere: nothing here peaks like Fernfold.
+// ============================================================
+const ENC=[];
+{
+  const E=(s0,s1,peak)=>ENC.push({s0,s1,peak});
+  E(-60,movEnd('threshold')+ECO.r(-20,30),ECO.r(0.44,0.56));
+  E(movStart('rows')+ECO.r(20,60),movEnd('rows')+ECO.r(-30,20),ECO.r(0.22,0.32));
+  E(movStart('combe')-ECO.r(10,40),movEnd('combe')+ECO.r(0,40),ECO.r(0.72,0.82));
+  E(movStart('headland')+ECO.r(20,70),movEnd('headland')-ECO.r(0,50),ECO.r(0.30,0.40));
+  E(movStart('handover')+ECO.r(30,90),L_ISL-ECO.r(60,120),ECO.r(0.16,0.26));
+  for(const e of ENC) H.eco.feed(e.s0,e.s1,e.peak);
+}
+function enclosureAt(s){
+  let w=0;
+  for(const e of ENC){
+    const mid=(e.s0+e.s1)*0.5, half=(e.s1-e.s0)*0.5;
+    const t=1-clamp(Math.abs(s-mid)/Math.max(1,half),0,1);
+    w=Math.max(w,e.peak*(t*t*(3-2*t)));
+  }
+  return clamp(w,0,1);
+}
+
+// ============================================================
+// PLAN — THE WORKED SIDE, THE COMBE, THE POND
+// Everything of consequence keeps to one side: the orchard rows, the
+// spring combe, the pond it feeds, the knoll at its head, the old
+// boundary row on the climb. The other side is hay meadow — one panel
+// mown, one grown back. The road threads between the two readings.
+// ============================================================
+const S_LAND=FORM.chance(0.5)?1:-1;      // the worked side, seed-chosen
+
+// ---------- local route field: distance to the LOCAL frames only ----------
+const rCell=24, rGridL=new Map();
+const rKey=(a,b)=>a*46341+b;
+{
+  for(let i=0;i<=LFRAME.N;i++){
+    const k=rKey(Math.floor(LFRAME.x[i]/rCell),Math.floor(LFRAME.z[i]/rCell));
+    let c=rGridL.get(k); if(!c){ c=[]; rGridL.set(k,c); }
+    const ia=Math.max(0,i-1), ib=Math.min(LFRAME.N,i+1);
+    const slope=(LFRAME.y[ib]-LFRAME.y[ia])/((ib-ia)*LFRAME.RS||1);
+    c.push(LFRAME.x[i],LFRAME.y[i],LFRAME.z[i],i*LFRAME.RS,LFRAME.tx[i],LFRAME.tz[i],slope);
+  }
+}
+const _ril={d:0,y:0,s:0,u:0};
+function routeInfoL(x,z){
+  const gx=Math.floor(x/rCell), gz=Math.floor(z/rCell);
+  let bd=1e18,by=0,bs=0,bu=0;
+  for(let R=1;R<=14;R++){
+    for(let ax=gx-R;ax<=gx+R;ax++) for(let az=gz-R;az<=gz+R;az++){
+      if(R>1&&Math.abs(ax-gx)<R&&Math.abs(az-gz)<R) continue;
+      const c=rGridL.get(rKey(ax,az)); if(!c) continue;
+      for(let i=0;i<c.length;i+=7){
+        const dx=x-c[i], dz=z-c[i+2];
+        const t=clamp(dx*c[i+4]+dz*c[i+5],-1,1);
+        const ex=dx-c[i+4]*t, ez=dz-c[i+5]*t;
+        const d=ex*ex+ez*ez;
+        if(d<bd){ bd=d; by=c[i+1]+c[i+6]*t; bs=c[i+3]+t;
+          const fr=c; bu=(dx*fr[i+5]-dz*fr[i+4]); }
+      }
+    }
+    if(bd<((R-1)*rCell)*((R-1)*rCell)&&R>1) break;
+  }
+  if(bd>1e17){ _ril.d=999; _ril.y=0; _ril.s=clamp(z,0,L_ISL); _ril.u=999; return _ril; }
+  _ril.d=Math.sqrt(bd); _ril.y=by; _ril.s=bs; _ril.u=bu;
+  return _ril;
+}
+
+// ---------- the independent landform, written around the local route ----------
+function bankMix(s){ return clamp(0.34+0.55*enclosureAt(clamp(s,0,L_ISL)),0.28,0.92); }
+function indepLand(x,z){
+  return (fbmL(x/430+3.3,z/430+9.1)-0.5)*44
+       + (fbmL(x/168+21.7,z/168+5.3)-0.5)*20;
+}
+const INDEP_REF=(()=>{
+  const n=Math.ceil(L_ISL/20)+1, a=new Float32Array(n);
+  for(let i=0;i<n;i++){ const p=spineAt(i*20); a[i]=indepLand(p.x,p.z); }
+  blurArray(a,26);
+  return a;
+})();
+const indepRefAt=(s)=>{ const i=clamp(s/20,0,INDEP_REF.length-1), i0=Math.floor(i);
+  return lerp(INDEP_REF[i0],INDEP_REF[Math.min(i0+1,INDEP_REF.length-1)],i-i0); };
+
+// ---------- the pond: composed, not sampled ----------
+// It sits on the worked side, on the outside of the pool bow, far enough
+// down that the rider looks DOWN onto water across an open shelf.
+const POND=(()=>{
+  const g=WATER.r(985,1035);
+  const rx=WATER.r(15,19), rz=WATER.r(10.5,13.5);
+  const drop=WATER.r(2.9,3.7);
+  const off=(rx*1.05+EXCL+WATER.r(6.5,10.5))*S_LAND;
+  const fr=getFrame(LFRAME,g);
+  const cx=fr.x+fr.lx*off, cz=fr.z+fr.lz*off;
+  return { g, cx, cz, rx, rz, rot:WATER.r(-0.4,0.4)+Math.atan2(fr.tx,fr.tz),
+           y:fr.y-drop, bed:fr.y-drop-1.9, apertureG:g-WATER.r(16,28), name:'springpond' };
+})();
+H.terrain.feed(POND.g,POND.cx,POND.cz,POND.rx,POND.rz,POND.y);
+
+// ---------- the spring combe: where water has worked for a long time ----------
+// A soft-cut valley running from the knoll at its head, down past the pond,
+// and away off the worked side of the island. It never crosses the road; the
+// road only feels its moisture and its shade.
+const KNOLL=(()=>{
+  const g=POND.g+FORM.r(140,190);
+  const fr=getFrame(LFRAME,g);
+  const off=(FORM.r(118,148))*S_LAND;
+  return { x:fr.x+fr.lx*off, z:fr.z+fr.lz*off, g,
+           r:FORM.r(85,110), h:FORM.r(17,23) };
+})();
+const COMBE=(()=>{
+  const pts=[];
+  pts.push([KNOLL.x,KNOLL.z]);
+  pts.push([lerp(KNOLL.x,POND.cx,0.5)+FORM.r(-14,14),lerp(KNOLL.z,POND.cz,0.5)+FORM.r(-14,14)]);
+  pts.push([POND.cx,POND.cz]);
+  // downstream: away from the road, off the island's shoulder
+  const fr=getFrame(LFRAME,POND.g-FORM.r(150,210));
+  pts.push([fr.x+fr.lx*S_LAND*FORM.r(120,150),fr.z+fr.lz*S_LAND*FORM.r(120,150)]);
+  const fr2=getFrame(LFRAME,Math.max(40,POND.g-FORM.r(360,430)));
+  pts.push([fr2.x+fr2.lx*S_LAND*FORM.r(190,220),fr2.z+fr2.lz*S_LAND*FORM.r(190,220)]);
+  return { pts, depth:FORM.r(3.2,4.4), w:FORM.r(30,40) };
+})();
+function combeDist(x,z){
+  let bd=1e18;
+  for(let i=0;i<COMBE.pts.length-1;i++){
+    const a=COMBE.pts[i], b=COMBE.pts[i+1];
+    const abx=b[0]-a[0], abz=b[1]-a[1];
+    const t=clamp(((x-a[0])*abx+(z-a[1])*abz)/Math.max(1e-6,abx*abx+abz*abz),0,1);
+    const dx=x-(a[0]+abx*t), dz=z-(a[1]+abz*t);
+    bd=Math.min(bd,dx*dx+dz*dz);
+  }
+  return Math.sqrt(bd);
+}
+for(const p of COMBE.pts) H.terrain.feed(p[0],p[1]);
+H.terrain.feed(KNOLL.x,KNOLL.z,KNOLL.r,KNOLL.h);
+
+// ---------- the hay panels: the season's work, already done ----------
+// Panel A is mown: pale swathes in bands, a margin of standing seedheads.
+// Panel B, late in the island, has grown back — a brighter green flush.
+const PANELS=[
+  { s0:movStart('rows')+FORM.r(20,60), s1:movEnd('rows')+FORM.r(-40,10),
+    side:-S_LAND, u0:RH+4.5, u1:FORM.r(80,105), mown:true, stripeW:FORM.r(6.4,7.8), ph:FORM.r(0,10) },
+  { s0:movStart('handover')+FORM.r(-30,20), s1:L_ISL-FORM.r(90,140),
+    side:-S_LAND, u0:RH+4.5, u1:FORM.r(70,95), mown:false, stripeW:0, ph:0 },
+];
+for(const P of PANELS) H.terrain.feed(P.s0,P.s1,P.side,P.u1,P.mown?1:0);
+// how much a local point is inside a panel (0..1, ragged edge)
+function panelAt(x,z,ri){
+  for(const P of PANELS){
+    if(ri.s<P.s0-30||ri.s>P.s1+30) continue;
+    const u=ri.u*P.side;
+    if(u<P.u0-6||u>P.u1+18) continue;
+    const rag=(fbmE(x/26+7.7,z/26+3.1)-0.5)*16;
+    const w=smooth(P.s0,P.s0+26,ri.s+rag)*(1-smooth(P.s1-26,P.s1,ri.s+rag))
+           *smooth(P.u0,P.u0+3,u)*(1-smooth(P.u1-9+rag,P.u1+9+rag,u));
+    if(w>0.001) return {w,P};
+  }
+  return null;
+}
+
+// ---------- the ground: one local function, used by everything ----------
+const CROWN=0.11;
+function corridorProfile(a,cut){
+  if(a<=RH) return CROWN*(1-(a/RH)*(a/RH));
+  let h=-0.30*smooth(RH,RH+0.95,a);
+  h-=0.24*smooth(RH+0.7,RH+1.9,a);
+  h-=0.34*smooth(RH+1.7,RH+4.6,a);
+  h-=0.44*Math.exp(-Math.pow((a-(RH+4.0))/2.4,2))*clamp(cut,0,1)*smooth(RH,RH+1.4,a);
+  return h;
+}
+function reliefL(x,z,d){
+  const g=smooth(16,125,d);
+  let r=(fbmL(x/520+11.7,z/520+2.9)-0.5)*120;
+  r+=(fbmL(x/188+31.1,z/188+17.4)-0.5)*46;
+  r+=(fbmL(x/62+7.7,z/62+41.3)-0.5)*12;
+  r*=g;
+  { const dx=x-KNOLL.x, dz=z-KNOLL.z;
+    r+=KNOLL.h*Math.exp(-(dx*dx+dz*dz)/(KNOLL.r*KNOLL.r))*smooth(30,110,d); }
+  // the combe: a long soft cut, held off the corridor
+  { const cd=combeDist(x,z);
+    r-=COMBE.depth*(1-smooth(COMBE.w*0.3,COMBE.w,cd))*smooth(EXCL+7,EXCL+20,d); }
+  return r;
+}
+// the pond's open shelf: ground between lane and water falls away smoothly,
+// held below the rider's sight line, so the water is genuinely seen
+const SHELF=(()=>{
+  const fr=getFrame(LFRAME,POND.g);
+  const off=(POND.cx-fr.x)*fr.lx+(POND.cz-fr.z)*fr.lz;
+  // the pond's radius ALONG the lateral direction — its major axis lies
+  // near the road tangent, so the near bank is set by the minor axis, and a
+  // shelf sized off rx would stop half a basin short of the water
+  const ca=Math.cos(POND.rot), sa=Math.sin(POND.rot);
+  const cosA=Math.abs(fr.lx*sa+fr.lz*ca);
+  const er=Math.sqrt(Math.pow(POND.rx*cosA,2)+Math.pow(POND.rz*Math.sqrt(Math.max(0,1-cosA*cosA)),2));
+  return { fr, off, side:Math.sign(off)||1,
+           uNear:Math.abs(off)-er*0.94, er,
+           // the approach side reaches a hundred and seventy metres back up the
+           // road: the reveal is a held view, not a glimpse at the last bend
+           halfV:POND.rx*1.55+24, backV:170 };
+})();
+function shelfY(x,z,y){
+  const S=SHELF;
+  const dx=x-S.fr.x, dz=z-S.fr.z;
+  const v=dx*S.fr.tx+dz*S.fr.tz;
+  const ext=(v<0)?S.backV:S.halfV;
+  if(Math.abs(v)>ext) return y;
+  const u=(dx*S.fr.lx+dz*S.fr.lz)*S.side;
+  if(u<RH+5.5||u>S.uNear+1.5) return y;
+  const t=clamp((u-(RH+5.5))/Math.max(4,S.uNear+1.5-(RH+5.5)),0,1);
+  // concave: the ground gives most of the drop early, so a sight line from a
+  // hundred metres back clears the mid-shelf instead of grazing into it
+  const ramp=lerp(S.fr.y-0.8,POND.y+0.30,Math.pow(t,0.55));
+  const fade=(1-smooth(ext*0.72,ext,Math.abs(v)))*smooth(RH+5.0,RH+9.0,u);
+  return lerp(y,Math.min(y,ramp),fade);
+}
+function inShelf(x,z,margin){
+  const S=SHELF;
+  const dx=x-S.fr.x, dz=z-S.fr.z;
+  const vv=dx*S.fr.tx+dz*S.fr.tz;
+  if(Math.abs(vv)>((vv<0)?S.backV:S.halfV)*0.92) return false;
+  const u=(dx*S.fr.lx+dz*S.fr.lz)*S.side;
+  return (u>RH+3.5&&u<S.uNear+(margin||0));
+}
+// LOCAL ground: complete, placement-free
+function groundL(x,z){
+  const ri=routeInfoL(x,z);
+  const base=ri.y+(indepLand(x,z)-indepRefAt(ri.s))*bankMix(ri.s)+reliefL(x,z,ri.d);
+  const w=1-smooth(8.5,clamp(20+Math.abs(base-ri.y)*3.4,26,132),ri.d);
+  let y=base;
+  if(w>1e-4){
+    const eng=ri.y+corridorProfile(ri.d,base-ri.y);
+    y=lerp(base,eng,w);
+  }
+  // pond basin, bed and rim
+  { const pdx=x-POND.cx, pdz=z-POND.cz;
+    if(Math.abs(pdx)<POND.rx*3.2&&Math.abs(pdz)<POND.rx*3.2){
+      const pc=Math.cos(-POND.rot), ps=Math.sin(-POND.rot);
+      const px=pdx*pc-pdz*ps, pz=pdx*ps+pdz*pc;
+      const pr=Math.hypot(px/POND.rx,pz/POND.rz);
+      if(pr<2.05){
+        const t=(1-smooth(1.10,2.05,pr))*smooth(RH+9,RH+24,ri.d);
+        y=lerp(y,POND.bed,t);
+      }
+      if(pr>=1.0&&pr<2.7){
+        const rim=POND.y+0.35+1.9*smooth(1.05,2.4,pr);
+        y=lerp(y,Math.max(y,rim),smooth(RH+9,RH+26,ri.d)*(1-smooth(2.3,2.7,pr)));
+      }
+    } }
+  y=shelfY(x,z,y);
+  // within the shoulder the ground is never permitted above the lane's edge,
+  // and the metre beside the stone always carries it
+  if(ri.d<RH+2.5) y=Math.min(y,ri.y+corridorProfile(Math.max(ri.d,RH+0.001),0)+0.015);
+  if(ri.d<RH+1.7) y=Math.max(y,ri.y+corridorProfile(Math.max(ri.d,RH+0.001),0)-0.012);
+  return y;
+}
+function pondNorm(x,z){
+  const pdx=x-POND.cx, pdz=z-POND.cz;
+  const pc=Math.cos(-POND.rot), ps=Math.sin(-POND.rot);
+  const px=pdx*pc-pdz*ps, pz=pdx*ps+pdz*pc;
+  return Math.hypot(px/POND.rx,pz/POND.rz);
+}
+// moisture: the combe's damp seam and the pond margin
+function moistL(x,z){
+  const cd=combeDist(x,z);
+  let m=clamp(1-cd/34,0,1)*0.8;
+  m=Math.max(m,clamp(1-(pondNorm(x,z)-1)/0.8,0,1));
+  return clamp(m,0,1);
+}
+for(let s=0;s<L_ISL;s+=120){ const p=spineAt(s); H.terrain.feed(groundL(p.x+55,p.z),groundL(p.x-55,p.z+30)); }
+
+// ============================================================
+// PLAN — SIGHTLINES
+// ============================================================
+const SIGHT=[];
+function addSight(s0,s1,side,half,tag){ SIGHT.push({s0,s1,side,half,tag}); }
+function inSight(x,z,s,d,side){
+  for(const S of SIGHT){
+    if(s<S.s0||s>S.s1) continue;
+    if(S.side&&S.side!==side) continue;
+    if(d<S.half) return true;
+  }
+  return false;
+}
+// the pond is shown through one deliberate opening — water-aperture
+addSight(POND.apertureG-24,POND.g+POND.rx*2.0,S_LAND,40,'water-aperture');
+// the opening hundred metres stay honest so the entry never reads as a wall
+addSight(4,90,0,11,'entry');
+
+// ============================================================
+// PLAN — FORMATIONS
+// The worked landscape, spelled in the keeper's own vocabulary:
+//   dappled-gate   threshold trees at entry and exit
+//   orchard-row    the working rows, and the old planted boundary line
+//   wind-sisters   three wind-combed elders on the knoll at the combe head
+//   water-aperture the composed opening onto the pond
+//   light-shaft / fernfold-shaft   the island's planned pockets of visible air
+// fork-wedge and bellroot-approach are deliberately absent: there is no fork
+// here, and the hero tree belongs to the hollow.
+// ============================================================
+const FORMATION_TREES=[];   // planned, placement-free; realized statically
+const FAMS=['oak','beech','birch','leaning','windshaped','orchard'];
+
+// ---- dappled-gate, twice: entering and leaving the worked land ----
+const GATES=(()=>{
+  const out=[];
+  const mk=(s,big,tag)=>{
+    const st=subStream('gate',Math.round(s));
+    const side=st.chance(0.5)?1:-1;
+    out.push({s:s+st.r(-6,6),side,off:EXCL+st.r(2.0,3.4),fam:'oak',
+      scl:big?st.r(1.24,1.46):st.r(1.02,1.2),lean:0.9,tag});
+    out.push({s:s+st.r(20,30),side:-side,off:EXCL+st.r(3.2,6.0),fam:'leaning',
+      scl:big?st.r(0.94,1.12):st.r(0.8,0.98),lean:-0.9,tag});
+    out.push({s:s+st.r(40,54),side,off:EXCL+st.r(5,10),fam:'birch',
+      scl:st.r(0.85,1.05),lean:0.4,tag});
+  };
+  mk(FORM.r(140,175),true,'entry');
+  mk(L_ISL-FORM.r(230,265),false,'exit');
+  return out;
+})();
+for(const G of GATES){
+  const fr=getFrame(LFRAME,clamp(G.s,0,LFRAME.len-1));
+  const x=fr.x+fr.lx*G.off*G.side, z=fr.z+fr.lz*G.off*G.side;
+  FORMATION_TREES.push({x,z,fam:G.fam,scl:G.scl,lean:G.lean,
+    leanDir:Math.atan2(fr.tx,fr.tz)+(G.side>0?-1:1)*Math.PI*0.5,
+    s:G.s,enc:0.5,formation:'dappled-gate',fruit:false});
+}
+
+// ---- orchard-row: three working rows on the contour above the road ----
+const ORCHARD={ s0:movStart('rows')+FORM.r(30,70), s1:movEnd('rows')+FORM.r(-30,10),
+  rows:3, lat0:FORM.r(15,18), latStep:FORM.r(13.5,15.5), step:FORM.r(11.5,14) };
+{
+  for(let r=0;r<ORCHARD.rows;r++){
+    const lat=ORCHARD.lat0+r*ORCHARD.latStep;
+    let i=0;
+    for(let s=ORCHARD.s0+r*FORM.r(2,8);s<ORCHARD.s1-r*10;s+=ORCHARD.step,i++){
+      const st=subStream('orchard',r,i);
+      if(st.chance(0.10)) continue;              // a tree lost to age: the gap that reads as time
+      const fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
+      const off=(lat+st.r(-1.3,1.3))*S_LAND;
+      const x=fr.x+fr.lx*off+st.r(-0.8,0.8), z=fr.z+fr.lz*off+st.r(-0.8,0.8);
+      if(routeInfoL(x,z).d<EXCL+2.2) continue;
+      if(pondNorm(x,z)<1.5) continue;
+      if(combeDist(x,z)<16) continue;
+      FORMATION_TREES.push({x,z,fam:'orchard',scl:st.r(0.98,1.24),lean:st.r(-0.4,0.4),
+        leanDir:st.r(0,TAU),s,enc:0.25,formation:'orchard-row',fruit:true});
+    }
+  }
+}
+
+// ---- orchard-row again, aged: the old planted boundary line on the climb ----
+const BOUNDARY={ s0:movStart('headland')+FORM.r(10,50), s1:movEnd('headland')+FORM.r(20,70),
+  lat:FORM.r(19,23), step:FORM.r(25,30) };
+{
+  let i=0;
+  for(let s=BOUNDARY.s0;s<BOUNDARY.s1;s+=BOUNDARY.step,i++){
+    const st=subStream('boundary',i);
+    if(st.chance(0.13)) continue;               // the gaps are part of the line's age
+    const fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
+    const off=(BOUNDARY.lat+st.r(-1.8,1.8))*S_LAND;
+    const x=fr.x+fr.lx*off, z=fr.z+fr.lz*off;
+    if(routeInfoL(x,z).d<EXCL+2.5) continue;
+    FORMATION_TREES.push({x,z,fam:'windshaped',scl:st.r(1.0,1.28),lean:0.9,
+      leanDir:Math.atan2(fr.tx,fr.tz)+st.r(-0.2,0.2),   // wind-combed along the line
+      s,enc:0.3,formation:'orchard-row',fruit:false});
+  }
+}
+
+// ---- wind-sisters: three elders on the knoll at the head of the combe ----
+const SISTERS=(()=>{
+  const towardPond=Math.atan2(POND.cx-KNOLL.x,POND.cz-KNOLL.z);
+  const across=towardPond+Math.PI*0.5;
+  const SCL=[2.15,2.85,1.65], OFF=[-26,2,23];
+  const out=[];
+  for(let i=0;i<3;i++){
+    const st=subStream('sister',i);
+    const x=KNOLL.x+Math.sin(across)*OFF[i]+st.r(-3,3);
+    const z=KNOLL.z+Math.cos(across)*OFF[i]+st.r(-3,3);
+    out.push({x,z,fam:'windshaped',scl:SCL[i],lean:1,
+      leanDir:towardPond+st.r(-0.15,0.15),                // combed down the combe
+      s:KNOLL.g,enc:0.06,formation:'wind-sisters',fruit:false});
+  }
+  return out;
+})();
+for(const t of SISTERS) FORMATION_TREES.push(t);
+for(const t of FORMATION_TREES) H.eco.feed(t.x,t.z,t.fam,t.scl,t.formation);
+
+// ============================================================
+// PLAN — GROVES AND BANDED TREES
+// Sparse framing and support groves in the island's own middle distance,
+// one wall of woodland behind the pond so the water has a dark bank to
+// read against, and the combe's own shade.
+// ============================================================
+const TREES=[];
+const treeCell=40, treeGrid=new Map();
+function treeAdd(t){
+  TREES.push(t);
+  const k=rKey(Math.floor(t.x/treeCell),Math.floor(t.z/treeCell));
+  let c=treeGrid.get(k); if(!c){c=[];treeGrid.set(k,c);} c.push(t);
+}
+function treeNear(x,z,r){
+  const gx=Math.floor(x/treeCell), gz=Math.floor(z/treeCell), R=Math.ceil(r/treeCell);
+  for(let ax=gx-R;ax<=gx+R;ax++) for(let az=gz-R;az<=gz+R;az++){
+    const c=treeGrid.get(rKey(ax,az)); if(!c) continue;
+    for(const t of c) if((t.x-x)*(t.x-x)+(t.z-z)*(t.z-z)<r*r) return true; }
+  return false;
+}
+function famScale(fam,st){
+  return { oak:st.r(1.0,1.35), beech:st.r(1.0,1.3), birch:st.r(0.78,1.05),
+           leaning:st.r(0.86,1.15), windshaped:st.r(0.8,1.08), orchard:st.r(0.52,0.76) }[fam];
+}
+const GROVES=[];
+{
+  const openMix=['oak','windshaped','birch','leaning'];
+  const woodMix=['beech','oak','beech','birch','oak','leaning'];
+  let s=-50, gi=0;
+  while(s<L_ISL+40){
+    const enc=enclosureAt(s);
+    const st=subStream('grove',gi);
+    const nG=enc>0.55?st.i(2,3):(enc>0.25?st.i(1,2):(st.chance(0.6)?1:0));
+    for(let q=0;q<nG;q++){
+      const roll=st.f();
+      let role,off,rx,rz,dens;
+      if(roll<0.30+0.24*enc){ role='frame'; off=st.r(EXCL+1.6,16); rx=st.r(6,13); rz=st.r(8,19); dens=st.r(0.6,1.0); }
+      else if(roll<0.74){ role='support'; off=st.r(20,60); rx=st.r(12,26); rz=st.r(15,34); dens=st.r(0.6,1.0); }
+      else { role='wall'; off=st.r(60,150); rx=st.r(26,60); rz=st.r(30,80); dens=st.r(0.7,1.0); }
+      const side=st.chance(0.5)?1:-1;
+      GROVES.push({ id:GROVES.length, s, side, off, rx, rz, rot:st.r(0,TAU), role, dens,
+                    mix:(enc>0.5)?woodMix:openMix, enc, hero:st.chance(role==='frame'?0.10:0.05) });
+    }
+    gi++;
+    s+=lerp(56,20,enc)*subStream('grovestep',gi).r(0.8,1.25);
+  }
+  // the dark bank behind the pond — the wall the water reads against.
+  // Two masses: one square behind the water, one shouldering the far end,
+  // so the surface always has deep green above it whichever way it is met.
+  {
+    const st=subStream('pondwall',0);
+    const fr=getFrame(LFRAME,POND.g);
+    const beyond=Math.abs((POND.cx-fr.x)*fr.lx+(POND.cz-fr.z)*fr.lz)+POND.rx+st.r(10,16);
+    GROVES.push({ id:GROVES.length, s:POND.g+st.r(-24,10), side:S_LAND, off:beyond, rx:st.r(34,44), rz:st.r(38,52),
+      rot:st.r(0,TAU), role:'wall', dens:1.0, mix:['beech','oak','beech','leaning'], enc:0.85, hero:false, pondWall:true });
+    GROVES.push({ id:GROVES.length, s:POND.g+st.r(46,90), side:S_LAND, off:beyond*st.r(0.8,0.95), rx:st.r(22,30), rz:st.r(26,36),
+      rot:st.r(0,TAU), role:'wall', dens:1.0, mix:['beech','oak','leaning'], enc:0.8, hero:false, pondWall:true });
+  }
+  for(const gr of GROVES) H.eco.feed(gr.s,gr.off,gr.side,gr.role);
+}
+{
+  for(const gr of GROVES){
+    const fr=getFrame(LFRAME,clamp(gr.s,0,LFRAME.len-1));
+    const cx=fr.x+fr.lx*gr.off*gr.side, cz=fr.z+fr.lz*gr.off*gr.side;
+    const area=Math.PI*gr.rx*gr.rz;
+    const target=Math.round(clamp(area/(gr.role==='frame'?95:(gr.role==='support'?150:240))*gr.dens,1,34));
+    const st=subStream('trees',gr.id);
+    let placed=0;
+    for(let att=0;att<target*9&&placed<target;att++){
+      const a=st.r(0,TAU), rr=Math.sqrt(st.f());
+      const ex=Math.cos(a)*gr.rx*rr, ez=Math.sin(a)*gr.rz*rr;
+      const ca=Math.cos(gr.rot), sa=Math.sin(gr.rot);
+      const x=cx+ex*ca-ez*sa, z=cz+ex*sa+ez*ca;
+      const ri=routeInfoL(x,z);
+      const fam=st.pick(gr.mix);
+      const scl=famScale(fam,st)*(gr.hero&&placed===0?st.r(1.28,1.5):1);
+      const rad=1.5*scl;
+      if(ri.d<EXCL+rad+0.6) continue;
+      if(pondNorm(x,z)<1.3) continue;
+      if(inShelf(x,z,1.5)) continue;
+      // the whole worked side is worked ground through the rows: volunteer
+      // trees there would bury the orchard's order, which is the reading
+      if(ri.s>ORCHARD.s0-50&&ri.s<ORCHARD.s1+40&&ri.u*S_LAND>EXCL) continue;
+      // and the mown panel side stays open enough to read the swathes
+      if(ri.s>PANELS[0].s0-20&&ri.s<PANELS[0].s1+20&&ri.u*(-S_LAND)>10&&ri.u*(-S_LAND)<PANELS[0].u1+14) continue;
+      // the mown panel was cut this season: nothing grows tall in it
+      { const pa=panelAt(x,z,ri); if(pa&&pa.P.mown&&pa.w>0.3) continue; }
+      if(Math.hypot(x-KNOLL.x,z-KNOLL.z)<52) continue;
+      if(inSight(x,z,ri.s,ri.d,Math.sign(ri.u)||1)) continue;
+      if(treeNear(x,z,2.0*scl+st.r(0.4,2.4))) continue;
+      treeAdd({ x,z,fam,scl,lean:st.r(-1,1),leanDir:st.r(0,TAU),
+        role:(placed===0&&gr.hero)?'hero':gr.role, grove:gr.id,
+        d:ri.d, s:ri.s, roadY:ri.y, enc:gr.enc, fruit:false, formation:null });
+      placed++;
+    }
+  }
+  // formations enter the shared tree set (identity first, so nothing crowds them)
+  for(const t of FORMATION_TREES){
+    const ri=routeInfoL(t.x,t.z);
+    treeAdd({ x:t.x,z:t.z,fam:t.fam,scl:t.scl,lean:t.lean,leanDir:t.leanDir,
+      role:t.formation==='wind-sisters'?'landmark':'formation', grove:-1,
+      d:ri.d, s:t.s, roadY:ri.y, enc:t.enc, fruit:t.fruit, formation:t.formation });
+  }
+  TREES.sort((a,b)=>a.s-b.s||a.x-b.x);
+  for(let i=0;i<TREES.length;i+=13) H.eco.feed(TREES[i].x,TREES[i].z,TREES[i].fam);
+  H.eco.feed(TREES.length);
+}
+
+// ============================================================
+// PLAN — AMBIENT LIFE AND VISIBLE AIR
+// Scheduled by island distance (ride-clock); animated on the world's own
+// clock, so pausing the rider never pauses the place. Two resident
+// swallows belong to the island outright and are never scheduled at all.
+// ============================================================
+const LIFE_EVENTS=[];
+{
+  const add=(s,kind,opt)=>LIFE_EVENTS.push(Object.assign({
+    s:clamp(s,40,L_ISL-40), kind, id:LIFE_EVENTS.length, fired:false },opt||{}));
+  add(lerp(movStart('rows'),movEnd('rows'),0.28),'swallows');
+  add(lerp(movStart('rows'),movEnd('rows'),0.68),'butterflies',{radius:24,side:S_LAND});
+  add(movEnd('rows')-40,'glint',{side:-S_LAND});          // the mown margin catches the light
+  add(POND.g-10,'dragonflies',{atPond:true});
+  add(lerp(movStart('headland'),movEnd('headland'),0.55),'flock',{far:true});
+  add(lerp(movStart('handover'),L_ISL,0.35),'rabbit',{side:-S_LAND});
+  for(const e of LIFE_EVENTS){
+    const st=subStream('life',e.id);
+    e.dur=st.r(8,14); if(e.side===undefined) e.side=st.chance(0.5)?1:-1; e.s=clamp(e.s+st.r(-12,12),40,L_ISL-40);
+    H.life.feed(e.s,e.kind,e.dur,e.side);
+  }
+  LIFE_EVENTS.sort((a,b)=>a.s-b.s);
+}
+// the island's planned pockets of visible air, named in the vocabulary
+const AIR_POCKETS=(()=>{
+  const out=[];
+  const add=(s,w,strength,why)=>out.push({s,w,strength,why});
+  add(GATES[0].s+LIFE.r(10,30),LIFE.r(40,60),LIFE.r(0.85,1.1),'light-shaft');
+  add(lerp(movStart('combe'),movEnd('combe'),LIFE.r(0.35,0.55)),LIFE.r(44,64),LIFE.r(0.95,1.2),'fernfold-shaft');
+  add(POND.g,LIFE.r(46,70),LIFE.r(0.85,1.1),'water-aperture');
+  add(lerp(movStart('headland'),movEnd('headland'),LIFE.r(0.6,0.85)),LIFE.r(42,62),LIFE.r(0.8,1.05),'light-shaft');
+  out.sort((a,b)=>a.s-b.s);
+  for(const o of out) H.life.feed('air',Math.round(o.s),Math.round(o.w),o.why);
+  return out;
+})();
+function airAmountAt(s){
+  let v=0.10;
+  for(const o of AIR_POCKETS){
+    const t=1-clamp(Math.abs(s-o.s)/o.w,0,1);
+    v=Math.max(v,0.10+o.strength*t*t*(3-2*t));
+  }
+  return v;
+}
+
+const VOCAB_ALLOWLIST=['dappled-gate','light-shaft','fernfold-shaft','fork-wedge',
+  'water-aperture','wind-sisters','orchard-row','bellroot-approach'];
+const VOCAB_USED=(()=>{
+  const used=new Set();
+  for(const t of TREES) if(t.formation) used.add(t.formation);
+  for(const S of SIGHT) if(VOCAB_ALLOWLIST.includes(S.tag)) used.add(S.tag);
+  for(const o of AIR_POCKETS) used.add(o.why);
+  return Array.from(used).sort();
+})();
+
+// ============================================================
+// PLAN HASH — the island's complete identity, before quality or placement
+// ============================================================
+const PLAN_SUMMARY={
+  islandId:ISLAND_ID, seed:SEED_TEXT, lengthM:Math.round(LFRAME.len),
+  movements:MOV.map(m=>m.name),
+  netElevationM:Math.round((EXIT_POSE.y-ENTRY_POSE.y)*10)/10,
+  netHeadingDeg:Math.round(HEADING_STAT.netDeg*10)/10,
+  maxGradePct:Math.round(ELEVATION.maxG*1000)/10,
+  workedSide:S_LAND, pondAtM:Math.round(POND.g), knollAtM:Math.round(KNOLL.g),
+  plannedTrees:TREES.length, groves:GROVES.length,
+  lifeEvents:LIFE_EVENTS.length, airPockets:AIR_POCKETS.length,
+  vocabulary:VOCAB_USED.join(','),
+};
+{
+  H.plan.feed(H.route.hex(),H.elev.hex(),H.terrain.hex(),H.eco.hex(),H.life.hex());
+  for(const k of Object.keys(PLAN_SUMMARY)) H.plan.feed(k,String(PLAN_SUMMARY[k]));
+}
+const PLAN_HASH=H.plan.hex();
+QUALITY_READS_AT_PLAN=QUALITY_READS;       // the plan never asked what tier this is
+PLACEMENT_READS_AT_PLAN=PLACEMENT_READS;   // ...nor where it will stand
+
+// ============================================================
+// REALIZATION — quality tiers change representation cost, never identity
+// ============================================================
+const QCFG={
+  low:      { row:7.0, tile:18, ahead:460, behind:190, under:0.34, nearD:13, midD:56, farD:230, shadow:0,    part:0.5, tuftBand:10, capNear:3, capMid:9,  bandTreeCap:14, lobe:0, view:1500, roundMid:3, dpr:1.0 },
+  standard: { row:5.0, tile:16, ahead:540, behind:220, under:0.62, nearD:17, midD:70, farD:300, shadow:1024, part:1.0, tuftBand:14, capNear:5, capMid:11, bandTreeCap:16, lobe:1, view:1620, roundMid:6, dpr:1.25 },
+  // high spends its budget on fidelity — shadow resolution, device pixels,
+  // near articulation, view reach — not on more geometry than standard
+  high:     { row:5.0, tile:14, ahead:560, behind:230, under:0.70, nearD:22, midD:78, farD:320, shadow:2048, part:1.3, tuftBand:14, capNear:6, capMid:11, bandTreeCap:15, lobe:1, view:1900, roundMid:7, dpr:1.5 },
+}[readQuality()];
+H.real.feed(QUALITY); for(const k of Object.keys(QCFG)) H.real.feed(k,QCFG[k]);
+
+// ============================================================
+// THE HOST — everything from here to the island realization is the mount:
+// a placement transform, connective travel either side, and the world's
+// own sky and light. It reads the island's boundary contract (entry pose,
+// exit pose, road width, a ground sampler) and nothing else.
+// ============================================================
+const PLACEMENT=(()=>{
+  const p=readPlacement();
+  return { headingRad:p.headingDeg*Math.PI/180, entryGrade:p.entryGradePct/100, copies:p.copies };
+})();
+const APPROACH_LEN=280, EXIT_LEN=340, GAP_LEN=190;
+
+// a rigid transform: local -> world. Rotation about Y so local +Z maps to
+// the world heading; then translation.
+function makeXform(wx,wy,wz,headingRad){
+  const c=Math.cos(headingRad), s=Math.sin(headingRad);
+  return {
+    c,s,wx,wy,wz,heading:headingRad,
+    fwd:(x,z)=>[wx+x*c+z*s, wz-x*s+z*c],
+    fwdY:(y)=>wy+y,
+    inv:(X,Z)=>{ const dx=X-wx, dz=Z-wz; return [dx*c-dz*s, dx*s+dz*c]; },
+  };
+}
+// world assembly: approach, island copies, gap, exit — as separate frame
+// tables so the island's own frames pass through untouched
+const SEGMENTS=[];
+const XFORMS=[];
+{
+  let hx=0, hz=0, hy=40, hd=PLACEMENT.headingRad;    // an arbitrary world start; nothing depends on it
+  const walk=(len,gradeAt,curveAt)=>{
+    const pts=[[hx,hy,hz]];
+    const n=Math.ceil(len/SDS);
+    for(let i=1;i<=n;i++){
+      const s=i*SDS;
+      hd+=(curveAt?curveAt(s):0)*SDS;
+      hx+=Math.sin(hd)*SDS; hz+=Math.cos(hd)*SDS;
+      hy+=(gradeAt?gradeAt(s):0)*SDS;
+      pts.push([hx,hy,hz]);
+    }
+    return framesFromPoints(pts);
+  };
+  // approach: the host's grade, easing to the island's declared entry grade
+  const eg=PLACEMENT.entryGrade, ig=ENTRY_POSE.gradePct/100;
+  const A=walk(APPROACH_LEN,(s)=>lerp(eg,ig,smooth(APPROACH_LEN-120,APPROACH_LEN-16,s)),null);
+  SEGMENTS.push({F:A,island:false,copy:-1});
+  for(let k=0;k<PLACEMENT.copies;k++){
+    // mount copy k at the walker's pose
+    const T=makeXform(hx,hy,hz,hd);
+    XFORMS.push(T);
+    const F={ RS:LFRAME.RS, N:LFRAME.N, len:LFRAME.len,
+      x:new Float32Array(LFRAME.N+1), y:new Float32Array(LFRAME.N+1), z:new Float32Array(LFRAME.N+1),
+      tx:new Float32Array(LFRAME.N+1), tz:new Float32Array(LFRAME.N+1),
+      lx:new Float32Array(LFRAME.N+1), lz:new Float32Array(LFRAME.N+1), k:LFRAME.k };
+    for(let i=0;i<=LFRAME.N;i++){
+      const w=T.fwd(LFRAME.x[i],LFRAME.z[i]);
+      F.x[i]=w[0]; F.z[i]=w[1]; F.y[i]=T.fwdY(LFRAME.y[i]);
+      const tw=[LFRAME.tx[i]*T.c+LFRAME.tz[i]*T.s, -LFRAME.tx[i]*T.s+LFRAME.tz[i]*T.c];
+      F.tx[i]=tw[0]; F.tz[i]=tw[1]; F.lx[i]=tw[1]; F.lz[i]=-tw[0];
+    }
+    SEGMENTS.push({F,island:true,copy:k});
+    // hand the walker the island's exit pose
+    const we=T.fwd(EXIT_POSE.x,EXIT_POSE.z);
+    hx=we[0]; hz=we[1]; hy=T.fwdY(EXIT_POSE.y); hd=hd+EXIT_POSE.headingRad;
+    if(k<PLACEMENT.copies-1){
+      const xg=EXIT_POSE.gradePct/100;
+      const G=walk(GAP_LEN,(s)=>lerp(xg,ig,smooth(30,GAP_LEN-30,s)),null);
+      SEGMENTS.push({F:G,island:false,copy:-1});
+    }
+  }
+  // exit: ease the island's exit grade back to the host's own idea of flat
+  const xg=EXIT_POSE.gradePct/100;
+  const X=walk(EXIT_LEN,(s)=>lerp(xg,0,smooth(20,140,s)),(s)=>0.0009*Math.sin(s*0.011));
+  SEGMENTS.push({F:X,island:false,copy:-1});
+}
+{
+  let off=0;
+  for(const seg of SEGMENTS){ seg.g0=off; off+=seg.F.len; seg.g1=off; }
+}
+const ROUTE_LEN=SEGMENTS[SEGMENTS.length-1].g1;
+const ISLAND_SEGS=SEGMENTS.filter(s=>s.island);
+function segAt(g){
+  for(const seg of SEGMENTS) if(g>=seg.g0&&g<=seg.g1) return seg;
+  return g<0?SEGMENTS[0]:SEGMENTS[SEGMENTS.length-1];
+}
+function frameAtG(g){
+  const seg=segAt(clamp(g,0,ROUTE_LEN-0.01));
+  return getFrame(seg.F,clamp(g-seg.g0,0,seg.F.len-0.01));
+}
+// island-local station of a world ride distance (nearest copy), or null
+function islandLocalOf(g){
+  for(const seg of ISLAND_SEGS) if(g>=seg.g0-1&&g<=seg.g1+1) return {s:clamp(g-seg.g0,0,L_ISL),copy:seg.copy};
+  return null;
+}
+
+// ---------- world route field over every segment ----------
+const rGridW=new Map();
+for(const seg of SEGMENTS){
+  const F=seg.F;
+  for(let i=0;i<=F.N;i++){
+    const k=rKey(Math.floor(F.x[i]/rCell),Math.floor(F.z[i]/rCell));
+    let c=rGridW.get(k); if(!c){ c=[]; rGridW.set(k,c); }
+    const ia=Math.max(0,i-1), ib=Math.min(F.N,i+1);
+    const slope=(F.y[ib]-F.y[ia])/((ib-ia)*F.RS||1);
+    c.push(F.x[i],F.y[i],F.z[i],seg.g0+i*F.RS,F.tx[i],F.tz[i],slope);
+  }
+}
+// coarse distance field so far queries never pay for a wide scan
+const CF={cell:40};
+{
+  let minX=1e9,maxX=-1e9,minZ=1e9,maxZ=-1e9;
+  for(const seg of SEGMENTS){ const F=seg.F;
+    for(let i=0;i<=F.N;i+=4){
+      minX=Math.min(minX,F.x[i]); maxX=Math.max(maxX,F.x[i]);
+      minZ=Math.min(minZ,F.z[i]); maxZ=Math.max(maxZ,F.z[i]); } }
+  CF.x0=minX-1200; CF.z0=minZ-1200;
+  CF.nx=Math.ceil((maxX-minX+2400)/CF.cell)+1;
+  CF.nz=Math.ceil((maxZ-minZ+2400)/CF.cell)+1;
+  CF.cx=(minX+maxX)*0.5; CF.cz=(minZ+maxZ)*0.5;
+  const n=CF.nx*CF.nz;
+  CF.d=new Float32Array(n).fill(1e6); CF.y=new Float32Array(n); CF.s=new Float32Array(n);
+  for(const seg of SEGMENTS){ const F=seg.F;
+    for(let i=0;i<=F.N;i+=2){
+      const gx=Math.round((F.x[i]-CF.x0)/CF.cell), gz=Math.round((F.z[i]-CF.z0)/CF.cell);
+      if(gx<0||gz<0||gx>=CF.nx||gz>=CF.nz) continue;
+      const k=gz*CF.nx+gx;
+      const dx=CF.x0+gx*CF.cell-F.x[i], dz=CF.z0+gz*CF.cell-F.z[i], d=Math.hypot(dx,dz);
+      if(d<CF.d[k]){ CF.d[k]=d; CF.y[k]=F.y[i]; CF.s[k]=seg.g0+i*F.RS; } } }
+  const step=(k,j,add)=>{ const nd=CF.d[j]+add; if(nd<CF.d[k]){ CF.d[k]=nd; CF.y[k]=CF.y[j]; CF.s[k]=CF.s[j]; } };
+  const dO=CF.cell, dD=CF.cell*Math.SQRT2;
+  for(let z=0;z<CF.nz;z++) for(let x=0;x<CF.nx;x++){ const k=z*CF.nx+x;
+    if(x>0) step(k,k-1,dO); if(z>0) step(k,k-CF.nx,dO);
+    if(x>0&&z>0) step(k,k-CF.nx-1,dD); if(x<CF.nx-1&&z>0) step(k,k-CF.nx+1,dD); }
+  for(let z=CF.nz-1;z>=0;z--) for(let x=CF.nx-1;x>=0;x--){ const k=z*CF.nx+x;
+    if(x<CF.nx-1) step(k,k+1,dO); if(z<CF.nz-1) step(k,k+CF.nx,dO);
+    if(x<CF.nx-1&&z<CF.nz-1) step(k,k+CF.nx+1,dD); if(x>0&&z<CF.nz-1) step(k,k+CF.nx-1,dD); }
+}
+function cfSample(x,z,arr){
+  const fx=clamp((x-CF.x0)/CF.cell,0,CF.nx-1.001), fz=clamp((z-CF.z0)/CF.cell,0,CF.nz-1.001);
+  const ix=Math.floor(fx), iz=Math.floor(fz), tx=fx-ix, tz=fz-iz;
+  const a=arr[iz*CF.nx+ix], b=arr[iz*CF.nx+ix+1], c=arr[(iz+1)*CF.nx+ix], d=arr[(iz+1)*CF.nx+ix+1];
+  return lerp(lerp(a,b,tx),lerp(c,d,tx),tz);
+}
+const _riw={d:0,y:0,s:0,u:0};
+function routeInfoW(x,z){
+  const approx=cfSample(x,z,CF.d);
+  if(approx>150){ _riw.d=approx; _riw.y=cfSample(x,z,CF.y); _riw.s=cfSample(x,z,CF.s); _riw.u=approx; return _riw; }
+  const gx=Math.floor(x/rCell), gz=Math.floor(z/rCell);
+  let R=1; if(approx>18) R=2; if(approx>44) R=3; if(approx>68) R=4; if(approx>110) R=6;
+  let bd=1e18,by=0,bs=0,bu=0;
+  for(let ax=gx-R;ax<=gx+R;ax++) for(let az=gz-R;az<=gz+R;az++){
+    const c=rGridW.get(rKey(ax,az)); if(!c) continue;
+    for(let i=0;i<c.length;i+=7){
+      const dx=x-c[i], dz=z-c[i+2];
+      const t=clamp(dx*c[i+4]+dz*c[i+5],-1,1);
+      const ex=dx-c[i+4]*t, ez=dz-c[i+5]*t;
+      const d=ex*ex+ez*ez;
+      if(d<bd){ bd=d; by=c[i+1]+c[i+6]*t; bs=c[i+3]+t; bu=dx*c[i+5]-dz*c[i+4]; }
+    }
+  }
+  if(bd>1e17){ _riw.d=approx; _riw.y=cfSample(x,z,CF.y); _riw.s=cfSample(x,z,CF.s); _riw.u=approx; return _riw; }
+  _riw.d=Math.sqrt(bd); _riw.y=by; _riw.s=bs; _riw.u=bu;
+  return _riw;
+}
+
+// ---------- the world ground: the island owns its interior; the host owns
+// everything else and adapts its edge to the island's, never the reverse ----------
+function islandInfluence(lx,lz,riL){
+  // 1 well inside the island's authored land, 0 outside it
+  const lat=1-smooth(198,244,riL.d);
+  let along=1;
+  if(riL.s<3) along=smooth(-44,-6,lz);
+  else if(riL.s>L_ISL-3){
+    const dx=lx-EXIT_POSE.x, dz=lz-EXIT_POSE.z;
+    const fwd=dx*Math.sin(EXIT_POSE.headingRad)+dz*Math.cos(EXIT_POSE.headingRad);
+    along=1-smooth(6,44,fwd);
+  }
+  return lat*along;
+}
+function hostGround(x,z){
+  const ri=routeInfoW(x,z);
+  const base=ri.y+(fbmL(x/360+51.3,z/360+27.9)-0.5)*26*smooth(16,125,ri.d)
+                +(fbmL(x/130+11.1,z/130+43.7)-0.5)*9*smooth(14,60,ri.d);
+  const w=1-smooth(8.5,40,ri.d);
+  let y=base;
+  if(w>1e-4) y=lerp(base,ri.y+corridorProfile(ri.d,base-ri.y),w);
+  if(ri.d<RH+2.5) y=Math.min(y,ri.y+corridorProfile(Math.max(ri.d,RH+0.001),0)+0.015);
+  if(ri.d<RH+1.7) y=Math.max(y,ri.y+corridorProfile(Math.max(ri.d,RH+0.001),0)-0.012);
+  return y;
+}
+function groundW(x,z){
+  let best=null;
+  for(const T of XFORMS){
+    const l=T.inv(x,z);
+    if(Math.abs(l[0])>2600||Math.abs(l[1])>2600) continue;
+    const riL=routeInfoL(l[0],l[1]);
+    if(riL.d>260) continue;
+    const w=islandInfluence(l[0],l[1],riL);
+    if(w<=0.001) continue;
+    const gI=T.fwdY(groundL(l[0],l[1]));
+    if(!best||w>best.w) best={w,gI};
+  }
+  if(!best) return hostGround(x,z);
+  if(best.w>=0.999) return best.gI;
+  return lerp(hostGround(x,z),best.gI,best.w);
+}
+
+// ============================================================
+// RENDERER, LIGHT, SKY — the host's summer, identical in register to the
+// keeper's: one high warm sun, cool sky fill, warm woodland bounce.
+// ============================================================
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.NoToneMapping;
+const DPR_CAP=QCFG.dpr;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,DPR_CAP));
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.shadowMap.enabled=QCFG.shadow>0;
+renderer.shadowMap.type=THREE.PCFShadowMap;
+renderer.info.autoReset=false;
+document.body.appendChild(renderer.domElement);
+let contextLost=false;
+renderer.domElement.addEventListener('webglcontextlost',()=>{ contextLost=true; capturedErrors.push('webgl context lost'); });
+
+const scene=new THREE.Scene();
+const AIR=mixc(PAL.sky,PAL.sunGrass,0.34).lerp(col(0xffffff),0.16);
+scene.background=col(PAL.sky);
+scene.fog=new THREE.Fog(AIR,330,2050);
+const camera=new THREE.PerspectiveCamera(58,window.innerWidth/window.innerHeight,0.1,7200);
+
+// the sun is the HOST'S: fixed in the world, wherever the island is turned.
+// That is the point of riding the island at three headings — the light has to
+// arrive from a different quarter each time and the place must still compose.
+const HOSTSUN=makeStream('host/sun');
+const sunAz=HOSTSUN.r(0,TAU), sunEl=HOSTSUN.r(0.52,0.66);
+const sunDir=new THREE.Vector3(Math.sin(sunAz)*Math.cos(sunEl),Math.sin(sunEl),Math.cos(sunAz)*Math.cos(sunEl)).normalize();
+const sun=new THREE.DirectionalLight(mixc(PAL.road,0xFFF3D8,0.30),2.95);
+sun.position.copy(sunDir.clone().multiplyScalar(300));
+if(QCFG.shadow>0){
+  sun.castShadow=true;
+  sun.shadow.mapSize.set(QCFG.shadow,QCFG.shadow);
+  sun.shadow.camera.near=40; sun.shadow.camera.far=560;
+  sun.shadow.camera.left=-78; sun.shadow.camera.right=78;
+  sun.shadow.camera.top=78; sun.shadow.camera.bottom=-78;
+  sun.shadow.bias=-0.00042; sun.shadow.normalBias=0.10;
+}
+scene.add(sun); scene.add(sun.target);
+const hemi=new THREE.HemisphereLight(mixc(PAL.sky,0xE8F4FF,0.30),mixc(PAL.meadow,PAL.bark,0.30),0.76);
+scene.add(hemi);
+H.real.feed(sunAz,sunEl);
+
+// ---------- the world light field, shared by every lit surface ----------
+const WL={ uWTime:{value:0},
+  uCloudMove:{value:new THREE.Vector2(CLOUD.r(-1,1),CLOUD.r(-1,1)).normalize()},
+  uGlint:{value:new THREE.Vector4(0,0,0,0)} };
+const WL_GLSL=`
+uniform float uWTime; uniform vec2 uCloudMove; uniform vec4 uGlint;
+float wlHash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+float wlNoise(vec2 p){ vec2 i=floor(p),f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+  return mix(mix(wlHash(i),wlHash(i+vec2(1,0)),u.x),mix(wlHash(i+vec2(0,1)),wlHash(i+vec2(1,1)),u.x),u.y); }
+float cloudShadowAt(vec2 w){
+  vec2 p=(w+uCloudMove*uWTime*0.42)*0.00185;
+  float n=wlNoise(p)*0.62+wlNoise(p*2.4+7.1)*0.38;
+  float s=smoothstep(0.545,0.735,n);
+  return clamp(1.0-0.40*s,0.34,1.0);
+}
+float dappleAt(vec2 w,float canopy){
+  if(canopy<0.02) return 1.0;
+  float n=wlNoise(w*0.135)*0.54+wlNoise(w*0.41+31.7)*0.31+wlNoise(w*1.1+11.3)*0.15;
+  float sway=wlNoise(w*0.08+vec2(uWTime*0.055,uWTime*0.041));
+  float cut=smoothstep(0.455+0.07*sway,0.63,n);
+  return mix(1.0,mix(0.42,1.06,cut),clamp(canopy,0.0,1.0));
+}`;
+const MEADOW_GLSL=`
+{
+  float clump=wlNoise(vWPos.xz*0.42+vec2(4.7,1.9))*0.58+wlNoise(vWPos.xz*1.05+vec2(9.1,6.3))*0.42;
+  float coarse=wlNoise(vWPos.xz*0.085+vec2(21.0,13.0));
+  float lush=smoothstep(0.40,0.78,clump*0.65+coarse*0.35);
+  diffuseColor.rgb*=mix(vec3(1.08,1.045,0.94),vec3(0.90,0.965,0.93),lush);
+  float dry=smoothstep(0.60,0.86,coarse*0.7+wlNoise(vWPos.xz*0.30+vec2(31.0,2.0))*0.3);
+  diffuseColor.rgb=mix(diffuseColor.rgb,diffuseColor.rgb*vec3(1.20,1.10,0.80),dry*0.45);
+  float bare=smoothstep(0.80,0.93,wlNoise(vWPos.xz*0.62+vec2(55.0,17.0)));
+  diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.40,0.33,0.23),bare*0.34);
+  float grain=wlNoise(vWPos.xz*3.7)*0.5+wlNoise(vWPos.xz*9.1+3.3)*0.5;
+  diffuseColor.rgb*=0.965+0.07*grain;
+}`;
+// The mown swathes live in the SHADER: a seven-metre stripe cannot survive
+// sixteen-metre tile vertices, so the panel weight and the local station ride
+// along as attributes and the banding is painted per-pixel. Positive aPanel
+// is the mown field; negative is the regrown flush.
+const PANEL_GLSL=`
+{
+  float pw=clamp(vPanel,0.0,1.0);
+  if(pw>0.003){
+    float ph=vPanelS/max(vPanelW,1.0);
+    float band=fract(ph);
+    float swathe=0.95+0.075*mod(floor(ph),2.0);
+    vec3 hay=vec3(0.769,0.706,0.416);
+    float rag=wlNoise(vWPos.xz*0.33+vec2(3.7,9.2));
+    float w=pw*smoothstep(0.28,0.55,rag*0.5+pw*0.5);
+    diffuseColor.rgb=mix(diffuseColor.rgb,hay,0.5*w);
+    diffuseColor.rgb*=mix(1.0,swathe,w);
+    float row=exp(-pow((band-0.5)/0.075,2.0));
+    float rowBreak=wlNoise(vWPos.xz*0.9+vec2(13.0,5.0));
+    diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.871,0.796,0.522),row*w*0.7*smoothstep(0.28,0.6,rowBreak));
+  }
+  float fw=clamp(-vPanel,0.0,1.0);
+  if(fw>0.003){
+    float rag=smoothstep(0.3,0.7,wlNoise(vWPos.xz*0.21+vec2(7.0,2.0)));
+    diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.478,0.788,0.333),0.42*fw*rag);
+  }
+}`;
+function groundedMat(mat,opts){
+  const o=opts||{};
+  mat.onBeforeCompile=(sh)=>{
+    Object.assign(sh.uniforms,WL);
+    sh.vertexShader=sh.vertexShader
+      .replace('#include <common>','#include <common>\nvarying vec3 vWPos;'+(o.canopy?'\nattribute float aCanopy; varying float vCanopy;':'')
+        +(o.panel?'\nattribute float aPanel; attribute float aPanelS; attribute float aPanelW; varying float vPanel; varying float vPanelS; varying float vPanelW;':''))
+      .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*vec4(transformed,1.0);\n#ifdef USE_INSTANCING\n wp2=modelMatrix*instanceMatrix*vec4(transformed,1.0);\n#endif\n vWPos=wp2.xyz;'+(o.canopy?' vCanopy=aCanopy;':'')+(o.panel?' vPanel=aPanel; vPanelS=aPanelS; vPanelW=aPanelW;':'')+' }');
+    sh.fragmentShader=sh.fragmentShader
+      .replace('#include <common>','#include <common>\nvarying vec3 vWPos;'+(o.canopy?'varying float vCanopy;':'const float vCanopy=0.0;')
+        +(o.panel?'varying float vPanel; varying float vPanelS; varying float vPanelW;':'')+'\n'+WL_GLSL)
+      .replace('#include <color_fragment>','#include <color_fragment>\n'+(o.meadow?MEADOW_GLSL:'')+(o.panel?PANEL_GLSL:''))
+      .replace('vec3 outgoingLight = ',
+        'float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\n'+
+        'reflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse*=mix(0.84,1.0,wl);\nvec3 outgoingLight = ');
+  };
+  return mat;
+}
+
+// ---------- the sky dome ----------
+{
+  const m=new THREE.ShaderMaterial({
+    uniforms:{ uSunW:{value:sunDir.clone()} },
+    side:THREE.BackSide, depthWrite:false, fog:false,
+    vertexShader:`varying vec3 vW; void main(){ vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+      gl_Position=projectionMatrix*viewMatrix*wp; }`,
+    fragmentShader:`uniform vec3 uSunW; varying vec3 vW;
+    void main(){
+      vec3 d=normalize(vW-cameraPosition);
+      float e=max(d.y,-0.05);
+      vec3 zen=vec3(0.196,0.560,0.855);
+      vec3 mid=vec3(0.369,0.761,0.910);
+      vec3 hor=vec3(0.859,0.906,0.815);
+      vec3 c=mix(hor,mid,smoothstep(0.0,0.15,e));
+      c=mix(c,zen,smoothstep(0.13,0.58,e));
+      float sd=acos(clamp(dot(d,normalize(uSunW)),-1.0,1.0));
+      c+=vec3(1.0,0.95,0.80)*exp(-sd*sd*34.0)*0.40;
+      c+=vec3(1.0,0.98,0.90)*smoothstep(0.048,0.011,sd)*0.80;
+      gl_FragColor=vec4(c,1.0);
+    }`,
+  });
+  const dome=new THREE.Mesh(new THREE.SphereGeometry(5800,32,16),m);
+  dome.frustumCulled=false;
+  dome.onBeforeRender=(r,s,cam)=>{ dome.position.copy(cam.position); dome.updateMatrixWorld(); };
+  scene.add(dome);
+}
+
+// ============================================================
+// GROUND COLOUR — the keeper's painted-field logic, plus the two hay
+// panels: mown swathes with pale windrow lines, and the regrown flush.
+// ============================================================
+const C_SUN=col(PAL.sunGrass), C_MEAD=col(PAL.meadow), C_SHADE=col(PAL.leafShade),
+      C_DEEP=col(PAL.woodDeep), C_ROAD=col(PAL.road);
+const C_DRY=mixc(PAL.sunGrass,PAL.road,0.42);
+const C_LOAM=mixc(PAL.bark,PAL.woodDeep,0.42);
+const C_HAY=mixc(PAL.sunGrass,PAL.road,0.55);            // the colour of a cut field
+const C_WINDROW=mixc(PAL.road,PAL.sunGrass,0.35).lerp(col(0xFFF3CE),0.22);
+const C_FLUSH=mixc(PAL.meadow,PAL.sunGrass,0.42).lerp(col(0x7FD05A),0.18);
+const _gc=new THREE.Color();
+function groundColorL(x,z,slope,enc,moist,rel,ri){
+  const t=fbmE(x/150+3.1,z/150+9.4)*0.62+fbmE(x/47+21.3,z/47+7.7)*0.38;
+  const t2=fbmE(x/23+17.7,z/23+5.5);
+  let e=clamp(0.16+t*1.05+rel*0.040-slope*1.55,0,1);
+  _gc.copy(C_MEAD).lerp(C_SUN,e);
+  _gc.lerp(C_DRY,clamp((slope-0.24)*1.7,0,0.46)*clamp(1-moist*1.6,0,1)*(0.45+0.55*t2));
+  _gc.lerp(C_SHADE,clamp(enc*0.80,0,0.80));
+  _gc.lerp(C_DEEP,clamp(moist*0.34+enc*moist*0.5,0,0.45));
+  _gc.lerp(C_LOAM,clamp((enc-0.62)*1.5,0,0.34)*clamp(t2*1.3,0,1));
+  // the hay panels are painted in the shader (PANEL_GLSL): a vertex tint at
+  // tile resolution would alias the swathes away
+  return _gc;
+}
+
+// ============================================================
+// THE ROAD AND ITS CORRIDOR — one conformal mesh per segment, the island's
+// built from its own LOCAL frames and transformed whole, so its geometry is
+// identical under every placement.
+// ============================================================
+const C_ROAD_CORE=mixc(PAL.road,0xFFF2D2,0.16);
+const C_ROAD_MID=mixc(PAL.road,PAL.bark,0.055);
+const C_ROAD_EDGE=mixc(PAL.road,PAL.bark,0.26).lerp(col(PAL.leafShade),0.08);
+const C_SEAM=(()=>{
+  const target=lumOf(C_ROAD_MID)/3.4;
+  const hue=mixc(PAL.bark,PAL.woodDeep,0.42);
+  const k=target/Math.max(lumOf(hue),1e-4);
+  return new THREE.Color(clamp(hue.r*k,0,1),clamp(hue.g*k,0,1),clamp(hue.b*k,0,1));
+})();
+const C_SHOULDER=mixc(PAL.road,PAL.bark,0.46).lerp(col(PAL.sunGrass),0.10);
+const C_WORNGRASS=mixc(PAL.meadow,PAL.bark,0.24).lerp(col(PAL.sunGrass),0.16);
+const ROAD_CONTRAST=lumOf(C_ROAD_MID)/lumOf(C_SEAM);
+const COLS=(()=>{
+  const c=[];
+  for(const t of [-1,-0.72,-0.40,-0.14,0.14,0.40,0.72,1]) c.push(t*RH);
+  for(const a of [0.22,0.6,1.15,1.9,2.9,4.4,8.0,12.5,18,25,33,43,54,APRON]){ c.push(RH+a); c.push(-(RH+a)); }
+  c.sort((p,q)=>p-q);
+  return c;
+})();
+const corridorMat=new THREE.MeshLambertMaterial({vertexColors:true,
+  emissive:new THREE.Color(0x120e07),emissiveIntensity:1});
+corridorMat.onBeforeCompile=(sh)=>{
+  Object.assign(sh.uniforms,WL);
+  sh.vertexShader=sh.vertexShader
+    .replace('#include <common>','#include <common>\nvarying vec3 vWPos; attribute float aCanopy; attribute float aS; attribute float aLat; attribute float aMat; attribute float aPanel; attribute float aPanelS; attribute float aPanelW;\nvarying float vCanopy; varying float vS; varying float vLat; varying float vMat; varying float vPanel; varying float vPanelS; varying float vPanelW;')
+    .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*vec4(transformed,1.0); vWPos=wp2.xyz; vCanopy=aCanopy; vS=aS; vLat=aLat; vMat=aMat; vPanel=aPanel; vPanelS=aPanelS; vPanelW=aPanelW; }');
+  sh.fragmentShader=sh.fragmentShader
+    .replace('#include <common>','#include <common>\nvarying vec3 vWPos; varying float vCanopy; varying float vS; varying float vLat; varying float vMat; varying float vPanel; varying float vPanelS; varying float vPanelW;\n'+WL_GLSL)
+    .replace('#include <color_fragment>',`#include <color_fragment>
+    if(vMat<0.5){
+      float slab=wlHash(vec2(floor(vS/8.7),0.0));
+      float seam=smoothstep(0.42,0.0,abs(fract(vS/8.7)-0.5)*8.7-(0.30+0.30*slab));
+      float repair=smoothstep(0.63,0.78,wlNoise(vWPos.xz*0.055+vec2(17.0,3.0)));
+      float grain=wlNoise(vWPos.xz*2.1)*0.5+wlNoise(vWPos.xz*6.3+9.1)*0.5;
+      float wear=smoothstep(0.75,0.05,abs(vLat));
+      diffuseColor.rgb*=1.0-seam*0.115-repair*0.065-(grain-0.5)*0.085;
+      diffuseColor.rgb*=1.0+wear*0.045;
+    } else {
+      float g=wlNoise(vWPos.xz*0.36)*0.6+wlNoise(vWPos.xz*1.15+5.3)*0.4;
+      float edge=abs(vLat);
+      float brk=wlNoise(vWPos.xz*0.55+vec2(3.1,9.7))*0.6+wlNoise(vWPos.xz*1.9)*0.4;
+      float scuff=smoothstep(1.02,1.55,edge+(brk-0.5)*0.42);
+      diffuseColor.rgb=mix(diffuseColor.rgb,diffuseColor.rgb*vec3(1.10,1.06,0.94),(1.0-scuff)*0.55);
+      float loam=smoothstep(0.62,0.18,abs(edge-1.28)+(brk-0.5)*0.5);
+      diffuseColor.rgb=mix(diffuseColor.rgb,vec3(0.44,0.36,0.25),loam*0.30);
+      diffuseColor.rgb*=0.92+0.16*g;
+      float blendM=smoothstep(1.5,3.4,edge);
+      vec3 preM=diffuseColor.rgb;
+      ${MEADOW_GLSL}
+      diffuseColor.rgb=mix(preM,diffuseColor.rgb,blendM);
+      ${PANEL_GLSL}
+    }`)
+    .replace('vec3 outgoingLight = ',
+      'float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\n'+
+      'if(vMat<0.5) wl=mix(1.0,wl,0.55);\n'+
+      'reflectedLight.directDiffuse*=wl;\n'+
+      'reflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.86,1.0,wl)+diffuseColor.rgb*(vMat<0.5?0.30:0.34)*wl;\n'+
+      'vec3 outgoingLight = ');
+};
+
+const ISLAND_MESHES=[];   // everything the island itself pays for, per copy
+const HOST_MESHES=[];
+function bookMesh(m,island,copy){ (island?ISLAND_MESHES:HOST_MESHES).push(m); m.userData.copy=copy; return m; }
+
+// island corridor rows are indexed by LOCAL station so the mesh is the same
+// mesh under every placement; host segments use their own world frames
+function buildCorridorSegment(seg){
+  const isIsland=seg.island;
+  const F=isIsland?LFRAME:seg.F;
+  const T=isIsland?XFORMS[seg.copy]:null;
+  const row=QCFG.row;
+  const rows=Math.max(2,Math.round(F.len/row)+1);
+  const W=COLS.length;
+  const P=new Float32Array(rows*W*3), C=new Float32Array(rows*W*3);
+  const CA=new Float32Array(rows*W), SS=new Float32Array(rows*W), LT=new Float32Array(rows*W), MT=new Float32Array(rows*W);
+  const PA=new Float32Array(rows*W), PS=new Float32Array(rows*W), PW=new Float32Array(rows*W);
+  const IDX=[];
+  for(let r=0;r<rows;r++){
+    const s=F.len*r/(rows-1);
+    const fr=getFrame(F,s);
+    const enc=isIsland?enclosureAt(s):0.12;
+    for(let j=0;j<W;j++){
+      const u=COLS[j], a=Math.abs(u), k=r*W+j;
+      const x=fr.x+fr.lx*u, z=fr.z+fr.lz*u;
+      let y, mat, cc, pan=0, panS=0, panW=8;
+      if(a<=RH+1e-4){
+        y=fr.y+CROWN*(1-(a/RH)*(a/RH));
+        mat=0;
+        const tl=Math.abs(u)/RH;
+        cc=C_ROAD_CORE.clone().lerp(C_ROAD_MID,smooth(0.0,0.62,tl)).lerp(C_ROAD_EDGE,smooth(0.62,1.0,tl));
+      } else {
+        mat=1;
+        let base;
+        if(isIsland){
+          const ri=routeInfoL(x,z);
+          y=groundL(x,z);
+          const moist=moistL(x,z);
+          base=groundColorL(x,z,0,enc,moist,y-ri.y,ri).clone();
+          const pa=panelAt(x,z,ri);
+          if(pa){ pan=pa.P.mown?pa.w:-pa.w; panW=pa.P.mown?pa.P.stripeW:8; }
+          panS=ri.s;
+        } else {
+          y=groundW(x,z);
+          base=groundColorL(x,z,0,enc,0,0,null).clone();
+        }
+        const seamW=0.34, shoW=lerp(1.05,0.55,enc), grW=lerp(2.6,1.5,enc);
+        const d0=a-RH;
+        cc=base;
+        cc.lerp(C_WORNGRASS,1-smooth(seamW+shoW,seamW+shoW+grW,d0));
+        cc.lerp(C_SHOULDER,(1-smooth(seamW,seamW+shoW,d0))*lerp(0.86,0.45,enc));
+        cc.lerp(C_SEAM,1-smooth(seamW*0.55,seamW,d0));
+      }
+      if(isIsland){
+        const w=T.fwd(x,z);
+        P[k*3]=w[0]; P[k*3+1]=T.fwdY(y); P[k*3+2]=w[1];
+      } else {
+        P[k*3]=x; P[k*3+1]=y; P[k*3+2]=z;
+      }
+      C[k*3]=cc.r; C[k*3+1]=cc.g; C[k*3+2]=cc.b;
+      CA[k]=enc; SS[k]=(seg.g0+s); LT[k]=u/RH; MT[k]=mat;
+      PA[k]=pan; PS[k]=panS; PW[k]=panW;
+    }
+  }
+  for(let r=0;r<rows-1;r++) for(let j=0;j<W-1;j++){
+    const k=r*W+j;
+    IDX.push(k,k+W,k+1, k+1,k+W,k+W+1);
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(C,3));
+  g.setAttribute('aCanopy',new THREE.Float32BufferAttribute(CA,1));
+  g.setAttribute('aS',new THREE.Float32BufferAttribute(SS,1));
+  g.setAttribute('aLat',new THREE.Float32BufferAttribute(LT,1));
+  g.setAttribute('aMat',new THREE.Float32BufferAttribute(MT,1));
+  g.setAttribute('aPanel',new THREE.Float32BufferAttribute(PA,1));
+  g.setAttribute('aPanelS',new THREE.Float32BufferAttribute(PS,1));
+  g.setAttribute('aPanelW',new THREE.Float32BufferAttribute(PW,1));
+  g.setIndex(IDX);
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  const m=new THREE.Mesh(g,corridorMat);
+  m.receiveShadow=(QCFG.shadow>0);
+  m.matrixAutoUpdate=false;
+  m.name='corridor-'+(isIsland?('island-'+seg.copy):'host');
+  scene.add(m);
+  bookMesh(m,isIsland,seg.copy);
+  return m;
+}
+const corridorMeshes=SEGMENTS.map(buildCorridorSegment);
+
+// ---------- the ground field beyond the corridor ----------
+// Island tiles: a LOCAL grid over the island's own land, transformed whole.
+// Host tiles: a world grid everywhere else, sampling the blended ground so
+// the host's edge lands on the island's.
+const FIELD_HOLD=APRON-3;
+const terrainMeshes=[];
+function tileMaterial(){
+  return groundedMat(new THREE.MeshLambertMaterial({vertexColors:true,
+    emissive:new THREE.Color(0x0e1206),emissiveIntensity:1}),{meadow:true,canopy:true,panel:true});
+}
+const tileMat=tileMaterial();
+function buildTileMesh(cells,cell,sampler,colorer,xform,island,copy,name){
+  // cells: array of [cx,cz] lower corners in the sampling frame
+  const P=[],C=[],CA=[],PA=[],PS=[],PW=[];
+  const IDX=[];
+  let vi=0;
+  const corner=new Map();
+  const ck=(ix,iz)=>ix*100000+iz;
+  const getv=(ix,iz)=>{
+    const key=ck(ix,iz);
+    let id=corner.get(key);
+    if(id!==undefined) return id;
+    const x=ix*cell, z=iz*cell;
+    const y=sampler(x,z);
+    let wx=x, wy=y, wz=z;
+    if(xform){ const w=xform.fwd(x,z); wx=w[0]; wz=w[1]; wy=xform.fwdY(y); }
+    P.push(wx,wy,wz);
+    const col=colorer(x,z,y);
+    C.push(col.c.r,col.c.g,col.c.b);
+    CA.push(col.canopy);
+    PA.push(col.panel||0); PS.push(col.panelS||0); PW.push(col.panelW||8);
+    id=vi++; corner.set(key,id);
+    return id;
+  };
+  for(const [cx,cz] of cells){
+    const a=getv(cx,cz), b=getv(cx+1,cz), c=getv(cx,cz+1), d=getv(cx+1,cz+1);
+    IDX.push(a,c,b, b,c,d);
+  }
+  if(!P.length) return null;
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(C,3));
+  g.setAttribute('aCanopy',new THREE.Float32BufferAttribute(CA,1));
+  g.setAttribute('aPanel',new THREE.Float32BufferAttribute(PA,1));
+  g.setAttribute('aPanelS',new THREE.Float32BufferAttribute(PS,1));
+  g.setAttribute('aPanelW',new THREE.Float32BufferAttribute(PW,1));
+  g.setIndex(IDX);
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  const m=new THREE.Mesh(g,tileMat);
+  m.receiveShadow=(QCFG.shadow>0);
+  m.matrixAutoUpdate=false; m.name=name;
+  scene.add(m); terrainMeshes.push(m);
+  bookMesh(m,island,copy);
+  return m;
+}
+{
+  const cell=QCFG.tile;
+  // --- island tiles, in the LOCAL frame ---
+  let minX=1e9,maxX=-1e9,minZ=1e9,maxZ=-1e9;
+  for(let i=0;i<=LFRAME.N;i+=4){
+    minX=Math.min(minX,LFRAME.x[i]); maxX=Math.max(maxX,LFRAME.x[i]);
+    minZ=Math.min(minZ,LFRAME.z[i]); maxZ=Math.max(maxZ,LFRAME.z[i]);
+  }
+  const R=246;
+  const groups=[[],[],[],[]];   // quarters along s for view culling
+  for(let iz=Math.floor((minZ-R)/cell);iz<=Math.ceil((maxZ+R)/cell);iz++){
+    for(let ix=Math.floor((minX-R)/cell);ix<=Math.ceil((maxX+R)/cell);ix++){
+      const x=(ix+0.5)*cell, z=(iz+0.5)*cell;
+      const ri=routeInfoL(x,z);
+      if(ri.d<FIELD_HOLD||ri.d>R) continue;
+      if(islandInfluence(x,z,ri)<0.05) continue;
+      groups[clamp(Math.floor(ri.s/L_ISL*4),0,3)].push([ix,iz]);
+    }
+  }
+  for(let k=0;k<XFORMS.length;k++){
+    const T=XFORMS[k];
+    for(let q=0;q<4;q++){
+      if(!groups[q].length) continue;
+      buildTileMesh(groups[q],cell,groundL,(x,z,y)=>{
+        const ri=routeInfoL(x,z);
+        const slope=Math.abs(groundL(x+3,z)-groundL(x-3,z))/6+Math.abs(groundL(x,z+3)-groundL(x,z-3))/6;
+        const enc=enclosureAt(ri.s)*clamp(1.3-ri.d/90,0,1);
+        const moist=moistL(x,z);
+        const pa=panelAt(x,z,ri);
+        return {c:groundColorL(x,z,slope,enc,moist,y-ri.y,ri),canopy:clamp(enc,0,1),
+          panel:pa?(pa.P.mown?pa.w:-pa.w):0, panelS:ri.s, panelW:pa&&pa.P.mown?pa.P.stripeW:8};
+      },T,true,k,'tiles-island-'+k+'-'+q);
+    }
+  }
+  // --- host tiles: inner world grid + a coarse outer ring ---
+  const hostCells=[],hostCellsFar=[];
+  const bboxPad=520, farPad=1150, farCell=64;
+  let wminX=1e9,wmaxX=-1e9,wminZ=1e9,wmaxZ=-1e9;
+  for(const seg of SEGMENTS){ const F=seg.F;
+    for(let i=0;i<=F.N;i+=4){
+      wminX=Math.min(wminX,F.x[i]); wmaxX=Math.max(wmaxX,F.x[i]);
+      wminZ=Math.min(wminZ,F.z[i]); wmaxZ=Math.max(wmaxZ,F.z[i]); } }
+  const insideIsland=(x,z)=>{
+    for(const T of XFORMS){
+      const l=T.inv(x,z);
+      const ri=routeInfoL(l[0],l[1]);
+      if(ri.d<246&&islandInfluence(l[0],l[1],ri)>0.98) return true;
+    }
+    return false;
+  };
+  for(let iz=Math.floor((wminZ-bboxPad)/cell);iz<=Math.ceil((wmaxZ+bboxPad)/cell);iz++){
+    for(let ix=Math.floor((wminX-bboxPad)/cell);ix<=Math.ceil((wmaxX+bboxPad)/cell);ix++){
+      const x=(ix+0.5)*cell, z=(iz+0.5)*cell;
+      const d=routeInfoW(x,z).d;
+      if(d>bboxPad) continue;
+      if(d<FIELD_HOLD&&!insideIsland(x,z)) continue;
+      if(insideIsland(x,z)) continue;
+      hostCells.push([ix,iz]);
+    }
+  }
+  for(let iz=Math.floor((wminZ-farPad)/farCell);iz<=Math.ceil((wmaxZ+farPad)/farCell);iz++){
+    for(let ix=Math.floor((wminX-farPad)/farCell);ix<=Math.ceil((wmaxX+farPad)/farCell);ix++){
+      const x=(ix+0.5)*farCell, z=(iz+0.5)*farCell;
+      const d=routeInfoW(x,z).d;
+      if(d<=bboxPad-farCell||d>farPad) continue;
+      hostCellsFar.push([ix,iz]);
+    }
+  }
+  const hostColor=(x,z,y)=>{
+    const ri=routeInfoW(x,z);
+    const slope=0;
+    return {c:groundColorL(x,z,slope,0.1,0,y-ri.y,null),canopy:0};
+  };
+  // split host tiles into a few meshes for culling
+  const chunks=new Map();
+  for(const c of hostCells){
+    const key=Math.floor(c[0]*cell/500)*1000+Math.floor(c[1]*cell/500);
+    let a=chunks.get(key); if(!a){a=[];chunks.set(key,a);} a.push(c);
+  }
+  let ci=0;
+  for(const a of chunks.values()) buildTileMesh(a,cell,groundW,hostColor,null,false,-1,'tiles-host-'+(ci++));
+  const farChunks=new Map();
+  for(const c of hostCellsFar){
+    const key=Math.floor(c[0]*farCell/1400)*1000+Math.floor(c[1]*farCell/1400);
+    let a=farChunks.get(key); if(!a){a=[];farChunks.set(key,a);} a.push(c);
+  }
+  for(const a of farChunks.values()) buildTileMesh(a,farCell,groundW,hostColor,null,false,-1,'tiles-far-'+(ci++));
+}
+
+// ============================================================
+// TREE GRAMMAR — the keeper's soft broadleaf family, verbatim in spirit:
+// a crown is a ring of overlapping oblate lobes with a deliberate gap.
+// The one difference is honesty about placement: nothing in a tree's
+// geometry may depend on where the island stands, so the baked bark
+// gradient and every lean direction are LOCAL-frame quantities.
+// ============================================================
+function Buf(){ return {p:[],c:[],s:[],n:[],sway:0}; }
+const _fa=new THREE.Vector3(), _fb=new THREE.Vector3(), _fn=new THREE.Vector3();
+function pushTri(B,a,b,c,cc,na,nb,nc){
+  B.p.push(a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+  for(let k=0;k<3;k++){ B.c.push(cc.r,cc.g,cc.b); B.s.push(B.sway); }
+  if(na){ B.n.push(na[0],na[1],na[2], nb[0],nb[1],nb[2], nc[0],nc[1],nc[2]); }
+  else {
+    _fa.set(b[0]-a[0],b[1]-a[1],b[2]-a[2]);
+    _fb.set(c[0]-a[0],c[1]-a[1],c[2]-a[2]);
+    _fn.crossVectors(_fa,_fb);
+    if(_fn.lengthSq()>1e-12) _fn.normalize(); else _fn.set(0,1,0);
+    for(let k=0;k<3;k++) B.n.push(_fn.x,_fn.y,_fn.z);
+  }
+}
+function pushQuad(B,a,b,c,d,cc){ pushTri(B,a,b,c,cc); pushTri(B,a,c,d,cc); }
+function bufGeo(B){
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(B.p,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(B.c,3));
+  g.setAttribute('aSway',new THREE.Float32BufferAttribute(B.s,1));
+  g.setAttribute('normal',new THREE.Float32BufferAttribute(B.n,3));
+  g.computeBoundingSphere();
+  return g;
+}
+// the baked side-light on bark is a fixed LOCAL direction: real light is the
+// host sun's job, and the island must not bake a particular placement in
+const barkXZ=new THREE.Vector2(0.55,0.835).normalize();
+const _u=new THREE.Vector3(), _v=new THREE.Vector3(), _dir=new THREE.Vector3(), _ref=new THREE.Vector3();
+function tube(B,pts,r0,r1,sides,cSun,cShade){
+  _ref.set(1,0,0);
+  {
+    const d0=new THREE.Vector3().subVectors(pts[pts.length-1],pts[0]);
+    if(Math.abs(d0.x)>Math.abs(d0.z)) _ref.set(0,0,1);
+  }
+  for(let i=0;i<pts.length-1;i++){
+    const t0=i/(pts.length-1), t1=(i+1)/(pts.length-1);
+    const ra=lerp(r0,r1,t0), rb=lerp(r0,r1,t1);
+    const A=pts[i], Bp=pts[i+1];
+    _dir.subVectors(Bp,A); if(_dir.lengthSq()<1e-8) continue; _dir.normalize();
+    _u.copy(_ref).cross(_dir);
+    if(_u.lengthSq()<1e-4){ _u.set(0,1,0).cross(_dir); }
+    if(_u.lengthSq()<1e-4){ _u.set(1,0,0); }
+    _u.normalize(); _v.crossVectors(_dir,_u).normalize();
+    for(let j=0;j<sides;j++){
+      const a0=j/sides*TAU, a1=(j+1)/sides*TAU;
+      const o0x=_u.x*Math.cos(a0)+_v.x*Math.sin(a0), o0y=_u.y*Math.cos(a0)+_v.y*Math.sin(a0), o0z=_u.z*Math.cos(a0)+_v.z*Math.sin(a0);
+      const o1x=_u.x*Math.cos(a1)+_v.x*Math.sin(a1), o1y=_u.y*Math.cos(a1)+_v.y*Math.sin(a1), o1z=_u.z*Math.cos(a1)+_v.z*Math.sin(a1);
+      const face=clamp(0.5+0.62*(o0x*barkXZ.x+o0z*barkXZ.y),0,1);
+      const cc=cShade.clone().lerp(cSun,face);
+      pushQuad(B,[A.x+o0x*ra,A.y+o0y*ra,A.z+o0z*ra],[A.x+o1x*ra,A.y+o1y*ra,A.z+o1z*ra],
+                 [Bp.x+o1x*rb,Bp.y+o1y*rb,Bp.z+o1z*rb],[Bp.x+o0x*rb,Bp.y+o0y*rb,Bp.z+o0z*rb],cc);
+    }
+  }
+}
+const ICO=[new THREE.IcosahedronGeometry(1,0),new THREE.IcosahedronGeometry(1,1),new THREE.IcosahedronGeometry(1,2)];
+const ICOD=ICO.map(g=>{ const p=g.getAttribute('position');
+  const idx=g.getIndex()?Array.from(g.getIndex().array):Array.from({length:p.count},(_,i)=>i);
+  return {p,idx,n:p.count}; });
+function lobe(B,cx,cy,cz,rx,ry,rz,st,cTop,cBot,rough,detail,swayAmt){
+  const D=ICOD[clamp(detail,0,2)];
+  const prev=B.sway; B.sway=swayAmt!==undefined?swayAmt:clamp(0.35+(rx+rz)*0.05,0.25,1.0);
+  const p1=st.r(0,TAU), p2=st.r(0,TAU);
+  const N=D.n, jx=new Float32Array(N);
+  for(let i=0;i<N;i++){
+    const x=D.p.getX(i), y=D.p.getY(i), z=D.p.getZ(i);
+    const th=Math.atan2(z,x);
+    const smoothTerm=Math.sin(th*2+y*2.2+p1)*0.52+Math.sin(th*3+p2)*0.30;
+    jx[i]=1+rough*((st.f()-0.5)*2*0.34+smoothTerm*0.78);
+  }
+  const nrm=[];
+  const vert=(i)=>{
+    const x=D.p.getX(i), y=D.p.getY(i), z=D.p.getZ(i), j=jx[i];
+    const yy=y<0?y*0.86:y;
+    let nx=x/rx, ny=yy/ry, nz=z/rz;
+    const nl=Math.hypot(nx,ny,nz)||1;
+    nrm[i]=[nx/nl,ny/nl,nz/nl];
+    return [cx+x*rx*j, cy+yy*ry*j, cz+z*rz*j, y];
+  };
+  for(let i=0;i<D.idx.length;i+=3){
+    const ia=D.idx[i], ib=D.idx[i+1], ic=D.idx[i+2];
+    const a=vert(ia), b=vert(ib), c=vert(ic);
+    const ym=(a[3]+b[3]+c[3])/3;
+    const cc=cBot.clone().lerp(cTop,clamp(0.44+0.58*ym,0,1));
+    pushTri(B,[a[0],a[1],a[2]],[b[0],b[1],b[2]],[c[0],c[1],c[2]],cc,nrm[ia],nrm[ib],nrm[ic]);
+  }
+  B.sway=prev;
+}
+const BARK_SUN=mixc(PAL.bark,PAL.road,0.30), BARK_SHADE=mixc(PAL.bark,PAL.woodDeep,0.42);
+const BIRCH_SUN=mixc(PAL.road,0xFFF6E0,0.30).lerp(col(PAL.bark),0.30), BIRCH_SHADE=mixc(PAL.road,PAL.bark,0.34).lerp(col(PAL.leafShade),0.30);
+const LEAF_SUN=mixc(PAL.sunGrass,PAL.meadow,0.16), LEAF_MID=col(PAL.meadow),
+      LEAF_SHADE=col(PAL.leafShade), LEAF_DEEP=mixc(PAL.leafShade,PAL.woodDeep,0.62);
+const C_FRUIT=mixc(PAL.sunGrass,0xFFD98A,0.55), C_FRUIT_SH=mixc(PAL.sunGrass,PAL.road,0.4);
+const ARCH={
+  oak:       {h:[11,15.5],r:[0.40,0.56],w:1.52,lift:0.47,lobes:[5,7],limbs:[3,4],lean:[0,0.05],bark:0},
+  beech:     {h:[15,20],  r:[0.34,0.48],w:0.98,lift:0.60,lobes:[4,6],limbs:[2,3],lean:[0,0.04],bark:0},
+  birch:     {h:[9,13],   r:[0.17,0.26],w:0.82,lift:0.64,lobes:[3,5],limbs:[2,3],lean:[0,0.07],bark:1},
+  leaning:   {h:[10,14],  r:[0.32,0.46],w:1.22,lift:0.54,lobes:[4,6],limbs:[2,4],lean:[0.13,0.21],bark:0},
+  windshaped:{h:[9,13.5], r:[0.30,0.44],w:1.18,lift:0.58,lobes:[3,6],limbs:[2,4],lean:[0.09,0.15],bark:0},
+  orchard:   {h:[5.5,8],  r:[0.22,0.34],w:1.34,lift:0.44,lobes:[3,5],limbs:[3,4],lean:[0,0.08],bark:0},
+};
+function addFruitDot(B,x,y,z,r,cc){
+  // a small hard octahedron: eight triangles, read as a fruit at field distance
+  const T=[[r,0,0],[-r,0,0],[0,0,r],[0,0,-r]], up=[0,r*1.2,0], dn=[0,-r*1.2,0];
+  const q=[[0,2],[2,1],[1,3],[3,0]];
+  for(const [a,b] of q){
+    pushTri(B,[x+up[0],y+up[1],z+up[2]],[x+T[a][0],y+T[a][1],z+T[a][2]],[x+T[b][0],y+T[b][1],z+T[b][2]],cc);
+    pushTri(B,[x+dn[0],y+dn[1],z+dn[2]],[x+T[b][0],y+T[b][1],z+T[b][2]],[x+T[a][0],y+T[a][1],z+T[a][2]],cc);
+  }
+}
+const FAM_BUILT={}; for(const f of FAMS) FAM_BUILT[f]=0;
+function buildTree(B,t,tier,minCrownY,round){
+  const A=ARCH[t.fam], st=subStream('tree',Math.round(t.x*10),Math.round(t.z*10));
+  FAM_BUILT[t.fam]++;
+  const S=t.scl;
+  const Ht=st.r(A.h[0],A.h[1])*S, R=st.r(A.r[0],A.r[1])*S;
+  const leanAmt=st.r(A.lean[0],A.lean[1])*(t.lean>=0?1:-1)*(t.fam==='windshaped'||t.fam==='leaning'?1:0.6);
+  const leanDir=t.leanDir!==undefined?t.leanDir:st.r(0,TAU);
+  const shade=clamp(t.enc,0,1);
+  const cSunL=LEAF_SUN.clone().lerp(LEAF_MID,shade*0.46);
+  const cMidL=LEAF_MID.clone().lerp(LEAF_SHADE,shade*0.52);
+  const cShL=LEAF_SHADE.clone().lerp(LEAF_DEEP,shade*0.56);
+  const bSun=A.bark?BIRCH_SUN:BARK_SUN, bSh=A.bark?BIRCH_SHADE:BARK_SHADE;
+  const crownR=Ht*A.w*0.31*(t.d<14?clamp(0.50+t.d*0.036,0.50,1):1);
+  let crownY=t.y+Ht*A.lift*(tier===2?1.0:0.76)+Ht*0.16;
+  let trunkTop=t.y+Ht*A.lift*1.02;
+  if(minCrownY!==undefined&&crownY-crownR*0.55<minCrownY){
+    const dy=minCrownY+crownR*0.55-crownY;
+    crownY+=dy; trunkTop+=dy;
+  }
+  trunkTop=Math.max(trunkTop,crownY-crownR*0.62);
+  const nSeg=tier===2?6:(tier===1?4:2);
+  const tp=[];
+  for(let i=0;i<=nSeg;i++){
+    const f=i/nSeg;
+    const bend=Math.sin(f*Math.PI*0.72)*leanAmt*Ht;
+    tp.push(new THREE.Vector3(t.x+Math.sin(leanDir)*bend+(i?st.r(-0.14,0.14)*S:0),
+                              lerp(t.y,trunkTop,f),
+                              t.z+Math.cos(leanDir)*bend+(i?st.r(-0.14,0.14)*S:0)));
+  }
+  const carry=1+0.42*clamp(crownR/(Ht*0.34),0,1.6);
+  tube(B,tp,R*carry*(tier===2?1.30:1.46),R*carry*(tier===2?0.44:0.60),tier===2?7:(tier===1?5:4),bSun,bSh);
+  if(tier===2){
+    const nr=st.i(3,5);
+    for(let i=0;i<nr;i++){
+      const a=st.r(0,TAU), rl=R*st.r(2.0,3.4);
+      tube(B,[new THREE.Vector3(t.x,t.y+R*st.r(1.5,2.4),t.z),
+              new THREE.Vector3(t.x+Math.sin(a)*rl*0.55,t.y+R*0.5,t.z+Math.cos(a)*rl*0.55),
+              new THREE.Vector3(t.x+Math.sin(a)*rl,t.y-0.16,t.z+Math.cos(a)*rl)],
+        R*0.52,R*0.13,4,bSun,bSh);
+    }
+  }
+  const top=tp[tp.length-1];
+  const nL=tier===0?4:(tier===1?Math.max(4,st.i(A.lobes[0],A.lobes[1])):st.i(A.lobes[0],A.lobes[1])+4);
+  const fill=tier===2?1:(tier===1?1.18:1.46);
+  const gapA=st.r(0,TAU), gapW=st.r(0.55,1.05);
+  const skewA=(t.fam==='windshaped')?leanDir:st.r(0,TAU);
+  const skew=st.r(0.16,0.42);
+  const detail=tier===2?QCFG.lobe:(round?QCFG.lobe:Math.max(0,QCFG.lobe-1));
+  const limbs=[];
+  const nLimb=tier===0?0:st.i(A.limbs[0],A.limbs[1]);
+  for(let i=0;i<nLimb;i++){
+    const a=skewA+i/Math.max(1,nLimb)*TAU+st.r(-0.4,0.4);
+    const reach=crownR*st.r(0.45,0.85);
+    const b0=tp[Math.max(1,tp.length-2)].clone();
+    const b1=new THREE.Vector3(top.x+Math.sin(a)*reach,crownY-crownR*st.r(0.1,0.42),top.z+Math.cos(a)*reach);
+    if(tier===2) tube(B,[b0,b1],R*0.42,R*0.13,4,bSun,bSh);
+    limbs.push(b1);
+  }
+  lobe(B,top.x+Math.sin(skewA)*crownR*skew*0.6,crownY-crownR*0.30,top.z+Math.cos(skewA)*crownR*skew*0.6,
+    crownR*st.r(0.60,0.76),crownR*st.r(0.34,0.44),crownR*st.r(0.60,0.76),st,cShL,LEAF_DEEP,0.17,Math.max(0,detail-1),0.30);
+  for(let i=0;i<nL;i++){
+    const a=st.r(0,TAU);
+    let da=Math.abs(((a-gapA+Math.PI*3)%TAU)-Math.PI);
+    if(da<gapW&&st.chance(0.72)) continue;
+    const rr=crownR*st.r(0.16,0.58);
+    let cx=top.x+Math.sin(a)*rr+Math.sin(skewA)*crownR*skew;
+    let cz=top.z+Math.cos(a)*rr+Math.cos(skewA)*crownR*skew;
+    let up=st.r(-0.34,0.52);
+    if(limbs.length&&st.chance(0.62)){
+      const e=limbs[st.i(0,limbs.length-1)];
+      cx=lerp(cx,e.x+st.r(-0.22,0.22)*crownR,0.72);
+      cz=lerp(cz,e.z+st.r(-0.22,0.22)*crownR,0.72);
+      up=(e.y-crownY)/crownR+st.r(0.10,0.46);
+    }
+    const lr=crownR*st.r(0.30,0.45)*fill;
+    const high=up>0.04;
+    lobe(B,cx,crownY+crownR*up,cz,lr*st.r(0.94,1.20),lr*st.r(0.72,0.94),lr*st.r(0.94,1.20),st,
+      high?cSunL:cMidL, high?cMidL:cShL, 0.19, detail);
+  }
+  if(tier>=1){
+    const nEdge=tier===2?st.i(4,6):st.i(2,3);
+    for(let i=0;i<nEdge;i++){
+      const a=st.r(0,TAU);
+      let da=Math.abs(((a-gapA+Math.PI*3)%TAU)-Math.PI);
+      if(da<gapW*0.8&&st.chance(0.75)) continue;
+      const rr=crownR*st.r(0.46,0.78);
+      const lr=crownR*st.r(0.20,0.32);
+      lobe(B,top.x+Math.sin(a)*rr+Math.sin(skewA)*crownR*skew,
+        crownY+crownR*st.r(-0.22,0.42),top.z+Math.cos(a)*rr+Math.cos(skewA)*crownR*skew,
+        lr*st.r(0.9,1.22),lr*st.r(0.8,1.05),lr*st.r(0.9,1.22),st,
+        cSunL,cMidL,0.20,Math.max(0,detail-1));
+    }
+  }
+  lobe(B,top.x+Math.sin(skewA)*crownR*skew*1.15,crownY+crownR*st.r(0.36,0.52),top.z+Math.cos(skewA)*crownR*skew*1.15,
+    crownR*st.r(0.40,0.54),crownR*st.r(0.36,0.48),crownR*st.r(0.40,0.54),st,
+    LEAF_SUN.clone().lerp(col(PAL.sunGrass),0.34-shade*0.18),cSunL,0.18,detail);
+  // early fruit, on the working trees only: small, warm, deliberate
+  if(t.fruit&&tier>=1){
+    const nF=st.i(8,13);
+    for(let i=0;i<nF;i++){
+      const a=st.r(0,TAU), rr=crownR*st.r(0.55,0.98);
+      addFruitDot(B,top.x+Math.sin(a)*rr,crownY+crownR*st.r(-0.42,0.28),top.z+Math.cos(a)*rr,
+        st.r(0.085,0.125),st.chance(0.6)?C_FRUIT:C_FRUIT_SH);
+    }
+  }
+  return {H:Ht,crownY,crownR};
+}
+function treeMaterial(emis){
+  const m=new THREE.MeshLambertMaterial({vertexColors:true,
+    emissive:new THREE.Color(emis===undefined?0x131a10:emis),emissiveIntensity:1});
+  m.onBeforeCompile=(sh)=>{
+    Object.assign(sh.uniforms,WL);
+    sh.vertexShader=sh.vertexShader
+      .replace('#include <common>','#include <common>\nuniform float uWTime; attribute float aSway; varying vec3 vWPos;')
+      .replace('#include <begin_vertex>',`#include <begin_vertex>
+      {
+        float ph=dot(position.xz,vec2(0.037,0.031));
+        float sw=sin(uWTime*0.72+ph)*0.62+sin(uWTime*1.51+ph*2.1)*0.24;
+        transformed.x+=sw*aSway*0.62; transformed.z+=cos(uWTime*0.63+ph)*aSway*0.34;
+      }`)
+      .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*vec4(transformed,1.0);\n#ifdef USE_INSTANCING\n wp2=modelMatrix*instanceMatrix*vec4(transformed,1.0);\n#endif\n vWPos=wp2.xyz; }')
+    sh.fragmentShader=sh.fragmentShader
+      .replace('#include <common>','#include <common>\nvarying vec3 vWPos;\n'+WL_GLSL)
+      .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.86,1.0,wl)+diffuseColor.rgb*0.46*wl;\nvec3 outgoingLight = ');
+  };
+  return m;
+}
+const treeMatNear=treeMaterial(0x161d11), treeMatMid=treeMaterial(0x121809), treeMatFar=treeMaterial(0x0e1408);
+
+// ============================================================
+// UNDERSTORY AND GROUND CONTACT
+// ============================================================
+function underMaterial(){
+  const m=new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide,
+    emissive:new THREE.Color(0x0d1006),emissiveIntensity:1});
+  m.onBeforeCompile=(sh)=>{
+    Object.assign(sh.uniforms,WL);
+    sh.vertexShader=sh.vertexShader
+      .replace('#include <common>','#include <common>\nuniform float uWTime; attribute float aSway; attribute float aCanopy; attribute float aKind; attribute float aUp;\nvarying vec3 vWPos; varying float vCanopy; varying float vKind;')
+      .replace('#include <beginnormal_vertex>','#include <beginnormal_vertex>\n objectNormal=mix(objectNormal,vec3(0.0,1.0,0.0),step(0.5,aUp));')
+      .replace('#include <begin_vertex>',`#include <begin_vertex>
+      {
+        float ph=dot(position.xz,vec2(0.19,0.16));
+        float gust=sin(uWTime*1.25+ph)*0.6+sin(uWTime*2.4+ph*1.7)*0.26+sin(uWTime*0.47+ph*0.35)*0.42;
+        transformed.x+=gust*aSway*0.26; transformed.z+=cos(uWTime*0.97+ph)*gust*aSway*0.15;
+      }`)
+      .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*vec4(transformed,1.0); vWPos=wp2.xyz; vCanopy=aCanopy; vKind=aKind; }');
+    sh.fragmentShader=sh.fragmentShader
+      .replace('#include <common>','#include <common>\nvarying vec3 vWPos; varying float vCanopy; varying float vKind;\n'+WL_GLSL)
+      .replace('#include <color_fragment>',`#include <color_fragment>
+      { if(vKind>0.5&&vKind<1.5&&uGlint.w>0.001){
+          float d=distance(vWPos.xz,uGlint.xy);
+          float prox=1.0-smoothstep(uGlint.z*0.35,uGlint.z,d);
+          float pick=step(0.74,wlHash(floor(vWPos.xz*3.1)));
+          diffuseColor.rgb+=vec3(1.0,0.94,0.72)*prox*pick*uGlint.w;
+        } }`)
+      .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.85,1.0,wl)+diffuseColor.rgb*0.38*wl;\nvec3 outgoingLight = ');
+  };
+  return m;
+}
+const underMat=underMaterial();
+function UBuf(){ return {p:[],c:[],s:[],k:[],a:[],u:[],sway:0,kind:0,can:0,up:1}; }
+function uTri(B,a,b,c,cc){
+  B.p.push(a[0],a[1],a[2], b[0],b[1],b[2], c[0],c[1],c[2]);
+  for(let i=0;i<3;i++){ B.c.push(cc.r,cc.g,cc.b); B.s.push(B.sway); B.k.push(B.kind); B.a.push(B.can); B.u.push(B.up); }
+}
+function uQuad(B,a,b,c,d,cc){ uTri(B,a,b,c,cc); uTri(B,a,c,d,cc); }
+function uGeo(B){
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(B.p,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(B.c,3));
+  g.setAttribute('aSway',new THREE.Float32BufferAttribute(B.s,1));
+  g.setAttribute('aKind',new THREE.Float32BufferAttribute(B.k,1));
+  g.setAttribute('aCanopy',new THREE.Float32BufferAttribute(B.a,1));
+  g.setAttribute('aUp',new THREE.Float32BufferAttribute(B.u,1));
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  return g;
+}
+function addTuft(B,x,y,z,st,cLo,cHi,h,blades){
+  B.kind=0;
+  for(let i=0;i<blades;i++){
+    const a=st.r(0,TAU), w=h*st.r(0.16,0.30), hh=h*st.r(0.7,1.25);
+    const dx=Math.cos(a)*w, dz=Math.sin(a)*w;
+    const bx=Math.sin(a)*h*st.r(0.10,0.34), bz=Math.cos(a)*h*st.r(0.10,0.34);
+    B.p.push(x-dx,y,z-dz, x+dx,y,z+dz, x+bx,y+hh,z+bz);
+    for(let k=0;k<3;k++){ const c=(k===2)?cHi:cLo; B.c.push(c.r,c.g,c.b); B.k.push(0); B.a.push(B.can); B.u.push(1); }
+    B.s.push(0,0,hh);
+  }
+}
+function addFern(B,x,y,z,st,cLo,cHi,h){
+  B.kind=0; B.sway=h*0.35;
+  const n=st.i(3,5);
+  for(let i=0;i<n;i++){
+    const a=i/n*TAU+st.r(-0.3,0.3), r=h*st.r(0.7,1.1);
+    const dx=Math.sin(a), dz=Math.cos(a);
+    uQuad(B,[x,y+0.02,z],[x+dx*r*0.35,y+h*0.42,z+dz*r*0.35],
+            [x+dx*r,y+h*0.58,z+dz*r],[x+dx*r*0.5,y+h*0.16,z+dz*r*0.5],
+            cLo.clone().lerp(cHi,st.r(0.2,0.7)));
+  }
+  B.sway=0;
+}
+function addSeedhead(B,x,y,z,st,cStalk,cHead,h){
+  B.kind=0; B.sway=h*0.9;
+  const a=st.r(0,TAU), lean=st.r(0.04,0.14);
+  const tx=x+Math.sin(a)*h*lean, tz=z+Math.cos(a)*h*lean;
+  uQuad(B,[x-0.014,y,z],[x+0.014,y,z],[tx+0.010,y+h*0.78,tz],[tx-0.010,y+h*0.78,tz],cStalk);
+  B.kind=1;
+  for(const b of [0.35,1.92]){
+    const dx=Math.sin(b)*h*0.055, dz=Math.cos(b)*h*0.055;
+    uQuad(B,[tx-dx,y+h*0.74,tz-dz],[tx+dx,y+h*0.74,tz+dz],
+            [tx+dx*0.6,y+h,tz+dz*0.6],[tx-dx*0.6,y+h,tz-dz*0.6],cHead);
+  }
+  B.kind=0; B.sway=0;
+}
+function addFlower(B,x,y,z,st,cStem,cPetal,h){
+  B.kind=0; B.sway=h*0.7;
+  uQuad(B,[x-0.012,y,z],[x+0.012,y,z],[x+0.008,y+h*0.72,z],[x-0.008,y+h*0.72,z],cStem);
+  B.kind=2;
+  for(const b of [0.2,1.77]){
+    const dx=Math.sin(b)*h*0.15, dz=Math.cos(b)*h*0.15;
+    uQuad(B,[x-dx,y+h*0.72,z-dz],[x+dx,y+h*0.72,z+dz],
+            [x+dx*0.72,y+h*0.96,z+dz*0.72],[x-dx*0.72,y+h*0.96,z-dz*0.72],cPetal);
+  }
+  B.kind=0; B.sway=0;
+}
+function addBlob(B,x,y,z,st,rx,ry,rz,cTop,cBot,swayAmt){
+  const D=ICOD[0];
+  const pu=B.up; B.up=0;
+  B.sway=swayAmt||0;
+  const p1=st.r(0,TAU);
+  const vert=(i)=>{ const vx=D.p.getX(i), vy=D.p.getY(i), vz=D.p.getZ(i);
+    const j=1+0.22*Math.sin(Math.atan2(vz,vx)*3+p1);
+    return [x+vx*rx*j,y+(vy<0?vy*0.5:vy)*ry*j,z+vz*rz*j,vy]; };
+  for(let i=0;i<D.idx.length;i+=3){
+    const a=vert(D.idx[i]), b=vert(D.idx[i+1]), c=vert(D.idx[i+2]);
+    const ym=(a[3]+b[3]+c[3])/3;
+    uTri(B,[a[0],a[1],a[2]],[b[0],b[1],b[2]],[c[0],c[1],c[2]],cBot.clone().lerp(cTop,clamp(0.45+0.6*ym,0,1)));
+  }
+  B.sway=0; B.up=pu;
+}
+function addPatch(B,x,y,z,r,cc){
+  B.kind=0; B.sway=0;
+  const n=7;
+  for(let i=0;i<n;i++){
+    const a0=i/n*TAU, a1=(i+1)/n*TAU;
+    uTri(B,[x,y+0.035,z],[x+Math.cos(a1)*r,y+0.035,z+Math.sin(a1)*r],[x+Math.cos(a0)*r,y+0.035,z+Math.sin(a0)*r],cc);
+  }
+}
+
+// ============================================================
+// GROUNDING — every planted thing stands on the surface that is drawn.
+// The emulated drawn surface is computed in LOCAL coordinates from the
+// same rows, columns and tile corners the meshes emit, so seating is
+// identical under every placement.
+// ============================================================
+function corridorEmulatedY(s,u){
+  const rs=LFRAME.len/Math.max(1,Math.round(LFRAME.len/QCFG.row));
+  const r0=clamp(Math.floor(s/rs),0,Math.round(LFRAME.len/rs)-1);
+  let j0=0;
+  for(let j=0;j<COLS.length-1;j++){ if(u>=COLS[j]&&u<=COLS[j+1]){ j0=j; break; }
+    if(u>COLS[COLS.length-1]) j0=COLS.length-2; if(u<COLS[0]) j0=0; }
+  const vy=(r,j)=>{
+    const fr=getFrame(LFRAME,clamp(r*rs,0,LFRAME.len-0.01));
+    const uu=COLS[j], a=Math.abs(uu);
+    if(a<=RH+1e-4) return fr.y+CROWN*(1-(a/RH)*(a/RH));
+    return groundL(fr.x+fr.lx*uu,fr.z+fr.lz*uu);
+  };
+  const ts=clamp((s-r0*rs)/rs,0,1), tu=clamp((u-COLS[j0])/Math.max(1e-6,COLS[j0+1]-COLS[j0]),0,1);
+  return lerp(lerp(vy(r0,j0),vy(r0,j0+1),tu),lerp(vy(r0+1,j0),vy(r0+1,j0+1),tu),ts);
+}
+function tileEmulatedY(x,z){
+  const cell=QCFG.tile;
+  const ix=Math.floor(x/cell), iz=Math.floor(z/cell);
+  const tx=(x-ix*cell)/cell, tz=(z-iz*cell)/cell;
+  const a=groundL(ix*cell,iz*cell), b=groundL((ix+1)*cell,iz*cell),
+        c=groundL(ix*cell,(iz+1)*cell), d=groundL((ix+1)*cell,(iz+1)*cell);
+  return lerp(lerp(a,b,tx),lerp(c,d,tx),tz);
+}
+function realizedGroundL(x,z){
+  const ri=routeInfoL(x,z);
+  if(ri.d<FIELD_HOLD) return corridorEmulatedY(ri.s,ri.u);
+  return tileEmulatedY(x,z);
+}
+const SEAT_SINK_MAX=0.55, SEAT_LIMIT=1.25, REF_CELL=12;
+function meshFollowError(x,z){
+  const h=REF_CELL*0.5;
+  const c=groundL(x,z);
+  const q=(groundL(x-h,z-h)+groundL(x+h,z-h)+groundL(x-h,z+h)+groundL(x+h,z+h))*0.25;
+  return c-q;
+}
+function seatOnGroundL(x,z,sink){
+  const a=groundL(x,z), r=realizedGroundL(x,z);
+  return clamp(Math.min(a,r),r-SEAT_SINK_MAX,r)-(sink||0);
+}
+const GROUND_STAT={ trees:0, lowered:0, maxDropM:0, raised:0, culled:0 };
+{
+  for(const t of TREES){
+    const before=groundL(t.x,t.z);
+    const y=seatOnGroundL(t.x,t.z,0.16+0.10*clamp(t.scl,0.6,3.4));
+    GROUND_STAT.trees++;
+    GROUND_STAT.maxDropM=Math.max(GROUND_STAT.maxDropM,before-y);
+    if(t.formation===null&&meshFollowError(t.x,t.z)>SEAT_LIMIT){ t.unseatable=true; GROUND_STAT.culled++; continue; }
+    t.unseatable=false;
+    t.y=y;
+    if(before-y>1e-4) GROUND_STAT.lowered++; else if(y-before>1e-4) GROUND_STAT.raised++;
+  }
+}
+H.real.feed('seat',GROUND_STAT.lowered,GROUND_STAT.culled);
+
+// ============================================================
+// THE POND — one composed piece of standing water, per copy
+// ============================================================
+const waterMat=new THREE.ShaderMaterial({
+  transparent:false, fog:true,
+  uniforms:Object.assign({
+    uSunW:{value:sunDir.clone()},
+    uDeep:{value:mixc(PAL.woodDeep,PAL.leafShade,0.42)},
+    uSky:{value:mixc(PAL.sky,0xCFEFFF,0.22).lerp(col(PAL.leafShade),0.10)},
+    fogColor:{value:AIR.clone()}, fogNear:{value:330}, fogFar:{value:2050},
+  },WL),
+  vertexShader:`varying vec3 vW; varying float vFogDepth;
+    void main(){ vec4 wp=modelMatrix*vec4(position,1.0); vW=wp.xyz;
+      vec4 mv=viewMatrix*wp; vFogDepth=-mv.z;
+      gl_Position=projectionMatrix*mv; }`,
+  fragmentShader:`uniform vec3 uSunW,uDeep,uSky; uniform vec3 fogColor; uniform float fogNear,fogFar;
+    varying vec3 vW; varying float vFogDepth;
+    ${''}
+    uniform float uWTime; uniform vec2 uCloudMove; uniform vec4 uGlint;
+    float wlHash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+    float wlNoise(vec2 p){ vec2 i=floor(p),f=fract(p); vec2 u=f*f*(3.0-2.0*f);
+      return mix(mix(wlHash(i),wlHash(i+vec2(1,0)),u.x),mix(wlHash(i+vec2(0,1)),wlHash(i+vec2(1,1)),u.x),u.y); }
+    void main(){
+      vec3 V=normalize(cameraPosition-vW);
+      float rip=wlNoise(vW.xz*1.6+vec2(uWTime*0.21,uWTime*0.16))*0.6
+               +wlNoise(vW.xz*4.1-vec2(uWTime*0.13,uWTime*0.24))*0.4;
+      vec3 N=normalize(vec3((rip-0.5)*0.22,1.0,(wlNoise(vW.xz*2.3+7.0+uWTime*0.1)-0.5)*0.22));
+      float fres=pow(1.0-clamp(dot(V,N),0.0,1.0),2.0);
+      vec3 c=mix(uDeep,uSky,0.20+0.52*fres);
+      vec3 R=reflect(-V,N);
+      float sd=acos(clamp(dot(R,normalize(uSunW)),-1.0,1.0));
+      c+=vec3(1.0,0.96,0.82)*smoothstep(0.20,0.02,sd)*0.55;
+      float spark=step(0.965,wlNoise(vW.xz*7.0+vec2(uWTime*0.4,-uWTime*0.3)));
+      c+=vec3(1.0,0.97,0.86)*spark*0.35*(0.3+0.7*fres);
+      float f=smoothstep(fogNear,fogFar,vFogDepth);
+      gl_FragColor=vec4(mix(c,fogColor,f),1.0);
+    }`,
+});
+const WATER_MESHES=[];
+for(let k=0;k<XFORMS.length;k++){
+  const T=XFORMS[k];
+  const P=[],IDX=[];
+  const n=26;
+  const c=T.fwd(POND.cx,POND.cz);
+  P.push(c[0],T.fwdY(POND.y),c[1]);
+  for(let i=0;i<=n;i++){
+    const a=i/n*TAU;
+    const ca=Math.cos(POND.rot), sa=Math.sin(POND.rot);
+    const ex=Math.cos(a)*POND.rx*0.985, ez=Math.sin(a)*POND.rz*0.985;
+    const lx=POND.cx+ex*ca-ez*sa, lz=POND.cz+ex*sa+ez*ca;
+    const w=T.fwd(lx,lz);
+    P.push(w[0],T.fwdY(POND.y),w[1]);
+    if(i>0) IDX.push(0,i+1,i);      // wound to face the sky, not the bed
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+  g.setIndex(IDX);
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  const m=new THREE.Mesh(g,waterMat);
+  m.matrixAutoUpdate=false; m.name='water-'+k;
+  scene.add(m); WATER_MESHES.push(m);
+  bookMesh(m,true,k);
+}
+
+// ============================================================
+// STATIC FORMATIONS — the island's identity, always resident: the gates,
+// the rows, the boundary line, the Sisters. Built once per copy from the
+// LOCAL plan and transformed whole.
+// ============================================================
+function transformBuf(B,T){
+  for(let i=0;i<B.p.length;i+=3){
+    const w=T.fwd(B.p[i],B.p[i+2]);
+    B.p[i]=w[0]; B.p[i+2]=w[1]; B.p[i+1]=T.fwdY(B.p[i+1]);
+  }
+  for(let i=0;i<B.n.length;i+=3){
+    const nx=B.n[i], nz=B.n[i+2];
+    B.n[i]=nx*T.c+nz*T.s; B.n[i+2]=-nx*T.s+nz*T.c;
+  }
+}
+function transformUBuf(B,T){
+  for(let i=0;i<B.p.length;i+=3){
+    const w=T.fwd(B.p[i],B.p[i+2]);
+    B.p[i]=w[0]; B.p[i+2]=w[1]; B.p[i+1]=T.fwdY(B.p[i+1]);
+  }
+}
+const FORMATION_STAT={ built:0, orchard:0, boundary:0, sisters:0, gates:0 };
+for(let k=0;k<XFORMS.length;k++){
+  const T=XFORMS[k];
+  const nearB=Buf(), massB=Buf(), uB=UBuf();
+  for(const t of TREES){
+    if(!t.formation) continue;
+    let tier=1, round=true;
+    if(t.formation==='dappled-gate'){ tier=2; FORMATION_STAT.gates++; }
+    else if(t.formation==='wind-sisters'){ tier=1; FORMATION_STAT.sisters++; }
+    else if(t.fam==='orchard'){ tier=(t.d<30)?1:0; round=(t.d<30); FORMATION_STAT.orchard++; }
+    else { tier=(t.d<34)?2:1; FORMATION_STAT.boundary++; }
+    const overhang=(t.d<EXCL+10)?(t.roadY+9.0):undefined;
+    buildTree(tier===2?nearB:massB,t,tier,overhang,round);
+    FORMATION_STAT.built++;
+    const st=subStream('base',Math.round(t.x*10),Math.round(t.z*10));
+    const dark=mixc(PAL.woodDeep,PAL.bark,0.30).lerp(col(PAL.leafShade),0.18);
+    addPatch(uB,t.x,seatOnGroundL(t.x,t.z,0)+0.03,t.z,1.1*t.scl+st.r(0,0.7),dark);
+  }
+  transformBuf(nearB,T); transformBuf(massB,T); transformUBuf(uB,T);
+  if(nearB.p.length){ const m=new THREE.Mesh(bufGeo(nearB),treeMatNear);
+    m.castShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false; m.name='formation-near-'+k;
+    scene.add(m); bookMesh(m,true,k); }
+  if(massB.p.length){ const m=new THREE.Mesh(bufGeo(massB),treeMatMid);
+    m.castShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false; m.name='formation-mass-'+k;
+    scene.add(m); bookMesh(m,true,k); }
+  if(uB.p.length){ const m=new THREE.Mesh(uGeo(uB),underMat);
+    m.matrixAutoUpdate=false; m.name='formation-under-'+k;
+    scene.add(m); bookMesh(m,true,k); }
+}
+H.real.feed('formations',FORMATION_STAT.built);
+
+// ============================================================
+// BANDS — deterministic residency along the island, per copy. Identity
+// comes from position in the LOCAL frame, never from realization order.
+// ============================================================
+const BAND=200;
+const NBAND=Math.ceil(L_ISL/BAND);
+const bandTreesL=Array.from({length:NBAND},()=>[]);
+for(const t of TREES){
+  if(t.formation||t.unseatable) continue;
+  if(t.d>QCFG.farD) continue;
+  const bi=clamp(Math.floor(t.s/BAND),0,NBAND-1);
+  bandTreesL[bi].push(t);
+}
+const counts={ trees:0, articulatedNear:0, midTrees:0, farTrees:0,
+  understory:0, flowers:0, seedheads:0, ferns:0, shrubs:0, reeds:0, groundContacts:0, rocksLogs:0 };
+const RES={ realized:0, disposed:0, peak:0 };
+let corridorRejects=0;
+const COPY_BANDS=XFORMS.map(()=>Array.from({length:NBAND},(_,i)=>({i,s0:i*BAND,s1:Math.min(L_ISL,(i+1)*BAND),live:null})));
+
+function realizeBand(copy,bi){
+  const b=COPY_BANDS[copy][bi];
+  if(b.live) return;
+  const T=XFORMS[copy];
+  const nearB=Buf(), midB=Buf(), uB=UBuf();
+  const local={trees:0,articulatedNear:0,midTrees:0,farTrees:0,understory:0,flowers:0,
+    seedheads:0,ferns:0,shrubs:0,reeds:0,groundContacts:0,rocksLogs:0,corridorRejects:0};
+  const ordered=bandTreesL[bi].slice().sort((a,b)=>a.d-b.d||a.x-b.x||a.z-b.z);
+  let nNear=0,nMid=0,nAll=0,nRound=0;
+  for(const t of ordered){
+    if(nAll>=QCFG.bandTreeCap) break;
+    nAll++;
+    let tier=(t.d<=QCFG.nearD)?2:((t.d<=QCFG.midD)?1:0);
+    if(tier===2&&nNear>=QCFG.capNear) tier=1;
+    if(tier===1&&nMid>=QCFG.capMid) tier=0;
+    const overhang=(t.d<EXCL+10)?(t.roadY+9.0):undefined;
+    if(tier===2){ buildTree(nearB,t,2,overhang,true); local.articulatedNear++; nNear++; }
+    else if(tier===1){
+      const round=(nRound<QCFG.roundMid&&t.d<=64);
+      if(round) nRound++;
+      buildTree(midB,t,1,overhang,round); local.midTrees++; nMid++;
+    }
+    else { buildTree(midB,t,0,undefined,false); local.farTrees++; }
+    local.trees++;
+    const st=subStream('base',Math.round(t.x*10),Math.round(t.z*10));
+    const dark=mixc(PAL.woodDeep,PAL.bark,0.30).lerp(col(PAL.leafShade),0.18);
+    addPatch(uB,t.x,seatOnGroundL(t.x,t.z,0)+0.03,t.z,1.1*t.scl+st.r(0,0.7),dark);
+    local.groundContacts++;
+    if(tier>=1){
+      const nr=Math.round(st.i(2,4)*QCFG.under);
+      for(let i=0;i<nr;i++){
+        const a=st.r(0,TAU), rr=st.r(0.7,2.4)*t.scl;
+        const x=t.x+Math.cos(a)*rr, z=t.z+Math.sin(a)*rr;
+        uB.can=clamp(t.enc,0,1);
+        addTuft(uB,x,groundL(x,z),z,st,mixc(PAL.woodDeep,PAL.leafShade,0.5),mixc(PAL.leafShade,PAL.meadow,0.4),st.r(0.34,0.64),3);
+        local.understory++;
+      }
+    }
+  }
+  // ---- growth, keyed to what the ground is actually doing here ----
+  {
+    const N=Math.round(QCFG.tuftBand*BAND/10*QCFG.under);
+    const st=subStream('under',bi);
+    for(let i=0;i<N;i++){
+      const s=st.r(b.s0,b.s1);
+      const fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
+      const roll=st.f();
+      const lat=(st.chance(0.5)?1:-1)*(roll<0.66?st.r(RH+0.55,RH+9):st.r(RH+9,26));
+      const x=fr.x+fr.lx*lat+st.r(-3,3), z=fr.z+fr.lz*lat+st.r(-3,3);
+      const ri=routeInfoL(x,z);
+      if(ri.d<EXCL){ local.corridorRejects++; continue; }
+      const pin=pondNorm(x,z);
+      if(pin<0.92) continue;
+      const y=groundL(x,z);
+      const enc=enclosureAt(ri.s)*clamp(1.3-ri.d/80,0,1);
+      const moist=moistL(x,z);
+      const slope=Math.abs(groundL(x+2.5,z)-groundL(x-2.5,z))/5+Math.abs(groundL(x,z+2.5)-groundL(x,z-2.5))/5;
+      const pa=panelAt(x,z,ri);
+      const bank=(pin<1.22)?1:0;
+      if(pa&&pa.P.mown&&pa.w>0.35){
+        // the cut field: stubble-short tufts only, and the standing margin
+        if(pa.w<0.62&&st.chance(0.5)){
+          addSeedhead(uB,x,y,z,st,mixc(PAL.meadow,PAL.road,0.34),mixc(PAL.road,0xFFE79A,0.35),st.r(0.62,1.05));
+          local.seedheads++;
+        } else if(st.chance(0.18)){
+          uB.can=0;
+          addTuft(uB,x,y,z,st,C_HAY.clone().lerp(col(PAL.bark),0.18),C_HAY.clone().lerp(col(0xFFF3CE),0.2),st.r(0.10,0.18),st.i(3,4));
+          local.understory++;
+        }
+        continue;
+      }
+      const patch=fbmE(x/64+3.7,z/64+21.1);
+      if(!bank&&patch<0.50-moist*0.16-enc*0.14) continue;
+      const mask=fbmE(x/19+7,z/19+13);
+      if(!bank&&mask<0.34-slope*0.5-moist*0.12-(patch-0.50)*0.8) continue;
+      if(bank&&st.chance(0.45)) continue;
+      { let underTree=false;
+        for(const tt of bandTreesL[bi]){
+          const ddx=x-tt.x, ddz=z-tt.z, rr2=(1.05*tt.scl+0.5);
+          if(ddx*ddx+ddz*ddz<rr2*rr2){ underTree=true; break; }
+        }
+        if(underTree) continue; }
+      uB.can=clamp(enc,0,1);
+      const gc=groundColorL(x,z,slope,enc,moist,y-ri.y,ri).clone();
+      const r2=st.f();
+      if(bank&&st.chance(0.26)){
+        const r=st.r(0.10,0.26);
+        addBlob(uB,x,y+r*0.4,z,st,r,r*0.6,r*st.r(0.7,1.3),
+          mixc(PAL.road,PAL.bark,0.42),mixc(PAL.bark,PAL.woodDeep,0.5),0);
+        addPatch(uB,x,y,z,r*st.r(1.8,3.2),mixc(PAL.bark,PAL.woodDeep,0.42));
+        local.rocksLogs++;
+      } else if(pin<1.75&&pin>=0.92){
+        addFern(uB,x,y,z,st,mixc(PAL.leafShade,PAL.meadow,0.35),mixc(PAL.sunGrass,PAL.meadow,0.5),st.r(0.70,1.30));
+        local.reeds++;
+      } else if(moist>0.5){
+        addFern(uB,x,y,z,st,mixc(PAL.woodDeep,PAL.leafShade,0.45),mixc(PAL.leafShade,PAL.meadow,0.45),st.r(0.52,1.00));
+        local.ferns++;
+      } else if(enc>0.44){
+        if(r2<0.62){ addFern(uB,x,y,z,st,mixc(PAL.woodDeep,PAL.leafShade,0.4),mixc(PAL.leafShade,PAL.meadow,0.35),st.r(0.46,0.92)); local.ferns++; }
+        else if(r2<0.86){ addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.leafShade),0.34),gc.clone().lerp(col(PAL.meadow),0.34),st.r(0.28,0.58),st.i(4,6)); local.understory++; }
+        else { addBlob(uB,x,y+0.18,z,st,st.r(0.42,0.78),st.r(0.30,0.52),st.r(0.42,0.78),mixc(PAL.meadow,PAL.leafShade,0.30),mixc(PAL.leafShade,PAL.woodDeep,0.26),0.18); local.shrubs++; }
+      } else if(enc<0.30&&slope<0.30&&r2<0.30){
+        addSeedhead(uB,x,y,z,st,mixc(PAL.meadow,PAL.road,0.34),mixc(PAL.road,0xFFE79A,0.35),st.r(0.62,1.12));
+        local.seedheads++;
+      } else if(enc<0.34&&r2<0.24){
+        addFlower(uB,x,y,z,st,mixc(PAL.meadow,PAL.sunGrass,0.5),
+          st.pick([mixc(PAL.blossom,PAL.meadow,0.30),mixc(PAL.blossom,0xfff3e6,0.35),mixc(PAL.road,PAL.sunGrass,0.40),mixc(PAL.road,0xFFDE79,0.35)]),st.r(0.28,0.50));
+        local.flowers++;
+      } else {
+        addTuft(uB,x,y,z,st,gc.clone().lerp(col(PAL.leafShade),0.30),gc.clone().lerp(col(PAL.sunGrass),0.34),st.r(0.30,0.62),st.i(4,6));
+        local.understory++;
+      }
+    }
+  }
+  // ---- the verge proper ----
+  {
+    const st=subStream('verge',bi);
+    const N=Math.round((b.s1-b.s0)/1.55*QCFG.under);
+    for(let i=0;i<N;i++){
+      const s=st.r(b.s0,b.s1);
+      const fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
+      const side=st.chance(0.5)?1:-1;
+      const off=st.r(0,1)**0.62;
+      const lat=side*(RH+0.34+off*4.6);
+      const x=fr.x+fr.lx*lat, z=fr.z+fr.lz*lat;
+      const ri=routeInfoL(x,z);
+      if(ri.d<EXCL){ local.corridorRejects++; continue; }
+      if(pondNorm(x,z)<0.95) continue;
+      const y=groundL(x,z);
+      const enc=enclosureAt(ri.s);
+      const wear=clamp(1-off*1.6,0,1);
+      uB.can=clamp(enc,0,1);
+      const r2=st.f();
+      const worn=mixc(PAL.meadow,PAL.bark,0.30).lerp(col(PAL.sunGrass),0.20);
+      const lush=mixc(PAL.meadow,PAL.leafShade,0.20).lerp(col(PAL.sunGrass),0.26);
+      if(wear>0.55&&r2<0.30){
+        const r=st.r(0.07,0.20);
+        addBlob(uB,x,y+r*0.4,z,st,r,r*0.62,r*st.r(0.7,1.3),
+          mixc(PAL.road,PAL.bark,0.34),mixc(PAL.bark,PAL.woodDeep,0.42),0);
+        local.rocksLogs++;
+      } else if(r2<0.20+wear*0.34){
+        addTuft(uB,x,y,z,st,worn.clone().lerp(col(PAL.woodDeep),0.38),worn.clone().lerp(col(PAL.leafShade),0.22),
+          st.r(0.14,0.26)+(1-wear)*st.r(0.12,0.34),st.i(4,6));
+        local.understory++;
+      } else if(enc<0.40&&r2>0.86){
+        addSeedhead(uB,x,y,z,st,mixc(PAL.meadow,PAL.road,0.30),mixc(PAL.road,0xFFE79A,0.30),
+          st.r(0.52,1.00)*(0.5+0.5*(1-wear)));
+        local.seedheads++;
+      } else if(enc<0.42&&r2>0.74){
+        addFlower(uB,x,y,z,st,mixc(PAL.meadow,PAL.sunGrass,0.46),
+          st.pick([mixc(PAL.blossom,PAL.meadow,0.28),mixc(PAL.blossom,0xfff3e6,0.34),
+                   mixc(PAL.road,0xFFDE79,0.32),mixc(PAL.sunGrass,0xffffff,0.42)]),st.r(0.24,0.44));
+        local.flowers++;
+      } else {
+        addTuft(uB,x,y,z,st,lush.clone().lerp(col(PAL.woodDeep),0.30+enc*0.24),
+          lush.clone().lerp(col(PAL.leafShade),0.34),st.r(0.28,0.62)*(0.55+0.45*(1-wear)),st.i(4,6));
+        local.understory++;
+      }
+    }
+  }
+  transformBuf(nearB,T); transformBuf(midB,T); transformUBuf(uB,T);
+  const live={meshes:[],local};
+  if(nearB.p.length){ const m=new THREE.Mesh(bufGeo(nearB),treeMatNear);
+    m.castShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false; m.name='band-near-'+copy+'-'+bi;
+    scene.add(m); live.meshes.push(m); bookMesh(m,true,copy); }
+  if(midB.p.length){ const m=new THREE.Mesh(bufGeo(midB),treeMatMid);
+    m.castShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false; m.name='band-mid-'+copy+'-'+bi;
+    scene.add(m); live.meshes.push(m); bookMesh(m,true,copy); }
+  if(uB.p.length){ const m=new THREE.Mesh(uGeo(uB),underMat);
+    m.matrixAutoUpdate=false; m.receiveShadow=(QCFG.shadow>0); m.name='band-under-'+copy+'-'+bi;
+    scene.add(m); live.meshes.push(m); bookMesh(m,true,copy); }
+  b.live=live;
+  for(const k of Object.keys(local)) if(counts[k]!==undefined) counts[k]+=local[k];
+  corridorRejects+=local.corridorRejects;
+  RES.realized++;
+}
+function disposeBand(copy,bi){
+  const b=COPY_BANDS[copy][bi];
+  if(!b.live) return;
+  for(const m of b.live.meshes){ scene.remove(m); m.geometry.dispose();
+    const ix=ISLAND_MESHES.indexOf(m); if(ix>=0) ISLAND_MESHES.splice(ix,1); }
+  for(const k of Object.keys(b.live.local)) if(counts[k]!==undefined) counts[k]-=b.live.local[k];
+  b.live=null;
+  RES.disposed++;
+}
+let residentBands=0;
+function updateResidency(g,budget){
+  let made=0, live=0;
+  for(let c=0;c<XFORMS.length;c++){
+    const seg=ISLAND_SEGS[c];
+    const sLoc=g-seg.g0;
+    const lo=sLoc-QCFG.behind, hi=sLoc+QCFG.ahead;
+    for(let i=0;i<NBAND;i++){
+      const b=COPY_BANDS[c][i];
+      const want=(b.s1>lo&&b.s0<hi);
+      if(want&&!b.live){ if(made<budget){ realizeBand(c,i); made++; } }
+      else if(!want&&b.live) disposeBand(c,i);
+      if(b.live) live++;
+    }
+  }
+  residentBands=live;
+  RES.peak=Math.max(RES.peak,live);
+  return made;
+}
+function plannedResidentBands(g){
+  let n=0;
+  for(let c=0;c<XFORMS.length;c++){
+    const seg=ISLAND_SEGS[c];
+    const sLoc=g-seg.g0;
+    for(let i=0;i<NBAND;i++){
+      const b=COPY_BANDS[c][i];
+      if(b.s1>sLoc-QCFG.behind&&b.s0<sLoc+QCFG.ahead) n++;
+    }
+  }
+  return n;
+}
+function disposeAllBands(){ for(let c=0;c<XFORMS.length;c++) for(let i=0;i<NBAND;i++) disposeBand(c,i); }
+
+// ============================================================
+// HOST SKY FURNITURE — clouds and a far country, so the island is seen
+// in a world rather than on a stage. Host-owned: none of it counts
+// against the island's budget.
+// ============================================================
+const worldC={x:CF.cx,z:CF.cz};
+const cloudMeshes=[];
+{
+  const cloudMat=new THREE.MeshLambertMaterial({vertexColors:true,fog:false,side:THREE.DoubleSide,
+    emissive:mixc(PAL.cloud,0xFFFFFF,0.3),emissiveIntensity:0.52});
+  // a cloud is welded from its lobes: any triangle whose centroid lies inside
+  // a sibling lobe is never emitted, so overlapping surfaces cannot z-fight
+  function weldedPuff(B,lobes,st,cTop,cBot){
+    const D=ICOD[1];
+    for(let li=0;li<lobes.length;li++){
+      const L=lobes[li];
+      const p1=st.r(0,TAU);
+      const nrm=(i)=>{
+        const x=D.p.getX(i), y=D.p.getY(i), z=D.p.getZ(i);
+        const yy=y<0?y*0.72:y;
+        let nx=x/L.rx, ny=yy/L.ry, nz=z/L.rz;
+        const nl=Math.hypot(nx,ny,nz)||1;
+        return [nx/nl,ny/nl,nz/nl];
+      };
+      const vert=(i)=>{
+        const x=D.p.getX(i), y=D.p.getY(i), z=D.p.getZ(i);
+        const j=1+0.07*Math.sin(Math.atan2(z,x)*2+y*2.0+p1);
+        const yy=y<0?y*0.72:y;
+        return [L.x+x*L.rx*j, L.y+yy*L.ry*j, L.z+z*L.rz*j, y];
+      };
+      for(let i=0;i<D.idx.length;i+=3){
+        const a=vert(D.idx[i]), b=vert(D.idx[i+1]), c=vert(D.idx[i+2]);
+        const mx=(a[0]+b[0]+c[0])/3, my=(a[1]+b[1]+c[1])/3, mz=(a[2]+b[2]+c[2])/3;
+        let buried=false;
+        for(let lj=0;lj<lobes.length&&!buried;lj++){
+          if(lj===li) continue;
+          const O=lobes[lj];
+          const ex=(mx-O.x)/O.rx, ey=(my-O.y)/O.ry, ez=(mz-O.z)/O.rz;
+          if(ex*ex+ey*ey+ez*ez<0.72) buried=true;
+        }
+        if(buried) continue;
+        const ym=(a[3]+b[3]+c[3])/3;
+        const cc=cBot.clone().lerp(cTop,clamp(0.48+0.55*ym,0,1));
+        pushTri(B,[a[0],a[1],a[2]],[b[0],b[1],b[2]],[c[0],c[1],c[2]],cc,
+          nrm(D.idx[i]),nrm(D.idx[i+1]),nrm(D.idx[i+2]));
+      }
+    }
+  }
+  for(const bandCfg of [{n:5,rr:[700,1500],h:[260,330],span:[260,420],speed:0.46},
+                        {n:6,rr:[1500,3000],h:[340,470],span:[190,320],speed:0.24}]){
+    const B=Buf(); B.sway=0;
+    for(let i=0;i<bandCfg.n;i++){
+      const st=subStream('cloud',bandCfg.n,i);
+      const a=CLOUD.r(0,TAU), rr=CLOUD.r(bandCfg.rr[0],bandCfg.rr[1]);
+      const cx=worldC.x+Math.sin(a)*rr, cz=worldC.z+Math.cos(a)*rr;
+      const baseY=CLOUD.r(bandCfg.h[0],bandCfg.h[1]);
+      const span=CLOUD.r(bandCfg.span[0],bandCfg.span[1]);
+      const rot=CLOUD.r(0,TAU), dx=Math.sin(rot), dz=Math.cos(rot);
+      const nL=CLOUD.i(6,9);
+      const lobes=[];
+      for(let k=0;k<nL;k++){
+        const t=(k+0.5)/nL-0.5;
+        const r=span*CLOUD.r(0.24,0.32)*(1-0.22*Math.abs(t)*2);
+        const up=CLOUD.chance(0.4)?CLOUD.r(0.14,0.4):CLOUD.r(0,0.10);
+        lobes.push({x:cx+dx*t*span*0.78+CLOUD.r(-10,10),y:baseY+up*span*0.2,z:cz+dz*t*span*0.78+CLOUD.r(-10,10),
+          rx:r*CLOUD.r(0.95,1.15),ry:r*CLOUD.r(0.62,0.8),rz:r*CLOUD.r(0.95,1.15)});
+      }
+      weldedPuff(B,lobes,st,col(0xFFFFFF),mixc(PAL.cloud,PAL.sky,0.16));
+    }
+    const m=new THREE.Mesh(bufGeo(B),cloudMat);
+    m.matrixAutoUpdate=true; m.frustumCulled=false;
+    scene.add(m); HOST_MESHES.push(m);
+    cloudMeshes.push({mesh:m,speed:bandCfg.speed});
+  }
+}
+// far country: layered silhouette masses on the world's own shoulders
+{
+  const B=Buf(); B.sway=0.10;
+  for(let i=0;i<26;i++){
+    const st=subStream('farmass',i);
+    const a=st.r(0,TAU), rr=st.r(600,1350);
+    const x=worldC.x+Math.sin(a)*rr, z=worldC.z+Math.cos(a)*rr;
+    if(routeInfoW(x,z).d<420) continue;
+    const y=groundW(x,z);
+    const len=st.r(150,340), rot=st.r(0,TAU), h=st.r(9,15), depth=st.r(40,80);
+    const n=Math.max(3,Math.round(len/st.r(18,30)));
+    const dirx=Math.sin(rot), dirz=Math.cos(rot);
+    for(let k=0;k<=n;k++){
+      const f=k/n-0.5;
+      const px=x+dirx*len*f+st.r(-7,7), pz=z+dirz*len*f+st.r(-7,7);
+      const py=groundW(px,pz);
+      const hh=h*st.r(0.72,1.28);
+      const rw=st.r(0.55,0.95)*depth;
+      const cool=mixc(PAL.leafShade,PAL.woodDeep,0.30).lerp(col(PAL.sky),0.10+st.r(0,0.06));
+      const lit=mixc(PAL.meadow,PAL.leafShade,0.30+st.r(0,0.18));
+      lobe(B,px,py+hh*0.62,pz,rw,hh*0.55,rw*st.r(0.7,1.1),st,lit,cool,0.14,0,0.12);
+    }
+  }
+  const m=new THREE.Mesh(bufGeo(B),treeMatFar);
+  m.matrixAutoUpdate=false; scene.add(m); HOST_MESHES.push(m);
+}
+// a handful of host trees along the connective segments, so the travel either
+// side of the island reads as country rather than a stage apron
+{
+  const B=Buf();
+  let hi=0;
+  for(const seg of SEGMENTS){
+    if(seg.island) continue;
+    const F=seg.F;
+    for(let sscan=30;sscan<F.len-20;sscan+=42){
+      const st=subStream('hosttree',seg.g0,Math.round(sscan));
+      if(st.chance(0.42)) continue;
+      const fr=getFrame(F,sscan);
+      const lat=(st.chance(0.5)?1:-1)*st.r(16,52);
+      const x=fr.x+fr.lx*lat, z=fr.z+fr.lz*lat;
+      if(routeInfoW(x,z).d<EXCL+3) continue;
+      const fam=st.pick(['oak','birch','leaning','windshaped']);
+      const t={x,z,y:groundW(x,z)-0.25,fam,scl:famScale(fam,st),lean:st.r(-1,1),
+        leanDir:st.r(0,TAU),d:Math.abs(lat),enc:0.15,fruit:false};
+      buildTree(B,t,st.chance(0.3)?1:0,undefined,false);
+      hi++;
+    }
+  }
+  if(B.p.length){ const m=new THREE.Mesh(bufGeo(B),treeMatMid);
+    m.castShadow=(QCFG.shadow>0); m.matrixAutoUpdate=false; scene.add(m); HOST_MESHES.push(m); }
+}
+
+// ============================================================
+// AMBIENT LIFE — pooled, bounded, scheduled by ride distance, animated on
+// the world clock. Plus the island's two RESIDENT swallows: not an event,
+// not scheduled — they live here, and they keep flying while the rider
+// stands still. That is the pause proof.
+// ============================================================
+function lifeMesh(geo,n,mat){
+  const im=new THREE.InstancedMesh(geo,mat,n);
+  im.frustumCulled=false;
+  im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const M=new THREE.Matrix4();
+  M.makeScale(0,0,0);
+  for(let i=0;i<n;i++) im.setMatrixAt(i,M);
+  im.instanceMatrix.needsUpdate=true;
+  scene.add(im);
+  return im;
+}
+const lifeMatDark=new THREE.MeshBasicMaterial({color:mixc(PAL.woodDeep,PAL.bark,0.24),fog:true});
+const lifeMatWing=new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide,fog:true});
+const lifeMatFur=new THREE.MeshLambertMaterial({vertexColors:true,fog:true});
+const birdGeo=(()=>{ const B=Buf(); B.sway=0; const c=mixc(PAL.woodDeep,PAL.bark,0.22);
+  pushTri(B,[0,0,0.42],[-1.15,0.16,0],[0,0,-0.42],c);
+  pushTri(B,[0,0,0.42],[0,0,-0.42],[1.15,0.16,0],c); return bufGeo(B); })();
+const flitGeo=(()=>{ const B=Buf(); B.sway=0; const c=col(0xffffff);
+  pushTri(B,[0,0,-0.075],[0.14,0.02,0.02],[0,0,0.075],c);
+  pushTri(B,[0,0,-0.075],[0,0,0.075],[-0.14,0.02,0.02],c); return bufGeo(B); })();
+function addBlobTo(B,x,y,z,rx,ry,rz,cTop,cBot){
+  const D=ICOD[0];
+  for(let i=0;i<D.idx.length;i+=3){
+    const v=[D.idx[i],D.idx[i+1],D.idx[i+2]].map(k=>[x+D.p.getX(k)*rx,y+D.p.getY(k)*ry,z+D.p.getZ(k)*rz,D.p.getY(k)]);
+    const ym=(v[0][3]+v[1][3]+v[2][3])/3;
+    pushTri(B,[v[0][0],v[0][1],v[0][2]],[v[1][0],v[1][1],v[1][2]],[v[2][0],v[2][1],v[2][2]],
+      cBot.clone().lerp(cTop,clamp(0.5+0.5*ym,0,1)));
+  }
+}
+const animalGeo=(()=>{
+  const B=Buf(); B.sway=0;
+  const body=mixc(PAL.bark,PAL.road,0.30), belly=mixc(PAL.road,PAL.bark,0.30);
+  addBlobTo(B,0,0.34,0,0.30,0.26,0.52,body,belly);
+  addBlobTo(B,0,0.56,0.40,0.16,0.16,0.17,body,belly);
+  addBlobTo(B,0.0,0.72,0.44,0.05,0.13,0.04,body,belly);
+  return bufGeo(B);
+})();
+const POOLS={
+  bird:{im:lifeMesh(birdGeo,20,lifeMatDark),n:20,slots:[]},
+  flit:{im:lifeMesh(flitGeo,24,lifeMatWing),n:24,slots:[]},
+  animal:{im:lifeMesh(animalGeo,3,lifeMatFur),n:3,slots:[]},
+};
+{
+  const N=POOLS.flit.n, tint=new Float32Array(N*3);
+  const tones=[col(PAL.blossom),mixc(PAL.road,0xffffff,0.5),mixc(PAL.blossom,0xFFDE79,0.45),mixc(PAL.sky,0xffffff,0.55)];
+  for(let i=0;i<N;i++){ const t=tones[i%tones.length]; tint[i*3]=t.r; tint[i*3+1]=t.g; tint[i*3+2]=t.b; }
+  POOLS.flit.im.instanceColor=new THREE.InstancedBufferAttribute(tint,3);
+  for(const k of Object.keys(POOLS)) for(let i=0;i<POOLS[k].n;i++) POOLS[k].slots.push({busy:false});
+}
+for(const k of Object.keys(POOLS)) bookMesh(POOLS[k].im,true,0);
+const liveLife=[];
+let lifeFired=0;
+const _lm=new THREE.Matrix4(), _lq=new THREE.Quaternion(), _le=new THREE.Euler(), _lv=new THREE.Vector3(), _ls=new THREE.Vector3();
+function takeSlot(kind,n){
+  const P=POOLS[kind], out=[];
+  for(let i=0;i<P.n&&out.length<n;i++) if(!P.slots[i].busy){ P.slots[i].busy=true; out.push(i); }
+  return out;
+}
+function releaseLife(L){
+  if(!L||L.released) return;
+  L.released=true;
+  const P=L.kind?POOLS[L.kind]:null;
+  if(!P||!L.idx||!L.idx.length) return;
+  for(const i of L.idx){
+    if(P.slots[i]) P.slots[i].busy=false;
+    _lm.makeScale(0,0,0); P.im.setMatrixAt(i,_lm);
+  }
+  P.im.instanceMatrix.needsUpdate=true;
+}
+function clearAllLife(){
+  for(const L of liveLife.slice()) releaseLife(L);
+  liveLife.length=0;
+  for(const k of Object.keys(POOLS)){
+    const P=POOLS[k];
+    for(let i=0;i<P.n;i++){ P.slots[i].busy=false; _lm.makeScale(0,0,0); P.im.setMatrixAt(i,_lm); }
+    P.im.instanceMatrix.needsUpdate=true;
+  }
+  WL.uGlint.value.set(0,0,0,0);
+  moteBoost=0;
+}
+function spawnLife(ev,frame){
+  const st=subStream('lifespawn',ev.id);
+  const fx=frame.x, fz=frame.z, fy=frame.y;
+  const lx=frame.lx, lz=frame.lz, tx=frame.tx, tz=frame.tz;
+  const mk=(kind,n,make)=>{
+    const idx=takeSlot(kind,n); if(!idx.length) return;
+    const L={kind,idx,t:0,dur:ev.dur,ev,released:false,parts:idx.map((_,i)=>make(i,st))};
+    liveLife.push(L);
+  };
+  if(ev.kind==='swallows'){
+    mk('bird',st.i(3,5),(i,s)=>{
+      const ahead=s.r(34,70), side=ev.side;
+      const h=s.r(5,11);
+      return {x:fx+tx*ahead+lx*side*s.r(26,48), y:fy+h, z:fz+tz*ahead+lz*side*s.r(26,48),
+        vx:-lx*side*s.r(11,17)+tx*s.r(-2,4), vy:s.r(-0.5,0.9), vz:-lz*side*s.r(11,17)+tz*s.r(-2,4),
+        sc:s.r(0.45,0.7), ph:s.r(0,TAU), bob:s.r(1.5,3.2)};
+    });
+  } else if(ev.kind==='flock'){
+    mk('bird',st.i(9,13),(i,s)=>{
+      const a=s.r(0,TAU), rr=s.r(10,52), ahead=s.r(150,330);
+      const bx=fx+tx*ahead+lx*ev.side*s.r(40,150)+Math.cos(a)*rr;
+      const bz=fz+tz*ahead+lz*ev.side*s.r(40,150)+Math.sin(a)*rr;
+      return {x:bx,y:groundW(bx,bz)+s.r(0.4,2.5),z:bz,
+        vx:s.r(-4,4)+tx*s.r(2,7), vy:s.r(2.6,4.6), vz:s.r(-4,4)+tz*s.r(2,7),
+        sc:s.r(0.75,1.15), ph:s.r(0,TAU), bob:s.r(1,2.4), rise:true};
+    });
+  } else if(ev.kind==='butterflies'||ev.kind==='dragonflies'){
+    const water=(ev.kind==='dragonflies');
+    mk('flit',st.i(7,12),(i,s)=>{
+      let cx,cz,gy;
+      if(ev.atPond){
+        // over the pond of the copy the rider is inside
+        const T=XFORMS[ev._copy||0];
+        const w=T.fwd(POND.cx+s.r(-POND.rx*0.85,POND.rx*0.85),POND.cz+s.r(-POND.rz*0.85,POND.rz*0.85));
+        cx=w[0]; cz=w[1]; gy=T.fwdY(POND.y);
+      } else {
+        const ahead=s.r(8,44), off=ev.side*s.r(RH+2.5,ev.radius||24);
+        cx=fx+tx*ahead+lx*off; cz=fz+tz*ahead+lz*off; gy=groundW(cx,cz);
+      }
+      return {ax:cx,az:cz,ay:gy+s.r(0.5,water?1.4:2.0),span:s.r(1.4,water?3.2:5.0),
+        ph:s.r(0,TAU),sp:s.r(0.5,1.3),sc:s.r(0.85,1.5),water};
+    });
+  } else if(ev.kind==='rabbit'){
+    mk('animal',1,(i,s)=>{
+      const ahead=s.r(26,46), off=ev.side*s.r(RH+2.2,RH+5.5);
+      const x=fx+tx*ahead+lx*off, z=fz+tz*ahead+lz*off;
+      return {x,y:groundW(x,z),z,vx:lx*ev.side*s.r(2.4,4.2)+tx*s.r(0.5,2),vy:0,
+        vz:lz*ev.side*s.r(2.4,4.2)+tz*s.r(0.5,2),sc:s.r(0.5,0.68),hop:s.r(5,8),ph:s.r(0,TAU),
+        fade:s.r(2.2,3.6)};
+    });
+  } else if(ev.kind==='glint'){
+    liveLife.push({kind:null,idx:[],t:0,dur:ev.dur,ev,released:false,
+      glint:{x:fx+tx*30+lx*ev.side*14,z:fz+tz*30+lz*ev.side*14,r:34}});
+  }
+  lifeFired++;
+}
+let moteBoost=0;
+function updateLife(dt,wT){
+  WL.uGlint.value.set(0,0,0,0);
+  moteBoost=Math.max(0,moteBoost-dt*0.8);
+  for(let i=liveLife.length-1;i>=0;i--){
+    const L=liveLife[i];
+    L.t+=dt;
+    const fade=clamp(Math.min(L.t/1.2,(L.dur-L.t)/1.6),0,1);
+    if(L.glint){
+      const s=Math.sin(clamp(L.t/L.dur,0,1)*Math.PI);
+      WL.uGlint.value.set(L.glint.x,L.glint.z,L.glint.r,s*0.85);
+    }
+    if(L.kind){
+      const im=POOLS[L.kind].im;
+      for(let k=0;k<L.idx.length;k++){
+        const p=L.parts[k], slot=L.idx[k];
+        let sc=p.sc*fade;
+        if(L.kind==='bird'){
+          p.x+=p.vx*dt; p.z+=p.vz*dt;
+          if(p.rise){ p.y+=p.vy*dt; p.vy=Math.max(0.6,p.vy-dt*0.35); }
+          else p.y+=Math.sin(wT*1.6+p.ph)*p.bob*dt;
+          _le.set(0,Math.atan2(p.vx,p.vz),Math.sin(wT*7+p.ph)*0.32);
+          _lq.setFromEuler(_le); _lv.set(p.x,p.y,p.z); _ls.set(sc,sc,sc);
+        } else if(L.kind==='flit'){
+          const t=wT*p.sp+p.ph;
+          const x=p.ax+Math.sin(t)*p.span, z=p.az+Math.cos(t*0.77)*p.span;
+          const y=p.ay+Math.sin(t*(p.water?2.6:1.7))*(p.water?0.22:0.55);
+          _le.set(Math.sin(wT*(p.water?26:13)+p.ph)*(p.water?0.25:0.95),Math.atan2(Math.cos(t),-Math.sin(t*0.77)),0);
+          _lq.setFromEuler(_le); _lv.set(x,y,z); _ls.set(sc,sc,sc);
+        } else {
+          p.x+=p.vx*dt; p.z+=p.vz*dt;
+          const gy=groundW(p.x,p.z);
+          const hop=p.hop?Math.abs(Math.sin(wT*p.hop+p.ph))*0.22:0;
+          sc=p.sc*clamp(Math.min(L.t/0.6,(p.fade-L.t)/1.1),0,1);
+          _le.set(0,Math.atan2(p.vx,p.vz),0);
+          _lq.setFromEuler(_le); _lv.set(p.x,gy+hop,p.z); _ls.set(sc,sc,sc);
+        }
+        if(sc<=0.0005) _lm.makeScale(0,0,0); else _lm.compose(_lv,_lq,_ls);
+        im.setMatrixAt(slot,_lm);
+      }
+      im.instanceMatrix.needsUpdate=true;
+    }
+    if(L.t>=L.dur){ releaseLife(L); liveLife.splice(i,1); }
+  }
+}
+// ---- the resident swallows: two of them, on the island's own clock ----
+// They circle the knoll and skim the pond on a closed path derived from the
+// LOCAL plan, advancing with world time whether or not anyone is riding.
+const RESIDENT_SWALLOWS=(()=>{
+  const st=makeStream('life/resident');
+  const im=lifeMesh(birdGeo,2*XFORMS.length,lifeMatDark);
+  bookMesh(im,true,0);
+  const parts=[];
+  for(let c=0;c<XFORMS.length;c++){
+    for(let i=0;i<2;i++){
+      parts.push({ copy:c, ph:st.r(0,TAU), sp:st.r(0.09,0.13)*(i?-1:1),
+        rKnoll:st.r(34,52), hK:st.r(9,15), hP:st.r(1.2,2.6), mix:st.r(0,TAU) });
+    }
+  }
+  return {im,parts};
+})();
+function updateResidentSwallows(wT){
+  const im=RESIDENT_SWALLOWS.im;
+  for(let i=0;i<RESIDENT_SWALLOWS.parts.length;i++){
+    const p=RESIDENT_SWALLOWS.parts[i];
+    const T=XFORMS[p.copy];
+    const t=wT*p.sp+p.ph;
+    // a figure-of-eight between the knoll and the pond, in LOCAL frame
+    const m=0.5+0.5*Math.sin(t*0.37+p.mix);
+    const cx=lerp(KNOLL.x,POND.cx,m), cz=lerp(KNOLL.z,POND.cz,m);
+    const lx=cx+Math.sin(t)*p.rKnoll*(0.6+0.4*m), lz=cz+Math.cos(t*1.13)*p.rKnoll*(0.5+0.5*m);
+    const ly=lerp(groundL(KNOLL.x,KNOLL.z)+p.hK,POND.y+p.hP,m)+Math.sin(t*2.3)*1.1;
+    const w=T.fwd(lx,lz);
+    const vx=Math.cos(t)*p.sp*p.rKnoll, vz=-Math.sin(t*1.13)*1.13*p.sp*p.rKnoll;
+    const wvx=vx*T.c+vz*T.s, wvz=-vx*T.s+vz*T.c;
+    _le.set(0,Math.atan2(wvx,wvz),Math.sin(wT*6.4+p.ph)*0.3);
+    _lq.setFromEuler(_le); _lv.set(w[0],T.fwdY(ly),w[1]);
+    const sc=0.55;
+    _ls.set(sc,sc,sc);
+    _lm.compose(_lv,_lq,_ls);
+    im.setMatrixAt(i,_lm);
+  }
+  im.instanceMatrix.needsUpdate=true;
+}
+
+// ============================================================
+// AIRBORNE — pollen, drifting leaves, seed motes; gated to the island's
+// planned pockets. Everything advects on the world clock.
+// ============================================================
+const partSystems=[];
+function particleField(n,box,tint,size,opacity,kind){
+  const N=Math.max(1,Math.round(n*QCFG.part));
+  const base=new Float32Array(N*3), seed=new Float32Array(N);
+  const st=subStream('particles',kind);
+  for(let i=0;i<N;i++){
+    base[i*3]=st.r(0,box.x); base[i*3+1]=st.r(0,box.y); base[i*3+2]=st.r(0,box.z);
+    seed[i]=st.r(0,1);
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(base,3));
+  g.setAttribute('aSeed',new THREE.BufferAttribute(seed,1));
+  const m=new THREE.ShaderMaterial({
+    transparent:true, depthWrite:false,
+    uniforms:{ uWTime:WL.uWTime, uCam:{value:new THREE.Vector3()}, uGround:{value:0},
+      uBox:{value:new THREE.Vector3(box.x,box.y,box.z)}, uTint:{value:new THREE.Color(tint)},
+      uSize:{value:size}, uOp:{value:opacity}, uBoost:{value:1}, uWind:{value:WL.uCloudMove.value} },
+    vertexShader:`attribute float aSeed; uniform float uWTime; uniform vec3 uCam; uniform vec3 uBox;
+      uniform float uGround; uniform float uSize; uniform vec2 uWind; varying float vA;
+      void main(){
+        vec3 p=position;
+        float t=uWTime;
+        ${kind===0?`p.x+=uWind.x*t*0.55+sin(t*0.35+aSeed*31.0)*2.4; p.z+=uWind.y*t*0.55+cos(t*0.29+aSeed*17.0)*2.4;
+                    p.y+=sin(t*0.42+aSeed*44.0)*0.9+t*0.06;`:''}
+        ${kind===1?`p.x+=uWind.x*t*1.35+sin(t*0.62+aSeed*23.0)*3.2; p.z+=uWind.y*t*1.35+cos(t*0.51+aSeed*13.0)*3.2;
+                    p.y-=mod(t*0.62+aSeed*40.0,uBox.y);`:''}
+        ${kind===2?`p.x+=uWind.x*t*0.9+sin(t*0.22+aSeed*29.0)*5.0; p.z+=uWind.y*t*0.9+cos(t*0.19+aSeed*37.0)*5.0;
+                    p.y+=mod(t*0.30+aSeed*33.0,uBox.y)*0.6;`:''}
+        vec3 anchor=vec3(uCam.x,uGround,uCam.z);
+        vec3 w=mod(p-anchor+uBox*0.5,uBox)-uBox*0.5+anchor;
+        w.y=anchor.y+mod(p.y,uBox.y);
+        float d=distance(w,uCam);
+        vA=(1.0-smoothstep(48.0,110.0,d))*smoothstep(1.6,6.0,d);
+        vec4 mv=viewMatrix*vec4(w,1.0);
+        gl_Position=projectionMatrix*mv;
+        gl_PointSize=uSize*(150.0/max(1.0,-mv.z));
+      }`,
+    fragmentShader:`uniform vec3 uTint; uniform float uOp; uniform float uBoost; varying float vA;
+      void main(){
+        vec2 q=gl_PointCoord-0.5;
+        float a=smoothstep(0.5,0.10,length(q))*uOp*vA*uBoost;
+        if(a<0.008) discard;
+        gl_FragColor=vec4(uTint,a);
+      }`,
+  });
+  const pts=new THREE.Points(g,m);
+  pts.frustumCulled=false;
+  scene.add(pts);
+  bookMesh(pts,true,0);
+  partSystems.push({m,kind,n:N});
+  return m;
+}
+particleField(150,{x:150,y:5.5,z:150},0xF8EFCE,1.30,0.26,0);
+particleField(60,{x:150,y:14,z:150},0xA9D273,2.0,0.30,1);
+particleField(90,{x:170,y:22,z:170},0xF4E7BE,1.20,0.22,2);
+const totalParticles=partSystems.reduce((a,b)=>a+b.n,0);
+
+// ============================================================
+// RIDER, CONTROLS, CAMERA
+// ============================================================
+const rider={ g:0, v:0, vT:CRUISE, lat:0.9, latT:0.9, started:false, holdT:0, paused:false, ended:false, simT:0 };
+const PROV_RANK={continuous:0,accelerated:1,warped:2,debug:3};
+const FIXED_STEP_MAX=0.5;
+function freshRun(){
+  return { distanceRiddenM:0, peakIslandDrawCalls:0, peakIslandTriangles:0,
+    peakDrawCalls:0, peakTriangles:0, peakResidentBands:0,
+    bandsRealized:0, bandsDisposed:0, lifeFired:0,
+    ambientProvenWhilePaused:false, pauseExercised:false,
+    seen:{ water:false, waterFirstSeenAtM:null, waterFramesSeen:0,
+           sisters:false, sistersFirstSeenAtM:null, sistersLastSeenAtM:null, sistersSeenSpanM:0 },
+    marks:{ entered:false, pondPassed:false, crested:false, exited:false, rested:false },
+    errors:0, provenance:'continuous' };
+}
+let RUN=freshRun();
+function markProvenance(kind){ if(PROV_RANK[kind]>PROV_RANK[RUN.provenance]) RUN.provenance=kind; }
+const LIFETIME={ restarts:0, runs:1 };
+let pauseProbe=null;
+const keys={};
+window.addEventListener('keydown',(e)=>{
+  if(e.code==='Space'){ e.preventDefault(); if(!e.repeat) rider.paused=!rider.paused; return; }
+  if(e.code==='KeyR'&&!e.repeat){ restartRide(); return; }
+  keys[e.code]=true;
+});
+window.addEventListener('keyup',(e)=>{ keys[e.code]=false; });
+let dragging=false, yawOff=0, pitchOff=0;
+window.addEventListener('mousedown',()=>{ dragging=true; });
+window.addEventListener('mouseup',()=>{ dragging=false; });
+window.addEventListener('mousemove',(e)=>{
+  if(!dragging) return;
+  yawOff=clamp(yawOff-(e.movementX||0)*0.0024,-1.1,1.1);
+  pitchOff=clamp(pitchOff-(e.movementY||0)*0.0019,-0.42,0.36);
+});
+const eventFired=LIFE_EVENTS.map(()=>XFORMS.map(()=>false));
+function restartRide(){
+  rider.g=0; rider.v=0; rider.vT=CRUISE; rider.lat=0.9; rider.latT=0.9;
+  rider.started=false; rider.holdT=0; rider.paused=false; rider.ended=false; rider.simT=0;
+  yawOff=0; pitchOff=0; pitchSm=null; camInit=false;
+  for(const row of eventFired) row.fill(false);
+  clearAllLife();
+  lifeFired=0;
+  disposeAllBands();
+  pauseProbe=null;
+  RUN=freshRun();
+  if(fixedStep>0) markProvenance(fixedStep>FIXED_STEP_MAX?'debug':'accelerated');
+  frameTimes.length=0; warmFrames=0;
+  LIFETIME.restarts++; LIFETIME.runs++;
+  warmResidency(0);
+}
+function warmResidency(g){
+  let guard=0;
+  while(updateResidency(g,3)>0&&guard++<60){}
+}
+
+// ============================================================
+// VALIDATION — measured against the built island, in its own frame
+// ============================================================
+const VAL={};
+{
+  let maxKink=0,maxStep=0;
+  for(let i=1;i<LFRAME.N;i++){
+    maxKink=Math.max(maxKink,Math.acos(clamp(LFRAME.tx[i]*LFRAME.tx[i-1]+LFRAME.tz[i]*LFRAME.tz[i-1],-1,1)));
+    maxStep=Math.max(maxStep,Math.abs(LFRAME.y[i]-LFRAME.y[i-1]));
+  }
+  VAL.maxKinkRad=maxKink; VAL.maxStepM=maxStep;
+  VAL.roadContinuity=(maxKink<0.055&&maxStep<0.30);
+  let maxG=0,asc=0,desc=0;
+  for(let i=1;i<=LFRAME.N;i++){
+    const d=LFRAME.y[i]-LFRAME.y[i-1];
+    maxG=Math.max(maxG,Math.abs(d)/LFRAME.RS);
+    if(d>0) asc+=d; else desc-=d;
+  }
+  VAL.maxGradePct=maxG*100; VAL.ascentM=asc; VAL.descentM=desc;
+  VAL.netElevationM=EXIT_POSE.y-ENTRY_POSE.y;
+  VAL.entryGradePct=ENTRY_POSE.gradePct; VAL.exitGradePct=EXIT_POSE.gradePct;
+  VAL.netHeadingDeg=HEADING_STAT.netDeg; VAL.maxHeadingExcursionDeg=HEADING_STAT.maxAbsDeg;
+  // exclusion corridor: every planned solid object
+  let minTreeD=1e9, excl=0;
+  for(const t of TREES){ if(t.unseatable) continue; const d=routeInfoL(t.x,t.z).d;
+    minTreeD=Math.min(minTreeD,d); if(d<EXCL) excl++; }
+  let pondEdgeD=1e9;
+  for(let a=0;a<TAU;a+=TAU/24){
+    const ca=Math.cos(POND.rot), sa=Math.sin(POND.rot);
+    const ex=Math.cos(a)*POND.rx, ez=Math.sin(a)*POND.rz;
+    pondEdgeD=Math.min(pondEdgeD,routeInfoL(POND.cx+ex*ca-ez*sa,POND.cz+ex*sa+ez*ca).d);
+  }
+  if(pondEdgeD<EXCL) excl++;
+  VAL.exclusionViolations=excl; VAL.minTreeCorridorM=minTreeD; VAL.pondEdgeCorridorM=pondEdgeD;
+  // the road surface against the ground beside it, on the emulated drawn mesh
+  let supportGapMax=0, samples=0, unsupported=0;
+  for(let s=2;s<LFRAME.len-2;s+=4){
+    for(const sd of [-1,1]){
+      samples++;
+      const yEdge=corridorEmulatedY(s,sd*RH);
+      const ySup=corridorEmulatedY(s,sd*(RH+0.22));
+      const gap=yEdge-ySup;
+      if(gap>supportGapMax){ supportGapMax=gap; VAL.worstSupport={s:Math.round(s),side:sd,gapM:Math.round(gap*1000)/1000}; }
+      if(gap>0.08) unsupported++;
+    }
+  }
+  VAL.samples=samples; VAL.roadSupportGapM=supportGapMax; VAL.roadUnsupportedSamples=unsupported;
+  VAL.roadContrastRatio=ROAD_CONTRAST;
+  VAL.boundaryContract={
+    entryGradeWithin2Pct:Math.abs(ENTRY_POSE.gradePct)<=2.0,
+    exitGradeWithin2Pct:Math.abs(EXIT_POSE.gradePct)<=2.0,
+    headingWithin90:Math.abs(HEADING_STAT.netDeg)<=90&&HEADING_STAT.maxAbsDeg<=90,
+    netElevationWithin40:Math.abs(VAL.netElevationM)<=40,
+    gradeCapKept:VAL.maxGradePct<=GRADE_CAP*100+0.05,
+    lengthInBand:LFRAME.len>=1800&&LFRAME.len<=2200,
+  };
+}
+
+// ============================================================
+// WARM-UP, IDENTITY PROBE, REALIZATION HASH
+// ============================================================
+warmResidency(0);
+const IDENTITY_PROBE=(()=>{
+  const bi=Math.min(2,NBAND-1);
+  const sig=(i)=>{
+    const b=COPY_BANDS[0][i]; if(!b.live) return 'none';
+    return b.live.meshes.map(m=>m.geometry.getAttribute('position').count).join('/')+
+      '|'+JSON.stringify(b.live.local);
+  };
+  if(!COPY_BANDS[0][bi].live) realizeBand(0,bi);
+  const a=sig(bi);
+  disposeBand(0,bi); realizeBand(0,bi);
+  const b=sig(bi);
+  return {stable:(a===b&&a!=='none'),signature:a};
+})();
+let realizationHash='';
+{
+  const h=fnv();
+  // island-only quantities: host mesh counts vary with placement and would
+  // make the island's own realization look placement-dependent when it is not
+  h.feed(QUALITY,QCFG.row,QCFG.tile,QCFG.under,QCFG.nearD,QCFG.midD,QCFG.farD,QCFG.lobe,
+    QCFG.tuftBand,QCFG.part,QCFG.shadow,
+    totalParticles,FORMATION_STAT.built,IDENTITY_PROBE.signature);
+  realizationHash=(H.real.hex()+h.hex()).slice(0,16);
+}
+// the ambient roster the island declares, each with its clock class
+const AMBIENT_ROSTER=[
+  {name:'resident-swallows', clock:'ambient-clock', count:2*XFORMS.length},
+  {name:'scheduled-life-events', clock:'ride-clock', count:LIFE_EVENTS.length,
+   note:'triggered by ride distance; once alive they animate on the world clock'},
+  {name:'canopy-and-grass-sway', clock:'ambient-clock', count:'shader-wide'},
+  {name:'pond-surface', clock:'ambient-clock', count:XFORMS.length},
+  {name:'air-pockets(pollen,leaves,motes)', clock:'ambient-clock', count:totalParticles},
+  {name:'host-clouds', clock:'ambient-clock', count:cloudMeshes.length, host:true},
+];
+
+// ============================================================
+// MAIN LOOP
+// ============================================================
+const frameTimes=[]; let warmFrames=0, frameId=0, lastInfo={calls:0,tris:0}, lastIsland={calls:0,tris:0};
+const STALL_MS=220;
+function pctl(arr){
+  const a=arr.slice().sort((x,y)=>x-y);
+  const qq=(t)=>a.length?a[clamp(Math.floor(t*(a.length-1)),0,a.length-1)]:0;
+  return {n:a.length,p50:Math.round(qq(0.5)*10)/10,p95:Math.round(qq(0.95)*10)/10,
+    p99:Math.round(qq(0.99)*10)/10,fps:Math.round(1000/Math.max(qq(0.5),0.01)*10)/10};
+}
+let wTime=0, lastNow=performance.now(), camInit=false, pitchSm=null;
+let fixedStep=0;
+const camFwd=new THREE.Vector3(0,0,1);
+const windDrift=WL.uCloudMove.value;
+const _eye=new THREE.Vector3(), _fwd=new THREE.Vector3();
+const _frustum=new THREE.Frustum(), _pv=new THREE.Matrix4(), _pt=new THREE.Vector3();
+function refreshFrustum(cam){
+  _pv.multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);
+  _frustum.setFromProjectionMatrix(_pv);
+}
+function seenByRider(eye,x,y,z,r,tol){
+  _pt.set(x,y,z);
+  if(!_frustum.containsPoint(_pt)&&!_frustum.intersectsSphere(new THREE.Sphere(_pt,r||1))) return false;
+  const D=Math.hypot(x-eye.x,z-eye.z);
+  if(D<2) return true;
+  for(let t=0.06;t<0.95;t+=0.04){
+    const px=lerp(eye.x,x,t), pz=lerp(eye.z,z,t);
+    if(groundW(px,pz)>lerp(eye.y,y,t)+(tol||0.5)) return false;
+  }
+  return true;
+}
+function countIsland(activeCopy){
+  let calls=0,tris=0;
+  for(const m of ISLAND_MESHES){
+    if(!m.visible) continue;
+    const c=m.userData.copy;
+    if(c!==undefined&&c>=0&&c!==activeCopy) continue;
+    if(m.geometry&&m.geometry.boundingSphere&&m.frustumCulled!==false){
+      if(!_frustum.intersectsObject(m)) continue;
+    }
+    const g=m.geometry, idx=g.getIndex();
+    const t=Math.floor((idx?idx.count:(g.getAttribute('position')||{count:0}).count)/3);
+    if(!t) continue;
+    calls++; tris+=t;
+  }
+  return {calls,tris};
+}
+const CLOUD_SPAN=5200;
+function tick(){
+  if(contextLost) return;
+  const now=performance.now();
+  const dtRaw=(now-lastNow)/1000; lastNow=now;
+  const dt=fixedStep>0?fixedStep:Math.min(dtRaw,0.05);
+  wTime+=dt;
+  frameId++; warmFrames++;
+  if(warmFrames>20){ frameTimes.push(dtRaw*1000); if(frameTimes.length>600) frameTimes.shift(); }
+  WL.uWTime.value=wTime;
+
+  if(!rider.started){ rider.holdT+=dt; if(rider.holdT>=1.1) rider.started=true; }
+  if(keys['KeyW']||keys['ArrowUp']) rider.vT=clamp(rider.vT+4.0*dt,4,18);
+  else if(keys['KeyS']||keys['ArrowDown']) rider.vT=clamp(rider.vT-7*dt,4,18);
+  else rider.vT+=(CRUISE-rider.vT)*(1-Math.exp(-dt*0.18));
+  const steer=((keys['KeyA']||keys['ArrowLeft'])?1:0)-((keys['KeyD']||keys['ArrowRight'])?1:0);
+  if(steer) rider.latT=clamp(rider.latT+steer*2.9*dt,-2.6,2.6);
+  else rider.latT*=Math.exp(-dt*0.75);
+
+  const fr0=frameAtG(rider.g);
+  const frA=frameAtG(Math.min(rider.g+7,ROUTE_LEN-1));
+  const slope=(frA.y-fr0.y)/7;
+  if(rider.started&&!rider.paused&&!rider.ended){
+    rider.simT+=dt;
+    const vEff=rider.vT*(1-clamp(slope*1.45,-0.11,0.15));
+    rider.v+=(vEff-rider.v)*(1-Math.exp(-dt*1.6));
+    rider.g+=rider.v*dt;
+    RUN.distanceRiddenM=rider.g;
+    const isl=islandLocalOf(rider.g);
+    if(isl){
+      RUN.marks.entered=true;
+      if(isl.s>POND.g) RUN.marks.pondPassed=true;
+      if(isl.s>movEnd('headland')) RUN.marks.crested=true;
+    }
+    if(rider.g>ISLAND_SEGS[ISLAND_SEGS.length-1].g1) RUN.marks.exited=true;
+    if(rider.g>ROUTE_LEN-12){
+      rider.vT=Math.max(4,rider.vT-6*dt);
+      rider.v=Math.min(rider.v,Math.max(0.30,(ROUTE_LEN-4-rider.g)*0.32));
+      if(rider.g>ROUTE_LEN-5&&rider.v<0.4){ rider.v=0; if(!rider.ended){ rider.ended=true; RUN.marks.rested=true; } }
+    }
+    rider.g=clamp(rider.g,0,ROUTE_LEN-4);
+  }
+  rider.lat+=(rider.latT-rider.lat)*(1-Math.exp(-dt*4.6));
+
+  updateResidency(rider.g,warmFrames<8?4:1);
+  RUN.peakResidentBands=Math.max(RUN.peakResidentBands,residentBands);
+  // scheduled life, per copy, by island-local distance
+  {
+    const isl=islandLocalOf(rider.g);
+    if(isl){
+      for(let e=0;e<LIFE_EVENTS.length;e++){
+        const ev=LIFE_EVENTS[e];
+        if(eventFired[e][isl.copy]) continue;
+        if(isl.s>=ev.s-2&&isl.s<ev.s+50){
+          eventFired[e][isl.copy]=true;
+          ev._copy=isl.copy;
+          spawnLife(ev,fr0);
+          RUN.lifeFired++;
+        } else if(isl.s>=ev.s+50) eventFired[e][isl.copy]=true;
+      }
+    }
+  }
+  updateLife(dt,wTime);
+  updateResidentSwallows(wTime);
+
+  // ambient continues while the rider is paused; proven, not asserted
+  if(rider.paused){
+    RUN.pauseExercised=true;
+    if(!pauseProbe){
+      const M=new THREE.Matrix4(); RESIDENT_SWALLOWS.im.getMatrixAt(0,M);
+      pauseProbe={t:wTime,x:M.elements[12],z:M.elements[14]};
+    } else if(wTime-pauseProbe.t>0.7){
+      const M=new THREE.Matrix4(); RESIDENT_SWALLOWS.im.getMatrixAt(0,M);
+      if(Math.hypot(M.elements[12]-pauseProbe.x,M.elements[14]-pauseProbe.z)>0.02) RUN.ambientProvenWhilePaused=true;
+    }
+  } else pauseProbe=null;
+  for(const cf of cloudMeshes){
+    const sp=cf.speed;
+    let ox=windDrift.x*wTime*sp, oz=windDrift.y*wTime*sp;
+    ox=((ox%CLOUD_SPAN)+CLOUD_SPAN*1.5)%CLOUD_SPAN-CLOUD_SPAN/2;
+    oz=((oz%CLOUD_SPAN)+CLOUD_SPAN*1.5)%CLOUD_SPAN-CLOUD_SPAN/2;
+    cf.mesh.position.set(ox,0,oz);
+    cf.mesh.updateMatrix();
+  }
+
+  // camera
+  const eyeF=fr0;
+  _fwd.set(eyeF.tx,0,eyeF.tz);
+  camFwd.lerp(_fwd,camInit?1-Math.exp(-dt*3.4):1).normalize();
+  camInit=true;
+  _eye.set(eyeF.x,eyeF.y,eyeF.z).addScaledVector(new THREE.Vector3(eyeF.lx,0,eyeF.lz),rider.lat);
+  _eye.y+=EYE_H;
+  if(!dragging){ yawOff*=Math.exp(-dt*1.6); pitchOff*=Math.exp(-dt*1.6); }
+  const yaw=Math.atan2(-camFwd.x,-camFwd.z)+yawOff;
+  const la=frameAtG(Math.min(rider.g+30,ROUTE_LEN-1));
+  const pitchTarget=Math.atan2(la.y-eyeF.y,30)*0.42;
+  pitchSm=(pitchSm===null)?pitchTarget:pitchSm+(pitchTarget-pitchSm)*(1-Math.exp(-dt*1.5));
+  const pitch=clamp(pitchSm+pitchOff+PITCH_BIAS,-0.55,0.5);
+  const roll=clamp(-rider.lat*0.030-steer*0.010,-0.052,0.052)*clamp(rider.v/11,0,1);
+  camera.position.copy(_eye);
+  camera.quaternion.setFromEuler(new THREE.Euler(pitch,yaw,roll,'YXZ'));
+
+  if(QCFG.shadow>0){
+    sun.position.set(_eye.x+sunDir.x*240,_eye.y+sunDir.y*240,_eye.z+sunDir.z*240);
+    sun.target.position.set(_eye.x+camFwd.x*22,eyeF.y,_eye.z+camFwd.z*22);
+    sun.target.updateMatrixWorld();
+  }
+  {
+    const isl=islandLocalOf(rider.g);
+    const air=isl?airAmountAt(isl.s):0.08;
+    for(const p of partSystems){
+      p.m.uniforms.uCam.value.copy(_eye);
+      p.m.uniforms.uGround.value=eyeF.y;
+      p.m.uniforms.uBoost.value=(p.kind===2)?(air*0.85+moteBoost*1.5):air;
+    }
+  }
+  // bounded draw
+  {
+    const vr=QCFG.view*QCFG.view;
+    for(const m of corridorMeshes){
+      const c=m.geometry.boundingSphere;
+      m.visible=c?(_eye.distanceToSquared(c.center)<vr+c.radius*c.radius):true;
+    }
+    for(const m of terrainMeshes){
+      const c=m.geometry.boundingSphere;
+      m.visible=c?(_eye.distanceToSquared(c.center)<vr*1.3+c.radius*c.radius):true;
+    }
+  }
+
+  camera.updateMatrixWorld();
+  if((frameId&3)===0){
+    refreshFrustum(camera);
+    const isl=islandLocalOf(rider.g);
+    // what the rider can actually see
+    for(let c=0;c<XFORMS.length;c++){
+      const T=XFORMS[c];
+      if(isl&&Math.abs((isl.copy===c?isl.s:1e9)-POND.g)<340){
+        let hit=false;
+        for(let a=0;a<TAU&&!hit;a+=TAU/7){
+          const lx=POND.cx+Math.cos(a)*POND.rx*0.7, lz=POND.cz+Math.sin(a)*POND.rz*0.7;
+          const w=T.fwd(lx,lz);
+          if(seenByRider(_eye,w[0],T.fwdY(POND.y)+0.05,w[1],2.5,0.35)) hit=true;
+        }
+        if(hit){ RUN.seen.water=true; RUN.seen.waterFramesSeen++;
+          if(RUN.seen.waterFirstSeenAtM===null) RUN.seen.waterFirstSeenAtM=Math.round(rider.g); }
+      }
+      const kw=T.fwd(KNOLL.x,KNOLL.z);
+      if(seenByRider(_eye,kw[0],T.fwdY(groundL(KNOLL.x,KNOLL.z))+24,kw[1],20,1.2)){
+        RUN.seen.sisters=true;
+        if(RUN.seen.sistersFirstSeenAtM===null) RUN.seen.sistersFirstSeenAtM=Math.round(rider.g);
+        RUN.seen.sistersLastSeenAtM=Math.round(rider.g);
+        RUN.seen.sistersSeenSpanM=RUN.seen.sistersLastSeenAtM-RUN.seen.sistersFirstSeenAtM;
+      }
+    }
+    const isl2=islandLocalOf(rider.g);
+    lastIsland=countIsland(isl2?isl2.copy:0);
+    if(warmFrames>30){
+      RUN.peakIslandDrawCalls=Math.max(RUN.peakIslandDrawCalls,lastIsland.calls);
+      RUN.peakIslandTriangles=Math.max(RUN.peakIslandTriangles,lastIsland.tris);
+    }
+  }
+
+  renderer.render(scene,camera);
+  lastInfo={calls:renderer.info.render.calls,tris:renderer.info.render.triangles};
+  if(warmFrames>30){
+    RUN.peakDrawCalls=Math.max(RUN.peakDrawCalls,lastInfo.calls);
+    RUN.peakTriangles=Math.max(RUN.peakTriangles,lastInfo.tris);
+  }
+  renderer.info.reset();
+}
+renderer.setAnimationLoop(tick);
+
+// ============================================================
+// PROOF — extends the keeper's proof shape to summerglass-island-01.
+// Everything here is a truthful runtime value or a measured plan value;
+// nothing is asserted that was not exercised.
+// ============================================================
+const poseOut=(p)=>({ x:Math.round(p.x*100)/100, y:Math.round(p.y*100)/100, z:Math.round(p.z*100)/100,
+  headingDeg:Math.round(p.headingRad*180/Math.PI*100)/100, gradePct:Math.round(p.gradePct*100)/100 });
+function buildProof(){
+  let glR='?',glV='?';
+  try{ const gl=renderer.getContext(); const ext=gl.getExtension('WEBGL_debug_renderer_info');
+    if(ext){ glR=gl.getParameter(ext.UNMASKED_RENDERER_WEBGL); glV=gl.getParameter(ext.UNMASKED_VENDOR_WEBGL); } }catch(e){}
+  const steady=pctl(frameTimes.filter(v=>v<=STALL_MS));
+  const soft=/swiftshader|llvmpipe|software|basic render/i.test(glR+' '+glV);
+  const isl=islandLocalOf(rider.g);
+  const vocabSubset=VOCAB_USED.every(v=>VOCAB_ALLOWLIST.includes(v));
+  return {
+    version:'summerglass-island-01',
+    islandId:ISLAND_ID, seed:SEED_TEXT, seedHash:SEED_HASH, quality:QUALITY,
+    planHash:PLAN_HASH, realizationHash,
+    hashNote:'deterministic repeatability checksums, not cryptographic proof',
+    routeHash:H.route.hex(), elevationHash:H.elev.hex(), terrainHash:H.terrain.hex(),
+    ecologyHash:H.eco.hex(), lifeHash:H.life.hex(),
+    qualityReadsBeforePlanFrozen:QUALITY_READS_AT_PLAN,
+    placementReadsBeforePlanFrozen:PLACEMENT_READS_AT_PLAN,
+    movement:isl?movementOf(isl.s):'(connective travel)',
+    contract:{
+      declaredEntryPose:poseOut(ENTRY_POSE),
+      declaredExitPose:poseOut(EXIT_POSE),
+      roadWidthM:Math.round(ROAD_W*100)/100, shoulderM:SHOULDER, exclusionM:Math.round(EXCL*100)/100,
+      frameChannels:['x','y','z','tx','tz','lx','lz','k'], frameSpacingM:LFRAME.RS,
+      frameCount:LFRAME.N+1,
+      measuredLengthM:Math.round(LFRAME.len*10)/10,
+      netElevationM:Math.round(VAL.netElevationM*100)/100,
+      totalHeadingChangeDeg:Math.round(VAL.netHeadingDeg*100)/100,
+      maxHeadingExcursionDeg:Math.round(VAL.maxHeadingExcursionDeg*100)/100,
+      maxGradePct:Math.round(VAL.maxGradePct*100)/100,
+      ascentM:Math.round(VAL.ascentM*10)/10, descentM:Math.round(VAL.descentM*10)/10,
+      gradeCap:GRADE_CAP,
+    },
+    placement:{
+      note:'host-side; read only after the plan hash was frozen',
+      headingDeg:Math.round(PLACEMENT.headingRad*180/Math.PI*10)/10,
+      entryGradePct:Math.round(PLACEMENT.entryGrade*1000)/10,
+      copies:PLACEMENT.copies,
+      approachM:APPROACH_LEN, exitM:EXIT_LEN, gapM:PLACEMENT.copies>1?GAP_LEN:null,
+      totalRouteM:Math.round(ROUTE_LEN),
+    },
+    vocabulary:{ allowlist:VOCAB_ALLOWLIST, used:VOCAB_USED,
+      unused:VOCAB_ALLOWLIST.filter(v=>!VOCAB_USED.includes(v)),
+      subsetOfAllowlist:vocabSubset },
+    counts:{
+      plannedTrees:TREES.length,
+      plannedFormationTrees:TREES.filter(t=>t.formation).length,
+      unseatableTrees:GROUND_STAT.culled,
+      residentTrees:counts.trees+FORMATION_STAT.built/XFORMS.length,
+      formationsBuilt:FORMATION_STAT,
+      articulatedNearResident:counts.articulatedNear, midResident:counts.midTrees,
+      farResident:counts.farTrees,
+      understoryResident:counts.understory, fernsResident:counts.ferns,
+      seedheadsResident:counts.seedheads, flowersResident:counts.flowers,
+      shrubsResident:counts.shrubs, reedsResident:counts.reeds,
+      groundContactsResident:counts.groundContacts, rocksLogsResident:counts.rocksLogs,
+      groves:GROVES.length, airborneParticles:totalParticles,
+      lifePoolBirds:POOLS.bird.n, lifePoolFlits:POOLS.flit.n, lifePoolAnimals:POOLS.animal.n,
+      residentSwallows:RESIDENT_SWALLOWS.parts.length,
+      familyBuilt:Object.assign({},FAM_BUILT),
+    },
+    residency:{ bandLengthM:BAND, plannedBands:NBAND*XFORMS.length,
+      residentBands, wantedBands:plannedResidentBands(rider.g),
+      bandsRealizedTotal:RES.realized, bandsDisposedTotal:RES.disposed,
+      peakResidentBands:RES.peak, aheadM:QCFG.ahead, behindM:QCFG.behind,
+      liveLifeEvents:liveLife.length },
+    ambientRoster:AMBIENT_ROSTER,
+    water:{ pondAtM:Math.round(POND.g), apertureAtM:Math.round(POND.apertureG),
+      surfaceY:Math.round(POND.y*100)/100, dropBelowLaneM:Math.round((getFrame(LFRAME,POND.g).y-POND.y)*100)/100,
+      edgeCorridorM:Math.round(VAL.pondEdgeCorridorM*10)/10,
+      seenThisRun:RUN.seen.water, firstSeenAtM:RUN.seen.waterFirstSeenAtM,
+      framesSeen:RUN.seen.waterFramesSeen },
+    landmarks:{ knollAtM:Math.round(KNOLL.g), sistersSeenThisRun:RUN.seen.sisters,
+      sistersFirstSeenAtM:RUN.seen.sistersFirstSeenAtM, sistersSeenSpanM:RUN.seen.sistersSeenSpanM },
+    panels:PANELS.map(P=>({s0:Math.round(P.s0),s1:Math.round(P.s1),side:P.side,mown:P.mown})),
+    life:{ planned:LIFE_EVENTS.length, fired:lifeFired, active:liveLife.length,
+      kinds:LIFE_EVENTS.reduce((a,e)=>{a[e.kind]=(a[e.kind]||0)+1;return a;},{}) },
+    render:{ dpr:renderer.getPixelRatio(), dprCap:DPR_CAP,
+      viewport:[renderer.domElement.width,renderer.domElement.height],
+      quality:QUALITY,
+      drawCalls:lastInfo.calls, triangles:lastInfo.tris,
+      islandDrawCalls:lastIsland.calls, islandTriangles:lastIsland.tris,
+      peakIslandDrawCalls:RUN.peakIslandDrawCalls, peakIslandTriangles:RUN.peakIslandTriangles,
+      peakDrawCalls:RUN.peakDrawCalls, peakTriangles:RUN.peakTriangles,
+      renderer:glR, vendor:glV, contextLost,
+      softwareRenderer:soft,
+      softwareNote:soft?'software rasteriser: timings are honest measurements of it, not hardware evidence':null,
+      steady, stallSamples:frameTimes.filter(v=>v>STALL_MS).length, stallThresholdMs:STALL_MS },
+    run:{ provenance:RUN.provenance,
+      continuousRideEligible:(RUN.provenance==='continuous'||RUN.provenance==='accelerated'),
+      distanceRiddenM:Math.round(RUN.distanceRiddenM),
+      marks:Object.assign({},RUN.marks),
+      seen:Object.assign({},RUN.seen),
+      pauseExercised:RUN.pauseExercised,
+      ambientProvenWhilePaused:RUN.ambientProvenWhilePaused,
+      completedRide:RUN.marks.rested&&RUN.marks.exited&&
+        (RUN.provenance==='continuous'||RUN.provenance==='accelerated') },
+    lifetime:Object.assign({},LIFETIME),
+    assertions:{
+      deterministicSeed:xmur3(ISLAND_ID+'::'+SEED_TEXT)()===SEED_HASH,
+      planBeforeQuality:QUALITY_READS_AT_PLAN===0,
+      // the machine-checkable face of "no absolute world coordinates": the
+      // entire plan was frozen before the placement was ever read, and every
+      // realized position is derived from plan-local data through one rigid
+      // transform. Verified across placements by plan-hash equality.
+      planBeforePlacement:PLACEMENT_READS_AT_PLAN===0,
+      roadContinuity:VAL.roadContinuity,
+      roadContrastPass:VAL.roadContrastRatio>=3.0,
+      roadEdgeSupported:VAL.roadUnsupportedSamples===0,
+      entryGradeWithin2Pct:VAL.boundaryContract.entryGradeWithin2Pct,
+      exitGradeWithin2Pct:VAL.boundaryContract.exitGradeWithin2Pct,
+      headingWithin90Deg:VAL.boundaryContract.headingWithin90,
+      netElevationWithin40M:VAL.boundaryContract.netElevationWithin40,
+      gradeCapKept:VAL.boundaryContract.gradeCapKept,
+      lengthWithinIslandBand:VAL.boundaryContract.lengthInBand,
+      exclusionCorridorClear:VAL.exclusionViolations===0,
+      vocabularySubsetOfAllowlist:vocabSubset,
+      residencyIdentityStable:IDENTITY_PROBE.stable,
+      ambientContinuesWhilePaused:(!RUN.pauseExercised)||RUN.ambientProvenWhilePaused,
+      boundedResidency:RES.peak<=(Math.ceil((QCFG.ahead+QCFG.behind)/BAND)+2)*XFORMS.length,
+      islandBudget:(RUN.peakIslandDrawCalls===0)||(RUN.peakIslandDrawCalls<=45&&RUN.peakIslandTriangles<=120000),
+      noRuntimeErrors:capturedErrors.length===0&&!contextLost,
+    },
+    exclusion:{ violations:VAL.exclusionViolations, minTreeCorridorM:Math.round(VAL.minTreeCorridorM*100)/100,
+      pondEdgeCorridorM:Math.round(VAL.pondEdgeCorridorM*100)/100,
+      corridorRejectedPlacements:corridorRejects },
+    errors:capturedErrors.slice(0,8),
+  };
+}
+Object.defineProperty(window,'__SUMMERGLASS_PROOF__',{get:buildProof});
+window.__SUMMERGLASS_PLAN__=Object.assign({},PLAN_SUMMARY,{planHash:PLAN_HASH,quality:QUALITY});
+
+// ---------- test surface (an aid to verification, not evidence of motion) ----------
+window.__SUMMERGLASS_TEST__={
+  fixedStep(dt){ fixedStep=dt||0; if(fixedStep>0) markProvenance(fixedStep>FIXED_STEP_MAX?'debug':'accelerated'); return fixedStep; },
+  setSpeed(v){ rider.vT=clamp(v,4,18); },
+  steer(v){ rider.latT=clamp(v,-2.6,2.6); },
+  pause(v){ rider.paused=(v===undefined)?!rider.paused:!!v; return rider.paused; },
+  restart(){ restartRide(); },
+  warp(g){
+    markProvenance('warped');
+    rider.g=clamp(g,0,ROUTE_LEN-14);
+    rider.started=true; rider.ended=false; rider.v=CRUISE;
+    const isl=islandLocalOf(rider.g);
+    for(let e=0;e<LIFE_EVENTS.length;e++) for(let c=0;c<XFORMS.length;c++){
+      const seg=ISLAND_SEGS[c];
+      if(rider.g-seg.g0>LIFE_EVENTS[e].s-40) eventFired[e][c]=true;
+    }
+    warmResidency(rider.g);
+    return rider.g;
+  },
+  state(){ const isl=islandLocalOf(rider.g);
+    return {g:rider.g,v:rider.v,paused:rider.paused,ended:rider.ended,
+      islandS:isl?Math.round(isl.s*10)/10:null,copy:isl?isl.copy:null,
+      movement:isl?movementOf(isl.s):'(connective)',routeLen:Math.round(ROUTE_LEN),
+      entryAtG:Math.round(ISLAND_SEGS[0].g0),exitAtG:Math.round(ISLAND_SEGS[ISLAND_SEGS.length-1].g1)}; },
+  identityProbe:IDENTITY_PROBE,
+  lifePlan(){ return LIFE_EVENTS.map(e=>({s:Math.round(e.s),kind:e.kind})); },
+  budgetIsland(){ camera.updateMatrixWorld(); refreshFrustum(camera);
+    const isl=islandLocalOf(rider.g);
+    return countIsland(isl?isl.copy:0); },
+  groundingProbe(){
+    let worst=null, floating=0, maxAbove=-1e9, sampled=0;
+    for(const t of TREES){
+      if(t.unseatable) continue;
+      const r=realizedGroundL(t.x,t.z);
+      sampled++;
+      const above=t.y-r;
+      if(above>maxAbove){ maxAbove=above; worst={fam:t.fam,x:Math.round(t.x),z:Math.round(t.z),
+        aboveM:Math.round(above*1000)/1000}; }
+      if(above>0.05) floating++;
+    }
+    return {sampled,floating,maxAboveM:Math.round(maxAbove*1000)/1000,worst,
+      seated:{lowered:GROUND_STAT.lowered,raised:GROUND_STAT.raised,unseatable:GROUND_STAT.culled}};
+  },
+  markDebug(){ markProvenance('debug'); return RUN.provenance; },
+  // where the pond actually lands on screen, and the ground profile out to it
+  pondProbe(){
+    camera.updateMatrixWorld();
+    const T=XFORMS[0];
+    const w=T.fwd(POND.cx,POND.cz);
+    const v=new THREE.Vector3(w[0],T.fwdY(POND.y),w[1]).project(camera);
+    const fr=getFrame(LFRAME,POND.g);
+    const prof=[];
+    for(let u=0;u<=52;u+=2){
+      const x=fr.x+fr.lx*u*S_LAND, z=fr.z+fr.lz*u*S_LAND;
+      prof.push([u,+groundL(x,z).toFixed(2)]);
+    }
+    const mesh=WATER_MESHES[0];
+    const sweep=[];
+    for(let sl=860;sl<=1010;sl+=15){
+      const f2=getFrame(LFRAME,sl);
+      const T2=XFORMS[0];
+      const ew=T2.fwd(f2.x,f2.z);
+      const eye={x:ew[0],y:T2.fwdY(f2.y)+EYE_H,z:ew[1]};
+      const pw=T2.fwd(POND.cx,POND.cz);
+      const py=T2.fwdY(POND.y);
+      let blocked=null;
+      const dx=pw[0]-eye.x, dy=py-eye.y, dz=pw[1]-eye.z;
+      for(let t=0.05;t<0.98;t+=0.02){
+        const px=eye.x+dx*t, pz=eye.z+dz*t;
+        if(groundW(px,pz)>eye.y+dy*t+0.05){ blocked=+(t).toFixed(2); break; }
+      }
+      // angle off the travel direction
+      const tw=[f2.tx*T2.c+f2.tz*T2.s,-f2.tx*T2.s+f2.tz*T2.c];
+      const L=Math.hypot(dx,dz);
+      const ang=Math.acos(Math.max(-1,Math.min(1,(dx*tw[0]+dz*tw[1])/L)))*180/Math.PI;
+      sweep.push({sl,angDeg:Math.round(ang),distM:Math.round(L),blockedT:blocked});
+    }
+    return { sLand:S_LAND, pondOffU:+(((POND.cx-fr.x)*fr.lx+(POND.cz-fr.z)*fr.lz)).toFixed(1),
+      laneY:+fr.y.toFixed(2), waterY:+POND.y.toFixed(2), meshY:+mesh.geometry.boundingSphere.center.y.toFixed(2),
+      ndc:[+v.x.toFixed(2),+v.y.toFixed(2),+v.z.toFixed(3)],
+      meshInFrustum:(()=>{ refreshFrustum(camera); return _frustum.intersectsObject(mesh); })(),
+      sweep, prof };
+  },
+};
+
+window.addEventListener('resize',()=>{
+  camera.aspect=window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth,window.innerHeight);
+});
+</script>
+</body>
+</html>

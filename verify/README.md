@@ -35,3 +35,14 @@ arm can take an hour. It is bounded by wall clock rather than by a poll count �
 counting polls times out a slow renderer that is riding perfectly well, which is
 a statement about the harness and not about the world. `RIDE_MAX_MIN` sets that
 bound (default 90) and `harnessTimedOut` in the result says whether it was hit.
+
+## Verifying Island 01
+
+`verify/island.mjs` does the same job for `island-01.html`, with the island's
+own questions: `determinism` (same seed, same plan and realization hashes),
+`tiers` (three tiers, one identity), `placement` (three headings, one island —
+the plan hash may not move), `residency`/`pause`/`grounding`, `budget`
+(island-only draw calls and triangles, swept along the whole route at standard
+and high), `ride` (three headings × two entry grades, then the same island
+mounted twice back to back), and `shots` (1440×900 frames at entry, rows,
+pond, headland and exit).

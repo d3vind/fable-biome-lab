@@ -273,3 +273,50 @@ node verify/run.mjs --only=fork     # one group
 See `verify/README.md` for what each check asks and for the two environment
 variables (`CHROME_PATH`, `THREE_LOCAL`) that let it run against a browser you
 already have, or without egress to the CDN.
+
+## Summerglass Island 01 — The Orchard Combe (`phase-3-summerglass-island-01`)
+
+The first authored island beyond the hollow: a bounded, composable segment of
+road and land, about two kilometres long, made to be placed many times by a
+host that knows nothing about its interior. Not a destination — a worked
+hillside the road happens to cross. Orchard rows on the contour above a
+spring-cut combe, a stock pond the spring feeds, a hay meadow opposite with
+one panel mown in swathes and one grown back, three wind-combed elders on the
+knoll at the head of the combe, and an aged planted boundary line along the
+climb out.
+
+Open `island-01.html` over any HTTP server. Same palette, same tree grammar,
+same plan-then-realize architecture as the keeper. Authored entirely in LOCAL
+coordinates — entry at the origin, tangent along +Z — and mounted by a small
+test host through one rigid transform, so the page can place it at any heading
+and any entry grade within the ±2 % band:
+
+| parameter | values | meaning |
+|---|---|---|
+| `iseed` | any string | selects the island. Default `ISLE-8421`. |
+| `quality` | `low`, `standard`, `high` | representation cost. Identity is fixed before this is read. |
+| `heading` | degrees | placement rotation applied by the host. Read only after the plan hash is frozen. |
+| `egrade` | −2 … 2 | the host approach's grade, blended to the island's declared entry grade. |
+| `copies` | `1`, `2` | mounts the same island twice in sequence — the ride-it-twice test. |
+
+The vocabulary is the keeper's own, and only the keeper's: `dappled-gate`
+(threshold trees at entry and exit), `orchard-row` (the working rows, and the
+old boundary line), `water-aperture` (the composed opening onto the pond),
+`wind-sisters` (the elders on the knoll), `light-shaft` and `fernfold-shaft`
+(the planned pockets of visible air). `fork-wedge` and `bellroot-approach` are
+deliberately unused: there is no fork here, and the hero tree belongs to the
+hollow.
+
+`window.__SUMMERGLASS_PROOF__` (version `summerglass-island-01`) extends the
+keeper's proof shape with the island's boundary contract — declared entry and
+exit poses, measured length, net elevation, total heading change, max grade —
+plus placement-independence guards (the plan is frozen before either the
+quality tier or the placement is read), the closed-vocabulary check, the
+exclusion-corridor scan, residency identity, the ambient-continues-while-paused
+probe, and the island-only budget (≤ 45 draw calls, ≤ 120 000 triangles at
+standard, measured from the meshes the island itself pays for).
+
+`verify/island.mjs` drives it: determinism across loads, plan identity across
+quality tiers and across three placements, rides at three headings and two
+entry grades, the double-mount ride, residency and pause probes, grounding,
+budget sweeps at standard and high, and the screenshot set.
