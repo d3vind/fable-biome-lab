@@ -46,3 +46,47 @@ the plan hash may not move), `residency`/`pause`/`grounding`, `budget`
 and high), `ride` (three headings × two entry grades, then the same island
 mounted twice back to back), and `shots` (1440×900 frames at entry, rows,
 pond, headland and exit).
+
+## Verifying Island 02
+
+`verify/island-02.mjs` does the same job for `island-02.html`, with this
+island's own questions on top of island 01's.
+
+```
+CHROME_PATH=/path/to/chrome THREE_LOCAL=./node_modules/three node verify/island-02.mjs
+node verify/island-02.mjs --only=budget
+```
+
+| check | question |
+|---|---|
+| `determinism` | same seed, same plan and realization hashes across two loads. |
+| `tiers` | do low, standard and high plan the same island, and spend differently? |
+| `placement` | three headings, one island — the plan hash may not move, and no realized island vertex may fall outside the island's own local frame. |
+| `contract` | length, boundary poses and grades, net elevation, heading change, grade cap; plus the divide's aspect ratio, the euclidean spacing between deliberate things, and the road's luminance against the ground the island emits. |
+| `ground` | is there drawn ground everywhere and is any of it drawn twice; is the ground *function* continuous at the resolution the mesh actually draws; is every island vertex in the island's own frame? |
+| `residency` / `pause` / `grounding` | does a band come back as itself; does the world keep going while the rider is stopped; does everything planted stand on the surface the renderer draws? |
+| `budget` | the swept maximum — 103 stations × **seven bearings**, residency settled at each, run twice for identity, at standard and high and across four seeds. |
+| `ride` | three headings × two entry-grade signs, ridden end to end, then the same island mounted twice back to back. |
+| `shots` | nine 1440×900 frames from entry to exit. |
+
+Two notes on what the numbers mean.
+
+**The bearing set is stated, not chosen afterwards.** Seven yaw offsets — 0,
+±22°, ±43°, ±63° — which is exactly the range a rider can hold, because the
+drag-look is clamped to ±1.1 rad. This island is composed around a long lateral
+view off the falling side of the divide, which lives about sixty degrees off the
+travel direction; a five-bearing sweep stopping at ±43° would have excluded the
+exact view the place exists for and reported a comfortable number for the wrong
+island.
+
+**Ground continuity is asked at the resolution the ground is drawn at**, and the
+island's own land is gated while the host's terrain beyond its reach is reported
+and not gated. Island tiles are sixteen metres, so a spike four metres wide in
+the function is never emitted and measuring it measures nothing a rider can see;
+and past the island's reach the ground belongs to the mount, which inherits the
+keeper's coarse route field along with that field's seams.
+
+Rides run at 1000×640 by default (`RIDE_SIZE`) because they are asking whether
+the island can be ridden end to end, not how it looks; the screenshot set is
+what is captured at 1440×900. As on every other branch here, frame timing is
+reported but never claimed as a pass on a software rasteriser.

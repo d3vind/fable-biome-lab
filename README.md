@@ -320,3 +320,173 @@ standard, measured from the meshes the island itself pays for).
 quality tiers and across three placements, rides at three headings and two
 entry grades, the double-mount ride, residency and pause probes, grounding,
 budget sweeps at standard and high, and the screenshot set.
+
+## Summerglass Island 02 — The High Parting (`phase-3-summerglass-island-02`)
+
+The second authored island, and the first one whose job is to answer a question
+about the *journey* rather than about itself. Island 01 answered "is there
+anything out here, or does it just keep going?" — with worked land and old
+water. Between the two there is generated connective travel, so the live
+question by the time a rider arrives here is the one that kills long generated
+rides: **has the country changed, or am I still riding the same field?**
+
+So this island is a crossing rather than a place to arrive at. The road leaves
+enclosed lowland through one last gate and does not get shade again for a
+kilometre and a half. Beyond the gate the soil has changed: thin grazed turf
+over rock, terracettes banding every flank, outcrop following the contour, the
+bones showing where the wind has had longest at it. The road climbs onto the
+broad shoulder of a divide and crosses its crest obliquely; at the top an older
+green way parts from the metalled road and commits to the other flank, and two
+dry drainage lines start within a hundred metres of each other and run in
+opposite directions. Then a long brow with the land falling away and the
+weather running over it, and a descent to the first soil.
+
+There is no standing water anywhere on the island, and the absence is the
+subject. A watershed is the one place in a country where the water has already
+gone, in two directions, and all that is left of it is the shape of the ground.
+
+Open `island-02.html` over any HTTP server. Same palette, same tree grammar,
+same plan-then-realize architecture, same boundary contract as island 01:
+
+| parameter | values | meaning |
+|---|---|---|
+| `iseed` | any string | selects the island. Default `PARTING-3311`. |
+| `quality` | `low`, `standard`, `high` | representation cost. Identity is fixed before this is read. |
+| `heading` | degrees | placement rotation applied by the host. Read only after the plan hash is frozen. |
+| `egrade` | −2 … 2 | the host approach's grade, blended to the island's declared entry grade. |
+| `copies` | `1`, `2` | mounts the same island twice in sequence — the ride-it-twice test. |
+
+### Four names out of eight
+
+The vocabulary is closed and it is the keeper's own. This island spends four of
+it: `dappled-gate` — **once**, at the entry only, because the island is a
+one-way crossing and gating both ends would make it a room; `fork-wedge` — the
+green way parting from the road, and the single thorn standing where the wedge
+has finally opened wide enough to hold one; `wind-sisters` — solitary
+wind-bitten thorns scattered over the whole open middle, each one alone, most of
+them passed within a few metres, all of them leaning the same way because the
+wind is a fact about this ground; and `light-shaft` — three pockets of visible
+air, all of them about shade: the last of it, its complete absence, the first of
+it back.
+
+`water-aperture` is unused because there is no water. `fernfold-shaft` because
+there is no fernfold. `orchard-row` because the rows belong to the combe, and
+`bellroot-approach` because the hero tree belongs to the hollow. Novelty here is
+arrangement, scale, light and sequence — not new nouns.
+
+### What the ground does, and why it is the ground that does it
+
+The composition is carried by land and weather rather than by objects, because
+on open ground adding vocabulary to a thin stretch makes it thinner. Four things
+do the work:
+
+* **The divide.** One whaleback, half-width 232–286 m against a 17.0–22.5 m
+  fall — between ten and seventeen to one. That ratio was fixed at plan time and
+  is never to be reduced: a rise narrower than about eight times its own height
+  stops reading as ground and starts reading as an object standing on the field,
+  and the island's own assertion gates on it. Nothing stands on the crest. It is
+  not a pedestal and it is not looked at from a composed viewpoint; the rider is
+  simply on it for eight hundred metres.
+* **Terracettes.** Lines of constant *height* — which is why they need no slope
+  maths of their own. On flat ground the contours are metres apart and nothing
+  shows; on a flank they crowd together into the horizontal banding that is the
+  single most recognisable thing about grazed downland, and they are what makes
+  this ground read as drawn rather than painted. They antialias against their
+  own screen-space rate, so the amplitude can be honest near the rider without
+  shimmering on the far hillside.
+* **The stone.** Outcrop follows the contour by construction — a scar is a value
+  of "across the crest", not a shape placed on a hill. Close up it is the sunlit
+  tops of the beds; from across a valley it is the shaded faces, and therefore a
+  dark band. Getting that the wrong way round is what filled the first captures
+  of the brow with white blotches.
+* **The weather habit.** Up here the cloud shadow does not drift, it runs: more
+  than twice the valley's speed, a harder edge, a deeper cut, under a lower and
+  larger near cloud band. On ground with no canopy of its own that is the only
+  moving light there is, and it keeps running while the rider is stopped.
+
+The island declares a prevailing wind **in its own frame**, because that is what
+it is — a fact about this ground, written into the shape of everything that has
+stood on it. The host's clouds keep their own drift: a gust at four hundred
+metres and the wind that bent a sixty-year-old thorn are not the same wind, and
+pretending they are would make the island depend on where it was placed.
+
+### The green way
+
+`fork-wedge` is a fork with only one rideable arm, and that is the point: an
+island has to hand back exactly one road. The departing way is not a second lane
+— no stone, no shoulder, no corridor mesh, nothing the host has to know about.
+It is a wide shallow hollow declared against the same datum as everything else,
+with two worn ruts painted per fragment from a seven-point polyline held in a
+uniform. There is only ever one surface, so there is nothing for a second one to
+disagree with, which is the whole reason this island can carry a fork at all.
+
+It is evaluated per fragment rather than carried on vertices for a plain reason:
+the way is five metres wide and the ground mesh is sixteen, and an attribute
+would sample it away to nothing. The same arithmetic retired the first version
+of the outcrop, whose 3.5–6.5 m scarp could not be represented by the mesh that
+had to draw it and aliased into a random bump; scars are 14–22 m terraces now,
+which is a form downland has plenty of.
+
+### Height is declared, never added
+
+Every imposed feature names a height it wants and a weight, and the ground is
+drawn toward it from a datum that is itself controlled — the road's own height
+for anything that has to read from the lane, the designed smooth surface for
+anything that has to read against its own surroundings. Noise is never a datum.
+Island 01 learned this the expensive way: a bump summed onto unconstrained noise
+stood eight metres *below* the road on one seed, and a sunken landmark is how
+three forty-metre elders vanish from their own skyline.
+
+### The host adapts to the island
+
+The island's authored land reaches 246 m and then stops. Anchoring the host to
+the *road's* height beyond that walled this island's long view in at two hundred
+and twenty metres: the ground fell away for the island's whole reach and the
+host put it straight back at lane level, which is a cliff facing the rider from
+the one direction the place exists to be seen in. So where a point lies in an
+island's shadow the host's datum is the island's own ground at the edge of its
+reach on the same bearing, easing back to the road's height over the next
+several hundred metres, with the host's own undulation fading in from the seam
+outward. The island never reaches out to arrange the host.
+
+The two tile grids are not the same grid — the island's is laid out in its own
+local frame and turned by the placement, the host's in the world — so they
+deliberately **overlap by two tiles** rather than each taking half the ground.
+Handing each of them exactly half left a ragged seam of nothing between them,
+and the brow filled with pale holes that were the sky dome seen edge-on. The
+overlap is safe because the island's influence is 1 all the way through it, so
+both meshes are evaluating the identical function and differ only by the sag of
+a triangle. Cover the ground twice rather than not at all.
+
+### Proof surface
+
+`window.__SUMMERGLASS_PROOF__` (version `summerglass-island-02`) keeps island
+01's shape and adds what this island has to answer for: the divide's measured
+aspect ratio and lateral slope; the parting's drove, wedge widths and the two
+grooves with their opposed bearings; the stone bands; the thorns and the
+measured euclidean spacing between deliberate things; the declared local wind;
+the long view's measured reach; and `roadLeads`, which is the road's luminance
+against the ground the island actually emits. That last one is not decoration:
+limestone in full sun is almost exactly the value of a pale metalled road, and
+the change of soil here is bought by making the turf drier, browner and slightly
+*darker* than the valley's rather than paler, because paler would have stopped
+the road leading its own country.
+
+`noAbsoluteWorldCoordinates` is measured rather than argued. The plan hash being
+frozen before the placement is read is necessary and not sufficient — a single
+world coordinate baked into a realized vertex would still pass it. So every
+static island mesh is taken back through its own copy's transform and its
+vertices are required to land inside the island's own local extent.
+
+`window.__SUMMERGLASS_TEST__` adds `surfaceIntegrity` (rays fired down at the
+scene the renderer is holding: how many find nothing, how large the biggest
+*connected* group of those is, and how far apart the top two surfaces are
+wherever a ray finds more than one), `groundWalk` (is the ground *function*
+continuous, since a discontinuity in it is inherited by every mesh that samples
+it), `silhouetteProbe` (raycasts the crown itself, at the height the crown
+actually is — a probe aimed at an offset above the ground passes while the thing
+is invisible), `browProbe`, `partingProbe`, `localBounds`, `contrast` and
+`look`, which holds the drag-look where a rider could hold it without touching
+the run's provenance.
+
+`verify/island-02.mjs` drives all of it. See `verify/README.md`.
