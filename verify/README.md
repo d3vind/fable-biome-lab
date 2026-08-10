@@ -90,3 +90,29 @@ Rides run at 1000×640 by default (`RIDE_SIZE`) because they are asking whether
 the island can be ridden end to end, not how it looks; the screenshot set is
 what is captured at 1440×900. As on every other branch here, frame timing is
 reported but never claimed as a pass on a software rasteriser.
+
+### Measuring causes rather than inferring them
+
+Three scripts, retained because each answered a question that had already been
+answered wrongly by looking at a symptom and reasoning backwards. None of them
+needs a browser except where noted, and none of them changes anything.
+
+```
+node verify/measure-colour.mjs      # authored colour, exactly
+node verify/measure-frames.mjs      # delivered pixels, from the shipped captures
+node verify/island-02-diagnose.mjs  # runtime probes + term-isolation captures
+node verify/measure-isolation.mjs   # reads what island-02-diagnose.mjs wrote
+```
+
+| script | question |
+|---|---|
+| `measure-colour.mjs` | what colour did the palette actually author? It replicates three's sRGB→linear working space, so a constant can be read in saturation, hue and luminance instead of guessed at from a hex code. This is what showed the turf's authored saturation was 0.394 while the delivered frames measured 0.470 — the vertex path was right and something downstream was undoing it. |
+| `measure-frames.mjs` | what colour actually arrived on screen? Decodes the shipped PNGs and reports vegetation-class hue/saturation/value quartiles plus channel clipping. Authored colour and delivered colour are different claims and the gap between them is where defects live. |
+| `measure-isolation.mjs` | which term owns an artefact — and is the comparison even valid? It reports the usual per-variant deltas, and it reports them for a **control region no toggled term can touch**. On this island that control moved 5.3–6.1 luminance units between captures, which is cloud-shadow drift on the world clock, and it turned a plausible-looking A/B into a known-void one. A between-frame comparison in a world with its own clock is worthless without that control; the within-frame texture statistics in the same script survive it. |
+
+The runtime probes live on `window.__SUMMERGLASS_TEST__` and are driven by
+`island-02-diagnose.mjs`: `openProbe` (how much of the island reaches the common
+end of its turf transition), `densityProbe` (what is resident by distance band,
+split out for the open middle, because an aggregate is dominated by the wooded
+ends and hides exactly the hole you are looking for), `thinBandProbe`,
+`thornProbe`, `farMassProbe`, and `setDbg`/`setTrack` for term isolation.
