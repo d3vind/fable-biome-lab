@@ -1517,6 +1517,12 @@ H.real.feed(sunAz,sunEl);
 const WIND_W=new THREE.Vector2(
   WIND.dx*Math.cos(PLACEMENT.headingRad)+WIND.dz*Math.sin(PLACEMENT.headingRad),
  -WIND.dx*Math.sin(PLACEMENT.headingRad)+WIND.dz*Math.cos(PLACEMENT.headingRad)).normalize();
+// The colour dry grass actually goes. Declared here because BOTH the vertex
+// path and COMMON_GLSL now mix toward it, and they must not be able to drift
+// apart. Measured: sat 0.286, hue 55 degrees, against the old constant's 0.357
+// at 67 — the old one was barely less saturated than the grass it was meant to
+// dry out.
+const C_DRY=mixc(PAL.sunGrass,PAL.road,0.72).lerp(col(PAL.bark),0.34);
 const WL={ uWTime:{value:0},
   uCloudMove:{value:new THREE.Vector2(CLOUD.r(-1,1),CLOUD.r(-1,1)).normalize()},
   uGlint:{value:new THREE.Vector4(0,0,0,0)},
@@ -1528,6 +1534,10 @@ const WL={ uWTime:{value:0},
   // thin-soil term whose slope metric added the two axis gradients instead of
   // taking their magnitude. Guessing would have cost a pass.
   uTrack:{value:1.0},
+  // term isolation for the crest flank, x=rock/joints y=wind comb z=distance
+  // fade. Symptom-level guessing about that flank has already been wrong once.
+  uDbg:{value:new THREE.Vector3(1,1,1)},
+  uDryCol:{value:C_DRY},
   uStoneLit:{value:mixc(PAL.road,PAL.leafShade,0.24).lerp(col(PAL.bark),0.12)},
   uStoneSh:{value:mixc(PAL.bark,PAL.woodDeep,0.34).lerp(col(PAL.leafShade),0.22)},
   uWayTurf:{value:mixc(PAL.meadow,PAL.bark,0.42).lerp(col(PAL.sunGrass),0.26)},
@@ -1555,7 +1565,7 @@ const WL={ uWTime:{value:0},
    -Math.sin(DIVIDE.dir)*Math.sin(PLACEMENT.headingRad)+Math.cos(DIVIDE.dir)*Math.cos(PLACEMENT.headingRad)).normalize()} };
 const WL_GLSL=`
 uniform float uWTime; uniform vec2 uCloudMove; uniform vec4 uGlint;
-uniform vec2 uWindW; uniform vec2 uCrestW; uniform float uTrack; uniform vec3 uStoneLit; uniform vec3 uStoneSh;
+uniform vec2 uWindW; uniform vec2 uCrestW; uniform float uTrack; uniform vec3 uDbg; uniform vec3 uDryCol; uniform vec3 uStoneLit; uniform vec3 uStoneSh;
 uniform vec3 uWayTurf; uniform vec3 uRutCol; uniform float uRutOff; uniform float uDroveW;
 uniform vec2 uDroveP[14];
 // distance to the green way, and the signed metres across it
@@ -1602,17 +1612,25 @@ float dappleAt(vec2 w,float canopy){
 const COMMON_GLSL=`
 {
   float vd=distance(vWPos,cameraPosition);
-  float hifade=1.0-smoothstep(55.0,190.0,vd);
+  float hifade=mix(1.0,1.0-smoothstep(55.0,190.0,vd),uDbg.z);
   float clump=wlNoise(vWPos.xz*0.60+vec2(4.7,1.9))*0.56+wlNoise(vWPos.xz*1.50+vec2(9.1,6.3))*0.44;
   float coarse=wlNoise(vWPos.xz*0.095+vec2(21.0,13.0));
   float lush=smoothstep(0.42,0.80,clump*0.62+coarse*0.38);
-  diffuseColor.rgb*=mix(vec3(1.10,1.05,0.90),vec3(0.94,0.98,0.90),lush);
+  // VALUE, not chroma. This used to be a per-channel multiplier, and a
+  // multiplier that suppresses blue can only make a green MORE saturated —
+  // which is the exact opposite of what happens to grass as it dries. It cost
+  // the island its central claim: measured, the authored turf left the vertex
+  // path at sat 0.394 and arrived on screen at 0.470, one point off island 01's
+  // 0.48. Lushness is allowed to change how bright the grass is and nothing else.
+  diffuseColor.rgb*=1.06-0.12*lush;
   float dry=smoothstep(0.46,0.82,coarse*0.66+wlNoise(vWPos.xz*0.34+vec2(31.0,2.0))*0.34);
-  diffuseColor.rgb=mix(diffuseColor.rgb,diffuseColor.rgb*vec3(1.13,1.05,0.80),dry*0.62);
+  // and dryness is a mix TOWARD a low-chroma colour, which is the only
+  // operation that can actually take saturation out
+  diffuseColor.rgb=mix(diffuseColor.rgb,uDryCol,dry*0.55);
   // the wind's comb: streaks long along the wind and short across it
   vec2 wq=vec2(dot(vWPos.xz,uWindW),dot(vWPos.xz,vec2(-uWindW.y,uWindW.x)));
   float comb=wlNoise(vec2(wq.x*0.030,wq.y*0.28))*0.62+wlNoise(vec2(wq.x*0.085,wq.y*0.70))*0.38;
-  diffuseColor.rgb*=1.0+(comb-0.5)*0.19*hifade;
+  diffuseColor.rgb*=1.0+(comb-0.5)*0.19*hifade*uDbg.y;
   // The bones. Everything about the rock is sampled in CREST coordinates —
   // long along the contour, short across it — because that is the direction
   // bedding actually runs, and a rock band that runs the wrong way across a
@@ -1631,10 +1649,10 @@ const COMMON_GLSL=`
   float bed=smoothstep(0.30,0.72,wlNoise(vec2(cq.x*0.04,cq.y*0.55)+vec2(17.0,29.0))*0.60
                                 +wlNoise(vec2(cq.x*0.14,cq.y*1.60)+vec2(3.0,41.0))*0.40*hifade);
   vec3 stn=mix(uStoneSh,uStoneLit,bed*mix(0.50,0.92,hifade));
-  diffuseColor.rgb=mix(diffuseColor.rgb,stn,rk*0.66);
+  diffuseColor.rgb=mix(diffuseColor.rgb,stn,rk*0.66*uDbg.x);
   // the joints between the beds, which is what makes rock read as rock
   float jn=abs(fract(cq.y*0.115+wlNoise(cq*0.04)*0.5)-0.5);
-  diffuseColor.rgb*=1.0-smoothstep(0.40,0.5,jn)*rk*0.36*(0.35+0.65*hifade);
+  diffuseColor.rgb*=1.0-smoothstep(0.40,0.5,jn)*rk*0.36*(0.35+0.65*hifade)*uDbg.x;
   // TERRACETTES. Lines of constant HEIGHT, which is why they need no slope
   // maths of their own: on flat ground the contours are metres apart and
   // nothing shows, and on a flank they crowd together into the horizontal
@@ -1750,7 +1768,6 @@ function groundedMat(mat,opts){
 // ============================================================
 const C_SUN=col(PAL.sunGrass), C_MEAD=col(PAL.meadow), C_SHADE=col(PAL.leafShade),
       C_DEEP=col(PAL.woodDeep), C_ROAD=col(PAL.road);
-const C_DRY=mixc(PAL.sunGrass,PAL.road,0.44).lerp(col(PAL.bark),0.22);
 const C_LOAM=mixc(PAL.bark,PAL.woodDeep,0.42);
 // The two countries this island crosses between, as two pairs of colours.
 // The valley's green is the one island 01 lives in. The common's is bitten
@@ -1760,7 +1777,14 @@ const C_LOAM=mixc(PAL.bark,PAL.woodDeep,0.42);
 // stops leading it.
 const C_VALLEY_LO=col(PAL.meadow), C_VALLEY_HI=mixc(PAL.sunGrass,PAL.meadow,0.10);
 const C_COMMON_LO=mixc(PAL.meadow,PAL.bark,0.46).lerp(col(PAL.sunGrass),0.24);
-const C_COMMON_HI=mixc(PAL.sunGrass,PAL.road,0.50).lerp(col(PAL.bark),0.38);
+// The lush end (LO) is deliberately left where it was: the hollows of a
+// downland common ARE green, and the range between green hollow and fawn top is
+// most of what makes the ground read as modelled rather than tinted. Only the
+// dry end moves. Measured across the field the turf now spans sat 0.298-0.484
+// against island 01's 0.48, at a road/turf luminance ratio of 1.49-1.89:1 —
+// the road is still the palest thing in every frame and its seam gate is
+// untouched at 3.40:1.
+const C_COMMON_HI=mixc(PAL.sunGrass,PAL.road,0.66).lerp(col(PAL.bark),0.46);
 const C_STONE_LIT=mixc(PAL.road,PAL.leafShade,0.24).lerp(col(PAL.bark),0.12);
 const C_STONE_SH=mixc(PAL.bark,PAL.woodDeep,0.34).lerp(col(PAL.leafShade),0.22);
 const _gc=new THREE.Color(), _gcLo=new THREE.Color(), _gcHi=new THREE.Color();
@@ -2794,6 +2818,48 @@ function realizeBand(copy,bi){
       }
     }
   }
+  // ---- the stone in the middle distance ----
+  // The growth sampler above reaches thirty metres and the open-ground groves
+  // start at a hundred and sixty-eight, so the band the eye actually rests on
+  // was carrying 0.7 objects per kilometre. This pass fills it with the one
+  // thing that belongs there: bedrock coming through, in runs, following the
+  // contour it beds along. No new vocabulary, nothing that stands up, nothing
+  // that could be mistaken for a landmark — A2 is untouched because a stone
+  // bed is ground.
+  {
+    const st=subStream('midstone',bi);
+    const N=Math.round(9*BAND/100*QCFG.under);
+    for(let i=0;i<N;i++){
+      const s=st.r(b.s0,b.s1);
+      if(clamp(1-enclosureAt(clamp(s,0,L_ISL))*2.4,0,1)<0.9) continue;   // open middle only
+      const fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
+      const lat=(st.chance(0.5)?1:-1)*st.r(34,118);
+      const x=fr.x+fr.lx*lat+st.r(-6,6), z=fr.z+fr.lz*lat+st.r(-6,6);
+      const ri=routeInfoL(x,z);
+      if(ri.d<32) continue;
+      if(droveDist(x,z)<DROVE.w*0.9) continue;
+      const slope=Math.abs(groundL(x+2.5,z)-groundL(x-2.5,z))/5+Math.abs(groundL(x,z+2.5)-groundL(x,z-2.5))/5;
+      const thin=thinSoilL(x,z,slope);
+      if(thin<0.40) continue;                    // only where the soil is actually thin
+      if(st.chance(0.34)) continue;
+      // a run, laid along the contour rather than scattered: the crest
+      // direction is the bedding direction, which is why these read as one
+      // outcrop and not as dropped rubble
+      const ang=Math.atan2(Math.sin(DIVIDE.dir),Math.cos(DIVIDE.dir))+st.r(-0.22,0.22);
+      const nb=st.i(3,6);
+      const cLit=mixc(PAL.road,PAL.leafShade,0.20), cSh=mixc(PAL.bark,PAL.woodDeep,0.46);
+      for(let q=0;q<nb;q++){
+        const rr=st.r(1.1,4.2)*q;
+        const bx=x+Math.sin(ang)*rr+st.r(-1.1,1.1), bz=z+Math.cos(ang)*rr+st.r(-1.1,1.1);
+        if(routeInfoL(bx,bz).d<32) continue;
+        const r=st.r(0.34,0.86)*(q?st.r(0.55,1.0):1);
+        const by=groundL(bx,bz);
+        addBlob(uB,bx,by+r*0.20,bz,st,r*st.r(1.3,2.1),r*st.r(0.26,0.40),r*st.r(0.9,1.5),cLit,cSh,0);
+        addPatch(uB,bx,by,bz,r*st.r(1.5,2.4),mixc(PAL.bark,PAL.woodDeep,0.52));
+        local.stones++;
+      }
+    }
+  }
   // ---- the verge proper ----
   {
     const st=subStream('verge',bi);
@@ -2997,6 +3063,7 @@ const cloudMeshes=[];
     cloudMeshes.push({mesh:m,speed:bandCfg.speed});
   }
 }
+let FAR_MASS_MESH=null;
 // far country: layered silhouette masses on the world's own shoulders
 {
   const B=Buf(); B.sway=0.10;
@@ -3036,7 +3103,7 @@ const cloudMeshes=[];
     }
   }
   const m=new THREE.Mesh(bufGeo(B),treeMatFar);
-  m.matrixAutoUpdate=false; scene.add(m); HOST_MESHES.push(m);
+  m.matrixAutoUpdate=false; scene.add(m); HOST_MESHES.push(m); FAR_MASS_MESH=m;
 }
 // a handful of host trees along the connective segments, so the travel either
 // side of the island reads as country rather than a stage apron
@@ -4145,6 +4212,103 @@ window.__SUMMERGLASS_TEST__={
       seated:{lowered:GROUND_STAT.lowered,raised:GROUND_STAT.raised,unseatable:GROUND_STAT.culled}};
   },
   markDebug(){ markProvenance('debug'); return RUN.provenance; },
+  setDbg(x,y,z){ WL.uDbg.value.set(x,y,z); return WL.uDbg.value.toArray(); },
+  setTrack(v){ WL.uTrack.value=v; return v; },
+  // How much of the island actually reaches the common end of the
+  // valley->common turf transition. open = 1 - enc*2.4 is steep enough that a
+  // tenth of residual enclosure costs a quarter of the shift.
+  openProbe(){
+    const rows=[];
+    for(let s=10;s<L_ISL;s+=10){
+      const enc=enclosureAt(s);
+      rows.push({s:Math.round(s),enc:+enc.toFixed(3),open:+clamp(1-enc*2.4,0,1).toFixed(3)});
+    }
+    const o=rows.map(r=>r.open).sort((a,b)=>a-b);
+    const q=(t)=>o[clamp(Math.floor(t*(o.length-1)),0,o.length-1)];
+    return { samples:rows.length, p10:q(0.1), p50:q(0.5), p90:q(0.9),
+      fracFullyOpen:+(o.filter(v=>v>0.95).length/o.length).toFixed(3),
+      fracHalfOrLess:+(o.filter(v=>v<=0.5).length/o.length).toFixed(3),
+      profile:rows.filter((_,i)=>i%12===0).map(r=>[r.s,r.open]) };
+  },
+  // What is actually resident, by distance from the road. The middle distance
+  // is a band, not a vibe: if it is empty this says so in objects per km.
+  densityProbe(){
+    const B=[[0,10],[10,30],[30,60],[60,100],[100,200],[200,400]];
+    const bi=(d)=>{ for(let i=0;i<B.length;i++) if(d>=B[i][0]&&d<B[i][1]) return i; return -1; };
+    const grove=B.map(()=>0), form=B.map(()=>0);
+    // and the same again for the OPEN MIDDLE only — the aggregate is dominated
+    // by the two wooded ends, which is not where the frames were taken
+    const isOpen=(s)=>clamp(1-enclosureAt(clamp(s,0,L_ISL))*2.4,0,1)>0.95;
+    const gOpen=B.map(()=>0), fOpen=B.map(()=>0);
+    let openM=0; for(let s=0;s<L_ISL;s+=5) if(isOpen(s)) openM+=5;
+    for(const t of TREES){ if(t.unseatable) continue; const i=bi(t.d); if(i<0) continue;
+      if(t.formation) form[i]++; else grove[i]++;
+      if(isOpen(t.s)){ if(t.formation) fOpen[i]++; else gOpen[i]++; } }
+    const rel=B.map(()=>({n:0,s:0,q:0}));
+    for(let s=40;s<L_ISL-40;s+=25){
+      const fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
+      for(const sd of [1,-1]) for(let u=6;u<400;u+=8){
+        const i=bi(u); if(i<0) continue;
+        const x=fr.x+fr.lx*u*sd, z=fr.z+fr.lz*u*sd;
+        const h=realizedGroundL(x,z)-fr.y;
+        rel[i].n++; rel[i].s+=h; rel[i].q+=h*h;
+      }
+    }
+    const km=L_ISL/1000;
+    return B.map((b,i)=>{
+      const m=rel[i].s/Math.max(1,rel[i].n);
+      return { band:b[0]+'-'+b[1]+'m', groveTrees:grove[i], formationTrees:form[i],
+        objectsPerKm:+(((grove[i]+form[i]))/km).toFixed(1),
+        openMiddleObjects:gOpen[i]+fOpen[i],
+        openMiddlePerKm:+(((gOpen[i]+fOpen[i]))/Math.max(0.001,openM/1000)).toFixed(1),
+        reliefStdM:+Math.sqrt(Math.max(0,rel[i].q/Math.max(1,rel[i].n)-m*m)).toFixed(2) };
+    });
+  },
+  // Is the mid-distance stone pass actually firing? It is gated on thin soil,
+  // and a gate is a claim about a distribution nobody has looked at.
+  thinBandProbe(){
+    const out=[];
+    for(const band of [[10,30],[34,60],[60,90],[90,118]]){
+      const v=[];
+      for(let s=40;s<L_ISL-40;s+=13){
+        if(clamp(1-enclosureAt(clamp(s,0,L_ISL))*2.4,0,1)<0.9) continue;
+        const fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
+        for(const sd of [1,-1]) for(let u=band[0];u<band[1];u+=9){
+          const x=fr.x+fr.lx*u*sd, z=fr.z+fr.lz*u*sd;
+          const sl=Math.abs(groundL(x+2.5,z)-groundL(x-2.5,z))/5+Math.abs(groundL(x,z+2.5)-groundL(x,z-2.5))/5;
+          v.push(thinSoilL(x,z,sl));
+        }
+      }
+      v.sort((a,b)=>a-b);
+      const q=(t)=>v[clamp(Math.floor(t*(v.length-1)),0,v.length-1)];
+      out.push({band:band[0]+'-'+band[1]+'m', n:v.length,
+        p50:+q(0.5).toFixed(3), p75:+q(0.75).toFixed(3), p90:+q(0.9).toFixed(3),
+        fracOver40:+(v.filter(x=>x>0.40).length/v.length).toFixed(3),
+        fracOver16:+(v.filter(x=>x>0.16).length/v.length).toFixed(3)});
+    }
+    return out;
+  },
+  // The far masses, measured rather than inferred: what the authored geometry
+  // and colour actually carry before fog and lighting get to them.
+  farMassProbe(){
+    if(!FAR_MASS_MESH) return null;
+    const g=FAR_MASS_MESH.geometry;
+    const c=g.getAttribute('color'), p=g.getAttribute('position'), n=g.getAttribute('normal');
+    const L=[], NY=[];
+    for(let i=0;i<c.count;i++){
+      L.push(0.2126*c.getX(i)+0.7152*c.getY(i)+0.0722*c.getZ(i));
+      if(n) NY.push(Math.abs(n.getY(i)));
+    }
+    L.sort((a,b)=>a-b);
+    const q=(t)=>L[clamp(Math.floor(t*(L.length-1)),0,L.length-1)];
+    return { triangles:Math.floor(p.count/3), vertices:c.count,
+      lumP10:+q(0.1).toFixed(4), lumP50:+q(0.5).toFixed(4), lumP90:+q(0.9).toFixed(4),
+      authoredSpread:+(q(0.9)-q(0.1)).toFixed(4),
+      authoredRatio:+(q(0.9)/Math.max(1e-4,q(0.1))).toFixed(2),
+      meanAbsNormalY:+(NY.reduce((a,b)=>a+b,0)/Math.max(1,NY.length)).toFixed(3),
+      fogNear:scene.fog?scene.fog.near:null, fogFar:scene.fog?scene.fog.far:null,
+      note:'authored vertex colour only; fog and the far material self-lit term act after this' };
+  },
   localBounds(){ return localBoundsProbe(); },
   groundWalk(s,u0,u1,step){
     const T=XFORMS[0], fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
