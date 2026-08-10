@@ -4264,6 +4264,15 @@ window.__SUMMERGLASS_TEST__={
         reliefStdM:+Math.sqrt(Math.max(0,rel[i].q/Math.max(1,rel[i].n)-m*m)).toFixed(2) };
     });
   },
+  // Where the thorns are, and how close the road comes to each. The island's
+  // only vertical motif is small on purpose, and a still taken between two of
+  // them shows the argument without showing the evidence for it.
+  thornProbe(){
+    return TREES.filter(t=>t.formation==='wind-sisters'||t.formation==='fork-wedge')
+      .map(t=>({formation:t.formation, s:Math.round(t.s), lateralM:+t.d.toFixed(1),
+                scale:+t.scl.toFixed(2), unseatable:!!t.unseatable}))
+      .sort((a,b)=>a.s-b.s);
+  },
   // Is the mid-distance stone pass actually firing? It is gated on thin soil,
   // and a gate is a claim about a distribution nobody has looked at.
   thinBandProbe(){
