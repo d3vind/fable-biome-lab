@@ -314,9 +314,15 @@ async function checkShots() {
   }
   const PQ = await proof(q);
   await q.close();
-  record('shots', P.errors.length === 0 && PQ.errors.length === 0,
+  // The seam is GATED, not merely reported. It shipped through four green
+  // runs because the harness asked "does the double ride complete" and a rider
+  // crosses a two-metre hole without failing to complete. Every boundary must
+  // now close to within 5 cm at the emitted vertices or the run is red.
+  const worstSeam = Math.max(...seam.map(b => b.vertexMaxGapM));
+  record('shots', P.errors.length === 0 && PQ.errors.length === 0 && worstSeam <= 0.05,
     {dir: SHOTS, count: anchors.length + 3, seamAtG: seamJoin.atG,
-     seamVertexGapM: seamJoin.vertexMaxGapM, errors: P.errors.length + PQ.errors.length});
+     seamVertexGapM: seamJoin.vertexMaxGapM, worstBoundaryGapM: worstSeam,
+     errors: P.errors.length + PQ.errors.length});
 }
 
 const wanted = n => !ONLY || n.startsWith(ONLY);
