@@ -287,7 +287,14 @@ function framesFromPoints(pts){
   for(let i=1;i<pts.length;i++){
     const p=pts[i], d=Math.hypot(p[0]-prev[0],p[2]-prev[2]);
     if(d<1e-7) continue;
-    while(target+RS<=acc+d){ target+=RS; const t=(target-acc)/d;
+    // The comparison is against a FLOAT SUM of step lengths, and a walked step
+    // of two metres is 2*(1 +/- 1e-16) once it has been through sin and cos. A
+    // few hundred of those and the accumulator lands a hair BELOW the next
+    // multiple of RS, this test fails on the final step, and the table quietly
+    // ends one sample short of the path it was built from. On a double mount
+    // that is a two-metre strip of road no corridor mesh drew — measured here
+    // at 2.0148 m before this fix, at the same boundary as island 02.
+    while(target+RS<=acc+d+RS*1e-7){ target+=RS; const t=Math.min(1,(target-acc)/d);
       X.push(lerp(prev[0],p[0],t)); Y.push(lerp(prev[1],p[1],t)); Z.push(lerp(prev[2],p[2],t)); }
     acc+=d; prev=p;
   }
@@ -332,9 +339,16 @@ const ENTRY_POSE=(()=>{
   const a=getFrame(LFRAME,0), b=getFrame(LFRAME,6);
   return { x:0,y:0,z:0, headingRad:Math.atan2(a.tx,a.tz), gradePct:(b.y-a.y)/6*100 };
 })();
+// Declared from the LAST FRAME ITSELF rather than from a sample taken a
+// centimetre before it: getFrame clamps to len-0.001, so asking for the end of
+// the road returns a point just short of it, and the host mounts whatever
+// comes next at the pose it was handed.
 const EXIT_POSE=(()=>{
-  const a=getFrame(LFRAME,LFRAME.len-6.01), b=getFrame(LFRAME,LFRAME.len-0.01);
-  return { x:b.x,y:b.y,z:b.z, headingRad:Math.atan2(b.tx,b.tz), gradePct:(b.y-a.y)/6*100 };
+  const N=LFRAME.N;
+  const a=getFrame(LFRAME,Math.max(0,LFRAME.len-6));
+  return { x:LFRAME.x[N], y:LFRAME.y[N], z:LFRAME.z[N],
+           headingRad:Math.atan2(LFRAME.tx[N],LFRAME.tz[N]),
+           gradePct:(LFRAME.y[N]-a.y)/6*100 };
 })();
 const HEADING_STAT=(()=>{
   let maxAbs=0;
@@ -1013,7 +1027,16 @@ const XFORMS=[];
       hy+=(gradeAt?gradeAt(s):0)*SDS;
       pts.push([hx,hy,hz]);
     }
-    return framesFromPoints(pts);
+    const F=framesFromPoints(pts);
+    // THE FRAME TABLE IS THE AUTHORITY, not the walker's own accumulator. The
+    // table is what the corridor mesh is built from and what the rider is
+    // positioned by; the accumulator is only how the table was arrived at. An
+    // arc-length-uniform table legitimately ends up to one sample short of the
+    // path it resampled, and every seam in the world is exactly where that
+    // difference gets drawn.
+    hx=F.x[F.N]; hy=F.y[F.N]; hz=F.z[F.N];
+    hd=Math.atan2(F.tx[F.N],F.tz[F.N]);
+    return F;
   };
   // approach: the host's grade, easing to the island's declared entry grade
   const eg=PLACEMENT.entryGrade, ig=ENTRY_POSE.gradePct/100;
@@ -3501,6 +3524,36 @@ window.__SUMMERGLASS_TEST__={
       seated:{lowered:GROUND_STAT.lowered,raised:GROUND_STAT.raised,unseatable:GROUND_STAT.culled}};
   },
   markDebug(){ markProvenance('debug'); return RUN.provenance; },
+  // The vertex-level boundary probe, backported verbatim from island 02's
+  // seam diagnosis. Measurement only: it reads the corridor meshes the
+  // renderer was actually given and reports the signed separation per column
+  // at every segment boundary.
+  seamProbe(){
+    const out=[], W=COLS.length;
+    for(let i=0;i<SEGMENTS.length-1;i++){
+      const A=SEGMENTS[i], B=SEGMENTS[i+1];
+      const pA=corridorMeshes[i].geometry.getAttribute('position');
+      const pB=corridorMeshes[i+1].geometry.getAttribute('position');
+      const rowsA=pA.count/W;
+      let maxD=0, worst=null, maxRoadDY=0;
+      for(let j=0;j<W;j++){
+        const ia=(rowsA-1)*W+j, ib=j;
+        const dx=pA.getX(ia)-pB.getX(ib), dy=pA.getY(ia)-pB.getY(ib), dz=pA.getZ(ia)-pB.getZ(ib);
+        const d=Math.hypot(dx,dy,dz);
+        if(Math.abs(COLS[j])<=RH+1e-4) maxRoadDY=Math.max(maxRoadDY,Math.abs(dy));
+        if(d>maxD){ maxD=d; worst={colU:+COLS[j].toFixed(2),dx:+dx.toFixed(4),dy:+dy.toFixed(4),dz:+dz.toFixed(4)}; }
+      }
+      const g=A.g1;
+      const f0=frameAtG(g-0.01), f1=frameAtG(g+0.01);
+      out.push({ boundary:i, atG:Math.round(g*10)/10,
+        from:A.island?('island-copy-'+A.copy):'host', to:B.island?('island-copy-'+B.copy):'host',
+        vertexMaxGapM:+maxD.toFixed(4), roadSurfaceMaxDyM:+maxRoadDY.toFixed(4), worstColumn:worst,
+        frameJumpM:+Math.hypot(f1.x-f0.x,f1.y-f0.y,f1.z-f0.z).toFixed(4),
+        yJumpM:+(f1.y-f0.y).toFixed(4),
+        headingJumpDeg:+((Math.atan2(f1.tx,f1.tz)-Math.atan2(f0.tx,f0.tz))*180/Math.PI).toFixed(4) });
+    }
+    return out;
+  },
   knollProbe(){
     const sis=TREES.filter(t=>t.formation==='wind-sisters');
     return {
