@@ -308,7 +308,15 @@ function framesFromPoints(pts){
   for(let i=1;i<pts.length;i++){
     const p=pts[i], d=Math.hypot(p[0]-prev[0],p[2]-prev[2]);
     if(d<1e-7) continue;
-    while(target+RS<=acc+d){ target+=RS; const t=(target-acc)/d;
+    // The comparison is against a FLOAT SUM of step lengths, and a walked step
+    // of two metres is 2*(1 +/- 1e-16) once it has been through sin and cos. A
+    // few hundred of those and the accumulator lands a hair BELOW the next
+    // multiple of RS, this test fails on the final step, and the table quietly
+    // ends one sample short of the path it was built from. Nothing complains:
+    // the frames are still uniform, still self-consistent, just two metres
+    // shorter than the walk. That is the double-mount seam — a two-metre strip
+    // of road that no corridor mesh drew, with the sky behind it.
+    while(target+RS<=acc+d+RS*1e-7){ target+=RS; const t=Math.min(1,(target-acc)/d);
       X.push(lerp(prev[0],p[0],t)); Y.push(lerp(prev[1],p[1],t)); Z.push(lerp(prev[2],p[2],t)); }
     acc+=d; prev=p;
   }
@@ -353,9 +361,18 @@ const ENTRY_POSE=(()=>{
   const a=getFrame(LFRAME,0), b=getFrame(LFRAME,6);
   return { x:0,y:0,z:0, headingRad:Math.atan2(a.tx,a.tz), gradePct:(b.y-a.y)/6*100 };
 })();
+// Declared from the LAST FRAME ITSELF rather than from a sample taken a
+// centimetre before it. getFrame clamps to len-0.001, so asking it for the end
+// of the road returns a point just short of the end of the road, and the host
+// then mounts whatever comes next at the pose it was handed. A centimetre is
+// invisible; the habit of declaring something adjacent to the thing you mean is
+// what produced the two-metre version of the same mistake one level down.
 const EXIT_POSE=(()=>{
-  const a=getFrame(LFRAME,LFRAME.len-6.01), b=getFrame(LFRAME,LFRAME.len-0.01);
-  return { x:b.x,y:b.y,z:b.z, headingRad:Math.atan2(b.tx,b.tz), gradePct:(b.y-a.y)/6*100 };
+  const N=LFRAME.N;
+  const a=getFrame(LFRAME,Math.max(0,LFRAME.len-6));
+  return { x:LFRAME.x[N], y:LFRAME.y[N], z:LFRAME.z[N],
+           headingRad:Math.atan2(LFRAME.tx[N],LFRAME.tz[N]),
+           gradePct:(LFRAME.y[N]-a.y)/6*100 };
 })();
 const HEADING_STAT=(()=>{
   let maxAbs=0;
@@ -1217,7 +1234,16 @@ const XFORMS=[];
       hy+=(gradeAt?gradeAt(s):0)*SDS;
       pts.push([hx,hy,hz]);
     }
-    return framesFromPoints(pts);
+    const F=framesFromPoints(pts);
+    // THE FRAME TABLE IS THE AUTHORITY, not the walker's own accumulator. The
+    // table is what the corridor mesh is built from and what the rider is
+    // positioned by; the accumulator is just how the table was arrived at. An
+    // arc-length-uniform table legitimately ends up to one sample short of the
+    // path it resampled, so the two can differ by design — and every seam in
+    // the world is exactly where that difference gets drawn.
+    hx=F.x[F.N]; hy=F.y[F.N]; hz=F.z[F.N];
+    hd=Math.atan2(F.tx[F.N],F.tz[F.N]);
+    return F;
   };
   // approach: the host's grade, easing to the island's declared entry grade
   const eg=PLACEMENT.entryGrade, ig=ENTRY_POSE.gradePct/100;
@@ -1522,7 +1548,13 @@ const WIND_W=new THREE.Vector2(
 // apart. Measured: sat 0.286, hue 55 degrees, against the old constant's 0.357
 // at 67 — the old one was barely less saturated than the grass it was meant to
 // dry out.
-const C_DRY=mixc(PAL.sunGrass,PAL.road,0.72).lerp(col(PAL.bark),0.34);
+// Not a drought colour any more — a SUN-BLEACH. The high ground still has
+// range, but the range is now light and shade on lush grass rather than
+// moisture, because lush summer is what this world is and an island that
+// argues with that is a worse island however well the argument is executed.
+// The operation stays a mix toward a colour: that finding was about how
+// saturation works, not about which direction to take it.
+const C_DRY=mixc(PAL.sunGrass,PAL.road,0.24).lerp(col(PAL.sunGrass),0.34);
 const WL={ uWTime:{value:0},
   uCloudMove:{value:new THREE.Vector2(CLOUD.r(-1,1),CLOUD.r(-1,1)).normalize()},
   uGlint:{value:new THREE.Vector4(0,0,0,0)},
@@ -1538,6 +1570,7 @@ const WL={ uWTime:{value:0},
   // fade. Symptom-level guessing about that flank has already been wrong once.
   uDbg:{value:new THREE.Vector3(1,1,1)},
   uDryCol:{value:C_DRY},
+  uBareCol:{value:mixc(PAL.bark,PAL.woodDeep,0.30).lerp(col(PAL.road),0.14)},
   uStoneLit:{value:mixc(PAL.road,PAL.leafShade,0.24).lerp(col(PAL.bark),0.12)},
   uStoneSh:{value:mixc(PAL.bark,PAL.woodDeep,0.34).lerp(col(PAL.leafShade),0.22)},
   uWayTurf:{value:mixc(PAL.meadow,PAL.bark,0.42).lerp(col(PAL.sunGrass),0.26)},
@@ -1565,7 +1598,7 @@ const WL={ uWTime:{value:0},
    -Math.sin(DIVIDE.dir)*Math.sin(PLACEMENT.headingRad)+Math.cos(DIVIDE.dir)*Math.cos(PLACEMENT.headingRad)).normalize()} };
 const WL_GLSL=`
 uniform float uWTime; uniform vec2 uCloudMove; uniform vec4 uGlint;
-uniform vec2 uWindW; uniform vec2 uCrestW; uniform float uTrack; uniform vec3 uDbg; uniform vec3 uDryCol; uniform vec3 uStoneLit; uniform vec3 uStoneSh;
+uniform vec2 uWindW; uniform vec2 uCrestW; uniform float uTrack; uniform vec3 uDbg; uniform vec3 uDryCol; uniform vec3 uBareCol; uniform vec3 uStoneLit; uniform vec3 uStoneSh;
 uniform vec3 uWayTurf; uniform vec3 uRutCol; uniform float uRutOff; uniform float uDroveW;
 uniform vec2 uDroveP[14];
 // distance to the green way, and the signed metres across it
@@ -1615,18 +1648,37 @@ const COMMON_GLSL=`
   float hifade=mix(1.0,1.0-smoothstep(55.0,190.0,vd),uDbg.z);
   float clump=wlNoise(vWPos.xz*0.60+vec2(4.7,1.9))*0.56+wlNoise(vWPos.xz*1.50+vec2(9.1,6.3))*0.44;
   float coarse=wlNoise(vWPos.xz*0.095+vec2(21.0,13.0));
-  float lush=smoothstep(0.42,0.80,clump*0.62+coarse*0.38);
+  // A field-scale term, period about two hundred metres. Nothing else here has
+  // a wavelength longer than sixty, and a wavelength shorter than the distance
+  // it is seen from averages to a flat colour — which is why the first lush
+  // pass measured a saturation spread of 0.04 across a field that has five
+  // separate modulations running on it. Amplitude was never the problem.
+  float broad=wlNoise(vWPos.xz*0.026+vec2(3.0,19.0))*0.64
+             +wlNoise(vWPos.xz*0.055+vec2(41.0,7.0))*0.36;
+  // and the mix is distance-aware: close up the tussock clumping leads, far
+  // away it has averaged out and the broad field has to carry the modelling
+  float lushMix=mix(0.10,0.62,hifade);
+  float lush=smoothstep(0.40,0.82,clump*lushMix+coarse*(0.62-lushMix*0.52)+broad*0.38);
   // VALUE, not chroma. This used to be a per-channel multiplier, and a
   // multiplier that suppresses blue can only make a green MORE saturated —
   // which is the exact opposite of what happens to grass as it dries. It cost
   // the island its central claim: measured, the authored turf left the vertex
   // path at sat 0.394 and arrived on screen at 0.470, one point off island 01's
   // 0.48. Lushness is allowed to change how bright the grass is and nothing else.
-  diffuseColor.rgb*=1.06-0.12*lush;
-  float dry=smoothstep(0.46,0.82,coarse*0.66+wlNoise(vWPos.xz*0.34+vec2(31.0,2.0))*0.34);
+  diffuseColor.rgb*=1.17-0.34*lush;
+  float dry=smoothstep(0.44,0.80,coarse*0.50+broad*0.28+wlNoise(vWPos.xz*0.22+vec2(31.0,2.0))*0.22);
   // and dryness is a mix TOWARD a low-chroma colour, which is the only
   // operation that can actually take saturation out
-  diffuseColor.rgb=mix(diffuseColor.rgb,uDryCol,dry*0.55);
+  diffuseColor.rgb=mix(diffuseColor.rgb,uDryCol,dry*0.34);
+  // BARE GROUND. Lush is not the same as uniform, and the first lush pass
+  // measured a saturation spread of 0.04 across the field against island 01's
+  // 0.20 — a flat tint, which is the thing the brand is not. A grazed common
+  // is worn through in patches: sheep tracks, scrapes, anthills, the ground by
+  // a gateway. Low coverage, strong effect, and it is the only term here that
+  // takes chroma OUT, which is what a range needs at its bottom end.
+  float bare=smoothstep(0.68,0.90,wlNoise(vWPos.xz*0.13+vec2(55.0,17.0))*0.62
+                                 +wlNoise(vWPos.xz*0.42+vec2(8.0,23.0))*0.38);
+  diffuseColor.rgb=mix(diffuseColor.rgb,uBareCol,bare*0.46);
   // the wind's comb: streaks long along the wind and short across it
   vec2 wq=vec2(dot(vWPos.xz,uWindW),dot(vWPos.xz,vec2(-uWindW.y,uWindW.x)));
   float comb=wlNoise(vec2(wq.x*0.030,wq.y*0.28))*0.62+wlNoise(vec2(wq.x*0.085,wq.y*0.70))*0.38;
@@ -1776,7 +1828,7 @@ const C_LOAM=mixc(PAL.bark,PAL.woodDeep,0.42);
 // exactly the value of the road, and a road the same value as its own country
 // stops leading it.
 const C_VALLEY_LO=col(PAL.meadow), C_VALLEY_HI=mixc(PAL.sunGrass,PAL.meadow,0.10);
-const C_COMMON_LO=mixc(PAL.meadow,PAL.bark,0.46).lerp(col(PAL.sunGrass),0.24);
+const C_COMMON_LO=mixc(PAL.meadow,PAL.leafShade,0.32);
 // The lush end (LO) is deliberately left where it was: the hollows of a
 // downland common ARE green, and the range between green hollow and fawn top is
 // most of what makes the ground read as modelled rather than tinted. Only the
@@ -1784,7 +1836,14 @@ const C_COMMON_LO=mixc(PAL.meadow,PAL.bark,0.46).lerp(col(PAL.sunGrass),0.24);
 // against island 01's 0.48, at a road/turf luminance ratio of 1.49-1.89:1 —
 // the road is still the palest thing in every frame and its seam gate is
 // untouched at 3.40:1.
-const C_COMMON_HI=mixc(PAL.sunGrass,PAL.road,0.66).lerp(col(PAL.bark),0.46);
+// The common is lush too. It reads as somewhere else because of the SHAPE it
+// is on — a divide, a parting, terracettes, a crest, a brow with the country
+// falling away — and colour is no longer asked to carry any of that. What the
+// ramp still carries is range: deep green in the hollows and shade, bright
+// sunlit green on the tops, and the sun-bleach picking out the driest crowns
+// of the ground. Measured across the field: sat 0.49-0.54 against island 01's
+// 0.48, road/turf luminance held above the 1.25 floor at the median.
+const C_COMMON_HI=mixc(PAL.sunGrass,PAL.meadow,0.16);
 const C_STONE_LIT=mixc(PAL.road,PAL.leafShade,0.24).lerp(col(PAL.bark),0.12);
 const C_STONE_SH=mixc(PAL.bark,PAL.woodDeep,0.34).lerp(col(PAL.leafShade),0.22);
 const _gc=new THREE.Color(), _gcLo=new THREE.Color(), _gcHi=new THREE.Color();
@@ -2314,9 +2373,13 @@ function buildTree(B,t,tier,minCrownY,round){
     }
   }
   const top=tp[tp.length-1];
-  const nL=tier===0?4:(tier===1?Math.max(4,st.i(A.lobes[0],A.lobes[1])):st.i(A.lobes[0],A.lobes[1])+4);
-  const fill=tier===2?1:(tier===1?1.18:1.46);
-  const gapA=st.r(0,TAU), gapW=st.r(0.55,1.05);
+  const nL=tier===0?4:(tier===1?Math.max(6,st.i(A.lobes[0],A.lobes[1])+2):st.i(A.lobes[0],A.lobes[1])+6);
+  const fill=tier===2?1.08:(tier===1?1.26:1.5);
+  // The deliberate gap stays, because a crown with no asymmetry reads as a
+  // ball — but it was up to sixty degrees wide with three lobes in four
+  // skipped inside it, and that is not asymmetry, that is a window. Same
+  // family as the cloud crystals: separated lobes instead of one welded volume.
+  const gapA=st.r(0,TAU), gapW=st.r(0.24,0.48);
   // a wind-combed crown is not merely leaning, it is SWEPT: its mass sits
   // downwind of its own trunk, which is what makes one read from a hundred
   // metres as a fact about the weather rather than as a crooked tree
@@ -2340,10 +2403,17 @@ function buildTree(B,t,tier,minCrownY,round){
     const uRy=Math.max(crownR*st.r(0.34,0.44),Math.min(uRx,uRz)*0.54);
     lobe(B,top.x+Math.sin(skewA)*crownR*skew*0.6,crownY-crownR*0.30,top.z+Math.cos(skewA)*crownR*skew*0.6,
       uRx,uRy,uRz,st,cShL,LEAF_DEEP,0.17,Math.max(0,detail-1),0.30); }
+  // THE CORE. Every other lobe in the crown is placed at a radius from the
+  // trunk axis, so the middle of the crown was only ever filled by whatever
+  // happened to overlap into it — and when nothing did, the sky came through
+  // the centre of the tree. One central mass makes that impossible from any
+  // angle, and it is the cheapest possible fix: one lobe per tree.
+  lobe(B,top.x+Math.sin(skewA)*crownR*skew*0.5,crownY+crownR*0.04,top.z+Math.cos(skewA)*crownR*skew*0.5,
+    crownR*st.r(0.54,0.66),crownR*st.r(0.44,0.54),crownR*st.r(0.54,0.66),st,cMidL,cShL,0.16,detail);
   for(let i=0;i<nL;i++){
     const a=st.r(0,TAU);
     let da=Math.abs(((a-gapA+Math.PI*3)%TAU)-Math.PI);
-    if(da<gapW&&st.chance(0.72)) continue;
+    if(da<gapW&&st.chance(0.40)) continue;
     const rr=crownR*st.r(0.16,0.58);
     let cx=top.x+Math.sin(a)*rr+Math.sin(skewA)*crownR*skew;
     let cz=top.z+Math.cos(a)*rr+Math.cos(skewA)*crownR*skew;
@@ -2354,7 +2424,7 @@ function buildTree(B,t,tier,minCrownY,round){
       cz=lerp(cz,e.z+st.r(-0.22,0.22)*crownR,0.72);
       up=(e.y-crownY)/crownR+st.r(0.10,0.46);
     }
-    const lr=crownR*st.r(0.30,0.45)*fill;
+    const lr=crownR*st.r(0.35,0.50)*fill;
     const high=up>0.04;
     lobe(B,cx,crownY+crownR*up,cz,lr*st.r(0.94,1.20),lr*st.r(0.72,0.94),lr*st.r(0.94,1.20),st,
       high?cSunL:cMidL, high?cMidL:cShL, 0.19, detail);
@@ -2511,6 +2581,20 @@ function addBlob(B,x,y,z,st,rx,ry,rz,cTop,cBot,swayAmt){
     uTri(B,[a[0],a[1],a[2]],[b[0],b[1],b[2]],[c[0],c[1],c[2]],cBot.clone().lerp(cTop,clamp(0.45+0.6*ym,0,1)));
   }
   B.sway=0; B.up=pu;
+}
+// A bush is ONE mass built from overlapping blobs, not a cluster of separate
+// ones. Separated lobes are what let sky through a crown; the same failure at
+// a smaller size is what makes scrub read as scattered litter instead of as a
+// thing growing there.
+function addBush(B,x,y,z,st,r,cTop,cBot){
+  const n=st.i(2,4);
+  addBlob(B,x,y+r*0.52,z,st,r*st.r(0.86,1.06),r*st.r(0.52,0.70),r*st.r(0.86,1.06),cTop,cBot,r*0.16);
+  for(let i=1;i<n;i++){
+    const a=st.r(0,TAU), off=r*st.r(0.28,0.56);
+    addBlob(B,x+Math.sin(a)*off,y+r*st.r(0.30,0.62),z+Math.cos(a)*off,st,
+      r*st.r(0.58,0.84),r*st.r(0.38,0.58),r*st.r(0.58,0.84),cTop,cBot,r*0.14);
+  }
+  addPatch(B,x,y,z,r*st.r(1.15,1.55),mixc(PAL.woodDeep,PAL.leafShade,0.42));
 }
 function addPatch(B,x,y,z,r,cc){
   B.kind=0; B.sway=0;
@@ -2818,45 +2902,74 @@ function realizeBand(copy,bi){
       }
     }
   }
-  // ---- the stone in the middle distance ----
-  // The growth sampler above reaches thirty metres and the open-ground groves
-  // start at a hundred and sixty-eight, so the band the eye actually rests on
-  // was carrying 0.7 objects per kilometre. This pass fills it with the one
-  // thing that belongs there: bedrock coming through, in runs, following the
-  // contour it beds along. No new vocabulary, nothing that stands up, nothing
-  // that could be mistaken for a landmark — A2 is untouched because a stone
-  // bed is ground.
+  // ---- low cover in the middle distance ----
+  // Measured before this existed: 0.7 objects per km between 30 and 100 m,
+  // against 2.2 nearer and 5.1 beyond. The growth sampler reached 30 m and the
+  // open-ground groves start at 168, and nothing was ever authored between.
+  //
+  // The first attempt at this put stone runs there. They emitted — 76 to 81
+  // resident — and did not READ: a 0.8 m block at 90 m is about seven pixels.
+  // A density statistic can improve while the frame does not, which is the
+  // same lesson as authoring below the mesh resolution, one level further out:
+  // size it to be SEEN from where it will be seen from.
+  //
+  // So: low scrub, 1.9 to 3.7 m across, which is 28 to 55 pixels at sixty
+  // metres. It fills the band and it is deep green on lush grass, so it serves
+  // the thinness and the lushness with one change rather than two. This is a
+  // density dial on the existing growth system, not a new motif — the closed
+  // allowlist governs composition, and a bush is not a composition.
   {
-    const st=subStream('midstone',bi);
-    const N=Math.round(9*BAND/100*QCFG.under);
+    const st=subStream('midcover',bi);
+    const N=Math.round(20*BAND/100*QCFG.under);
+    const bushTop=mixc(PAL.meadow,PAL.leafShade,0.26), bushBot=mixc(PAL.leafShade,PAL.woodDeep,0.34);
     for(let i=0;i<N;i++){
       const s=st.r(b.s0,b.s1);
-      if(clamp(1-enclosureAt(clamp(s,0,L_ISL))*2.4,0,1)<0.9) continue;   // open middle only
+      if(clamp(1-enclosureAt(clamp(s,0,L_ISL))*2.4,0,1)<0.85) continue;
       const fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
-      const lat=(st.chance(0.5)?1:-1)*st.r(34,118);
-      const x=fr.x+fr.lx*lat+st.r(-6,6), z=fr.z+fr.lz*lat+st.r(-6,6);
+      const lat=(st.chance(0.5)?1:-1)*st.r(30,118);
+      const x=fr.x+fr.lx*lat+st.r(-7,7), z=fr.z+fr.lz*lat+st.r(-7,7);
       const ri=routeInfoL(x,z);
-      if(ri.d<32) continue;
+      if(ri.d<28) continue;
       if(droveDist(x,z)<DROVE.w*0.9) continue;
+      // clumped, never sprinkled: a coarse field decides whether this ground
+      // carries cover at all, and most of it still does not
+      if(fbmE(x/86+11.3,z/86+29.7)<0.42) continue;
       const slope=Math.abs(groundL(x+2.5,z)-groundL(x-2.5,z))/5+Math.abs(groundL(x,z+2.5)-groundL(x,z-2.5))/5;
       const thin=thinSoilL(x,z,slope);
-      if(thin<0.40) continue;                    // only where the soil is actually thin
-      if(st.chance(0.34)) continue;
-      // a run, laid along the contour rather than scattered: the crest
-      // direction is the bedding direction, which is why these read as one
-      // outcrop and not as dropped rubble
-      const ang=Math.atan2(Math.sin(DIVIDE.dir),Math.cos(DIVIDE.dir))+st.r(-0.22,0.22);
-      const nb=st.i(3,6);
-      const cLit=mixc(PAL.road,PAL.leafShade,0.20), cSh=mixc(PAL.bark,PAL.woodDeep,0.46);
-      for(let q=0;q<nb;q++){
-        const rr=st.r(1.1,4.2)*q;
-        const bx=x+Math.sin(ang)*rr+st.r(-1.1,1.1), bz=z+Math.cos(ang)*rr+st.r(-1.1,1.1);
-        if(routeInfoL(bx,bz).d<32) continue;
-        const r=st.r(0.34,0.86)*(q?st.r(0.55,1.0):1);
-        const by=groundL(bx,bz);
-        addBlob(uB,bx,by+r*0.20,bz,st,r*st.r(1.3,2.1),r*st.r(0.26,0.40),r*st.r(0.9,1.5),cLit,cSh,0);
-        addPatch(uB,bx,by,bz,r*st.r(1.5,2.4),mixc(PAL.bark,PAL.woodDeep,0.52));
-        local.stones++;
+      const y=groundL(x,z);
+      if(thin>0.50){
+        // where the rock is genuinely at the surface it still shows, in runs
+        // along the bedding, because that is the island's own material
+        const ang=DIVIDE.dir+st.r(-0.22,0.22);
+        const nb=st.i(3,5);
+        const cLit=mixc(PAL.road,PAL.leafShade,0.20), cSh=mixc(PAL.bark,PAL.woodDeep,0.46);
+        for(let q=0;q<nb;q++){
+          const rr=st.r(1.1,4.0)*q;
+          const bx=x+Math.sin(ang)*rr+st.r(-1.1,1.1), bz=z+Math.cos(ang)*rr+st.r(-1.1,1.1);
+          if(routeInfoL(bx,bz).d<28) continue;
+          const r=st.r(0.42,0.95)*(q?st.r(0.6,1.0):1);
+          const by=groundL(bx,bz);
+          addBlob(uB,bx,by+r*0.20,bz,st,r*st.r(1.3,2.1),r*st.r(0.28,0.42),r*st.r(0.9,1.5),cLit,cSh,0);
+          addPatch(uB,bx,by,bz,r*st.r(1.5,2.4),mixc(PAL.bark,PAL.woodDeep,0.52));
+          local.stones++;
+        }
+        continue;
+      }
+      uB.can=0;
+      addBush(uB,x,y,z,st,st.r(0.95,1.85),bushTop,bushBot);
+      local.shrubs++;
+      // and a few tussocks around the bigger ones, so a bush sits in rough
+      // ground rather than on a lawn
+      if(st.chance(0.5)){
+        const nt=st.i(2,4);
+        for(let q=0;q<nt;q++){
+          const a=st.r(0,TAU), rr=st.r(1.6,4.4);
+          const tx=x+Math.sin(a)*rr, tz=z+Math.cos(a)*rr;
+          if(routeInfoL(tx,tz).d<28) continue;
+          addTuft(uB,tx,groundL(tx,tz),tz,st,mixc(PAL.meadow,PAL.leafShade,0.40),
+            mixc(PAL.meadow,PAL.sunGrass,0.44),st.r(0.42,0.78),st.i(4,6));
+          local.understory++;
+        }
       }
     }
   }
@@ -4263,6 +4376,37 @@ window.__SUMMERGLASS_TEST__={
         openMiddlePerKm:+(((gOpen[i]+fOpen[i]))/Math.max(0.001,openM/1000)).toFixed(1),
         reliefStdM:+Math.sqrt(Math.max(0,rel[i].q/Math.max(1,rel[i].n)-m*m)).toFixed(2) };
     });
+  },
+  // The double-mount seam, measured at the vertices the renderer was actually
+  // given. A white line where two placements meet is either a gap showing
+  // background or two surfaces fighting for the same depth, and those are
+  // opposite defects with opposite fixes — so this reports the signed
+  // separation per column rather than a magnitude.
+  seamProbe(){
+    const out=[], W=COLS.length;
+    for(let i=0;i<SEGMENTS.length-1;i++){
+      const A=SEGMENTS[i], B=SEGMENTS[i+1];
+      const pA=corridorMeshes[i].geometry.getAttribute('position');
+      const pB=corridorMeshes[i+1].geometry.getAttribute('position');
+      const rowsA=pA.count/W;
+      let maxD=0, worst=null, maxRoadDY=0;
+      for(let j=0;j<W;j++){
+        const ia=(rowsA-1)*W+j, ib=j;
+        const dx=pA.getX(ia)-pB.getX(ib), dy=pA.getY(ia)-pB.getY(ib), dz=pA.getZ(ia)-pB.getZ(ib);
+        const d=Math.hypot(dx,dy,dz);
+        if(Math.abs(COLS[j])<=RH+1e-4) maxRoadDY=Math.max(maxRoadDY,Math.abs(dy));
+        if(d>maxD){ maxD=d; worst={colU:+COLS[j].toFixed(2),dx:+dx.toFixed(4),dy:+dy.toFixed(4),dz:+dz.toFixed(4)}; }
+      }
+      const g=A.g1;
+      const f0=frameAtG(g-0.01), f1=frameAtG(g+0.01);
+      out.push({ boundary:i, atG:Math.round(g*10)/10,
+        from:A.island?('island-copy-'+A.copy):'host', to:B.island?('island-copy-'+B.copy):'host',
+        vertexMaxGapM:+maxD.toFixed(4), roadSurfaceMaxDyM:+maxRoadDY.toFixed(4), worstColumn:worst,
+        frameJumpM:+Math.hypot(f1.x-f0.x,f1.y-f0.y,f1.z-f0.z).toFixed(4),
+        yJumpM:+(f1.y-f0.y).toFixed(4),
+        headingJumpDeg:+((Math.atan2(f1.tx,f1.tz)-Math.atan2(f0.tx,f0.tz))*180/Math.PI).toFixed(4) });
+    }
+    return out;
   },
   // Where the thorns are, and how close the road comes to each. The island's
   // only vertical motif is small on purpose, and a still taken between two of

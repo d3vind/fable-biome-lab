@@ -284,6 +284,12 @@ async function checkShots() {
     ['first-soil',  E + crest + 380,   0],
     ['exit',        E + 1862,          0],
   ];
+  // the near thorn: the island's only vertical motif is small on purpose, and
+  // a shot set that shows it only at ninety metres shows the claim without the
+  // evidence for it
+  const th = await p.evaluate(() => window.__SUMMERGLASS_TEST__.thornProbe());
+  const near = th.filter(t => t.formation === 'wind-sisters').sort((a, b) => a.lateralM - b.lateralM)[0];
+  if (near) anchors.push(['thorn-close', E + near.s - 34, 0]);
   for (const [name, g, yaw] of anchors) {
     await p.evaluate(x => window.__SUMMERGLASS_TEST__.warp(x), g);
     await p.waitForTimeout(2600);
@@ -294,7 +300,23 @@ async function checkShots() {
   }
   const P = await proof(p);
   await p.close();
-  record('shots', P.errors.length === 0, {dir: SHOTS, count: anchors.length, errors: P.errors.length});
+  // THE SEAM. A white line where two placements meet was visible at 1x to the
+  // naked eye and had never been captured, because the shot set only ever
+  // mounted one copy. It is captured now, from both sides, every run.
+  const q = await open(browser, `iseed=${SEED}&quality=standard&copies=2`);
+  const qs = await q.evaluate(() => window.__SUMMERGLASS_TEST__.state());
+  const seam = await q.evaluate(() => window.__SUMMERGLASS_TEST__.seamProbe());
+  const seamJoin = seam.find(b => b.to === 'island-copy-1');
+  for (const [name, off] of [['seam-approach', -46], ['seam-on', -6], ['seam-past', 30]]) {
+    await q.evaluate(x => window.__SUMMERGLASS_TEST__.warp(x), seamJoin.atG + off);
+    await q.waitForTimeout(2600);
+    await q.screenshot({path: join(SHOTS, `${name}.png`)});
+  }
+  const PQ = await proof(q);
+  await q.close();
+  record('shots', P.errors.length === 0 && PQ.errors.length === 0,
+    {dir: SHOTS, count: anchors.length + 3, seamAtG: seamJoin.atG,
+     seamVertexGapM: seamJoin.vertexMaxGapM, errors: P.errors.length + PQ.errors.length});
 }
 
 const wanted = n => !ONLY || n.startsWith(ONLY);
