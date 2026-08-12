@@ -121,6 +121,13 @@
     "roadOverGroundMedian": 1.5,
     "roadOverGroundP95": 1.3
    },
+   "dreamyLuminance": {
+    "sunBleachLift": 0.1,
+    "scrubFollowerLift": 1.06,
+    "crownFollowerLift": 1.06,
+    "broadOctaveInvM": 0.026,
+    "note": "colour shift is a mix; value lift is a multiply; far material unchanged"
+   },
    "failing": []
   }
  },
@@ -229,7 +236,7 @@
    "stepM": 24,
    "repeatIdentical": true,
    "planHash": "67f849c6",
-   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)",
    "software": true,
    "errors": 0
   }
@@ -256,7 +263,7 @@
    "stepM": 24,
    "repeatIdentical": true,
    "planHash": "eafaa83f",
-   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)",
    "software": true,
    "errors": 0
   }
@@ -283,7 +290,7 @@
    "stepM": 24,
    "repeatIdentical": true,
    "planHash": "83cc8ba0",
-   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)",
    "software": true,
    "errors": 0
   }
@@ -292,8 +299,8 @@
   "name": "budget/standard/COLDCOMB-2201",
   "pass": true,
   "detail": {
-   "sweptMaxTriangles": 75174,
-   "sweptMaxCalls": 22,
+   "sweptMaxTriangles": 76648,
+   "sweptMaxCalls": 23,
    "atG": 352,
    "atYawRad": 0,
    "bearings": 7,
@@ -310,7 +317,7 @@
    "stepM": 24,
    "repeatIdentical": true,
    "planHash": "ff3363a5",
-   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)",
    "software": true,
    "errors": 0
   }
@@ -337,7 +344,7 @@
    "stepM": 24,
    "repeatIdentical": true,
    "planHash": "67f849c6",
-   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)",
    "software": true,
    "errors": 0
   }
@@ -364,7 +371,7 @@
    "stepM": 24,
    "repeatIdentical": true,
    "planHash": "eafaa83f",
-   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver)",
    "software": true,
    "errors": 0
   }
@@ -463,10 +470,11 @@
   "name": "shots",
   "pass": true,
   "detail": {
-   "dir": "/workspace/fable-biome-lab/verify/island-02-shots",
+   "dir": "/Users/devin/Documents/Codex/2026-07-28/drowned-meridian-codex/fable-biome-lab/verify/island-02-shots",
    "count": 13,
    "seamAtG": 2374,
    "seamVertexGapM": 0.0011,
+   "worstBoundaryGapM": 0.0045,
    "errors": 0
   }
  }

@@ -251,18 +251,21 @@ async function checkContract() {
   const p = await open(browser, `iseed=${SEED}&quality=standard`, {width: 900, height: 560});
   const P = await proof(p);
   await p.close();
-  const C = P.contract, A = P.assertions;
+  const C = P.contract, A = P.assertions, D = P.dreamyLuminance || {};
   record('contract/boundary',
     C.measuredLengthM >= 1800 && C.measuredLengthM <= 2200 &&
     Math.abs(C.declaredEntryPose.gradePct) <= 2 && Math.abs(C.declaredExitPose.gradePct) <= 2 &&
     Math.abs(C.totalHeadingChangeDeg) <= 90 && Math.abs(C.netElevationM) <= 40 &&
-    C.maxGradePct <= 6.65 && A.landmarkRisesReadAsGround && A.deliberateSpacingKept,
+    C.maxGradePct <= 6.65 && A.landmarkRisesReadAsGround && A.deliberateSpacingKept &&
+    D.sunBleachLift >= 0.10 && D.scrubFollowerLift >= 1.05 && D.crownFollowerLift >= 1.05 &&
+    D.broadOctaveInvM === 0.026 && A.roadLeadsGround &&
+    P.roadLeads.roadOverGroundMedian >= 1.25 && P.roadLeads.seamContrast >= 3.40,
     {lengthM: C.measuredLengthM, entry: C.declaredEntryPose, exit: C.declaredExitPose,
      netElevationM: C.netElevationM, headingDeg: C.totalHeadingChangeDeg,
      maxGradePct: C.maxGradePct, ascentM: C.ascentM, descentM: C.descentM,
      divideAspect: P.divide.aspectRatio, spacingM: P.thorns.minFormationSpacingM,
      vocabulary: P.vocabulary.used, unused: P.vocabulary.unused,
-     roadLeads: P.roadLeads,
+     roadLeads: P.roadLeads, dreamyLuminance: D,
      failing: Object.entries(A).filter(([k, v]) => v === false).map(([k]) => k)});
 }
 

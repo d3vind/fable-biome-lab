@@ -1554,7 +1554,15 @@ const WIND_W=new THREE.Vector2(
 // argues with that is a worse island however well the argument is executed.
 // The operation stays a mix toward a colour: that finding was about how
 // saturation works, not about which direction to take it.
-const C_DRY=mixc(PAL.sunGrass,PAL.road,0.24).lerp(col(PAL.sunGrass),0.34);
+// Delivered-pixel isolation at the owner-reviewed frame found the gap here,
+// not in the base turf and not in cloud shadow: this term touched 62% of the
+// visible ground but landed at the SAME median luminance as its surroundings.
+// It was widespread dusty modelling, not sun. Colour moves by mixing the
+// bleach back toward summer grass; value moves independently by multiplying
+// only the pixels the existing dry field already selects. The 200 m field and
+// all of its range remain the authority for WHERE the lift appears.
+const C_DRY=mixc(PAL.sunGrass,PAL.road,0.10);
+const DREAM_BLEACH_LIFT=0.10, DREAM_FOLLOW_LIFT=1.06, DREAM_BROAD_INV_M=0.026;
 const WL={ uWTime:{value:0},
   uCloudMove:{value:new THREE.Vector2(CLOUD.r(-1,1),CLOUD.r(-1,1)).normalize()},
   uGlint:{value:new THREE.Vector4(0,0,0,0)},
@@ -1653,7 +1661,7 @@ const COMMON_GLSL=`
   // it is seen from averages to a flat colour — which is why the first lush
   // pass measured a saturation spread of 0.04 across a field that has five
   // separate modulations running on it. Amplitude was never the problem.
-  float broad=wlNoise(vWPos.xz*0.026+vec2(3.0,19.0))*0.64
+  float broad=wlNoise(vWPos.xz*${DREAM_BROAD_INV_M.toFixed(3)}+vec2(3.0,19.0))*0.64
              +wlNoise(vWPos.xz*0.055+vec2(41.0,7.0))*0.36;
   // and the mix is distance-aware: close up the tussock clumping leads, far
   // away it has averaged out and the broad field has to carry the modelling
@@ -1670,6 +1678,10 @@ const COMMON_GLSL=`
   // and dryness is a mix TOWARD a low-chroma colour, which is the only
   // operation that can actually take saturation out
   diffuseColor.rgb=mix(diffuseColor.rgb,uDryCol,dry*0.34);
+  // LIGHTENING IS A MULTIPLY (A1). This is deliberately after the colour mix:
+  // hue and value have separate mechanisms, and the broad/dry field keeps the
+  // value spread rather than a global lift flattening it.
+  diffuseColor.rgb*=1.0+${DREAM_BLEACH_LIFT.toFixed(2)}*dry;
   // BARE GROUND. Lush is not the same as uniform, and the first lush pass
   // measured a saturation spread of 0.04 across the field against island 01's
   // 0.20 — a flat tint, which is the thing the brand is not. A grazed common
@@ -2448,7 +2460,7 @@ function buildTree(B,t,tier,minCrownY,round){
     LEAF_SUN.clone().lerp(col(PAL.sunGrass),0.34-shade*0.18),cSunL,0.18,detail);
   return {H:Ht,crownY,crownR};
 }
-function treeMaterial(emis){
+function treeMaterial(emis,followerLift=1){
   const m=new THREE.MeshLambertMaterial({vertexColors:true,
     emissive:new THREE.Color(emis===undefined?0x131a10:emis),emissiveIntensity:1});
   m.onBeforeCompile=(sh)=>{
@@ -2464,11 +2476,15 @@ function treeMaterial(emis){
       .replace('#include <worldpos_vertex>','#include <worldpos_vertex>\n{ vec4 wp2=modelMatrix*vec4(transformed,1.0);\n#ifdef USE_INSTANCING\n wp2=modelMatrix*instanceMatrix*vec4(transformed,1.0);\n#endif\n vWPos=wp2.xyz; }')
     sh.fragmentShader=sh.fragmentShader
       .replace('#include <common>','#include <common>\nvarying vec3 vWPos;\n'+WL_GLSL)
-      .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.86,1.0,wl)+diffuseColor.rgb*0.46*wl;\nvec3 outgoingLight = ');
+      .replace('vec3 outgoingLight = ',`diffuseColor.rgb*=${followerLift.toFixed(2)};\nfloat wl=cloudShadowAt(vWPos.xz);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.86,1.0,wl)+diffuseColor.rgb*0.46*wl;\nvec3 outgoingLight = `);
   };
   return m;
 }
-const treeMatNear=treeMaterial(0x161d11), treeMatMid=treeMaterial(0x121809), treeMatFar=treeMaterial(0x0e1408);
+// Near and middle crowns follow the brightened country. The far material is
+// deliberately unchanged: horizon slabs remain an open, separate diagnosis.
+const treeMatNear=treeMaterial(0x161d11,DREAM_FOLLOW_LIFT),
+      treeMatMid=treeMaterial(0x121809,DREAM_FOLLOW_LIFT),
+      treeMatFar=treeMaterial(0x0e1408);
 
 // ============================================================
 // UNDERSTORY AND GROUND CONTACT
@@ -2497,7 +2513,7 @@ function underMaterial(){
           float pick=step(0.52,wlHash(floor(vWPos.xz*3.1)));
           diffuseColor.rgb+=vec3(0.94,0.97,0.78)*prox*pick*uGlint.w*0.9;
         } }`)
-      .replace('vec3 outgoingLight = ','float wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.85,1.0,wl)+diffuseColor.rgb*0.38*wl;\nvec3 outgoingLight = ');
+      .replace('vec3 outgoingLight = ',`diffuseColor.rgb*=${DREAM_FOLLOW_LIFT.toFixed(2)};\nfloat wl=cloudShadowAt(vWPos.xz)*dappleAt(vWPos.xz,vCanopy);\nreflectedLight.directDiffuse*=wl;\nreflectedLight.indirectDiffuse=reflectedLight.indirectDiffuse*mix(0.85,1.0,wl)+diffuseColor.rgb*0.38*wl;\nvec3 outgoingLight = `);
   };
   return m;
 }
@@ -4157,6 +4173,10 @@ function buildProof(){
     roadLeads:{ seamContrast:Math.round(VAL.roadContrastRatio*100)/100,
       roadLum:VAL.roadLum, groundLumMedian:VAL.groundLumMedian, groundLumP95:VAL.groundLumP95,
       roadOverGroundMedian:VAL.roadOverGroundMedian, roadOverGroundP95:VAL.roadOverGroundP95 },
+    dreamyLuminance:{ sunBleachLift:DREAM_BLEACH_LIFT,
+      scrubFollowerLift:DREAM_FOLLOW_LIFT, crownFollowerLift:DREAM_FOLLOW_LIFT,
+      broadOctaveInvM:DREAM_BROAD_INV_M,
+      note:'colour shift is a mix; value lift is a multiply; far material unchanged' },
     localBounds:LOCAL_BOUNDS_RESULT,
     life:{ planned:LIFE_EVENTS.length, fired:lifeFired, active:liveLife.length,
       kinds:LIFE_EVENTS.reduce((a,e)=>{a[e.kind]=(a[e.kind]||0)+1;return a;},{}) },

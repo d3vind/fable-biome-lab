@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 const HERE = dirname(fileURLToPath(import.meta.url));
 
+const r3Arg=process.argv.find(a=>a.startsWith('--r3='));
+
 function decodePNG(buf) {
   let p = 8, w = 0, h = 0, depth = 0, ctype = 0, idat = [];
   while (p < buf.length) {
@@ -79,22 +81,103 @@ function analyse(path) {
   };
 }
 
-const rows = [];
-for (const f of ['rows.png', 'headland.png'])
-  rows.push(analyse(join(HERE, 'island-shots', f)));
-for (const f of readdirSync(join(HERE, 'island-02-shots')).sort())
-  rows.push(analyse(join(HERE, 'island-02-shots', f)));
+const linearChannel=v=>{
+  v/=255;
+  return v<=0.04045?v/12.92:((v+0.055)/1.055)**2.4;
+};
+const relativeLuminance=(r,g,b)=>0.2126*linearChannel(r)+0.7152*linearChannel(g)+0.0722*linearChannel(b);
+const quantiles=a=>{
+  a.sort((x,y)=>x-y);
+  return {p10:pct(a,0.10),median:pct(a,0.50),p90:pct(a,0.90)};
+};
 
-console.log('VEGETATION-CLASS PIXELS  (hue/sat/val quartiles, sRGB as displayed)');
-console.log('file                              n      hue p25/50/75      sat p25/50/75     val p25/50/75    clip%');
-for (const r of rows) {
-  console.log(`${r.name.padEnd(32)} ${String(r.n).padStart(6)}  ` +
-    `${r.hue.map(v => v.toFixed(0).padStart(3)).join('/')}°        ` +
-    `${r.sat.map(v => v.toFixed(2)).join('/')}   ` +
-    `${r.val.map(v => v.toFixed(2)).join('/')}   ` +
-    `${r.clipPct.toFixed(2)}`);
+function maskedPixels(framePath,maskPath,kind){
+  const frame=decodePNG(readFileSync(framePath)), mask=decodePNG(readFileSync(maskPath));
+  if(frame.w!==mask.w||frame.h!==mask.h)throw new Error(`${kind}: frame/mask size mismatch`);
+  const out=[];
+  for(let y=0;y<frame.h-42;y+=2)for(let x=0;x<frame.w;x+=2){
+    const mi=(y*mask.w+x)*mask.ch;
+    if(mask.data[mi]<160||mask.data[mi+1]<160||mask.data[mi+2]<160)continue;
+    const i=(y*frame.w+x)*frame.ch,r=frame.data[i],g=frame.data[i+1],b=frame.data[i+2];
+    const [h,s,v]=hsv(r,g,b);
+    // corridorMat includes verge and shoulder; keep only delivered road-like
+    // pixels for the road surface distribution.
+    if(kind==='road'&&!(r>=g*0.94&&g>b*1.03&&s<0.34))continue;
+    out.push({x,y,r,g,b,h,s,v,lum:relativeLuminance(r,g,b)});
+  }
+  return {w:frame.w,h:frame.h,pixels:out};
 }
-console.log('\nFAR-MASS BAND  (dark vegetation pixels in the upper 60% of frame)');
-console.log('file                              n      mean lum   p10-p90 spread');
-for (const r of rows)
-  console.log(`${r.name.padEnd(32)} ${String(r.farN).padStart(6)}   ${r.farMean.toFixed(1).padStart(6)}      ${r.farSpread.toFixed(1).padStart(6)}`);
+
+function surfaceSummary(row){
+  const L=row.pixels.map(p=>p.lum),S=row.pixels.map(p=>p.s),H=row.pixels.map(p=>p.h);
+  return {n:L.length,luminance:quantiles(L),saturation:quantiles(S),hue:quantiles(H)};
+}
+
+function pairedIsolation(normalPath,variantPath,maskPath,threshold){
+  const normal=decodePNG(readFileSync(normalPath)), variant=decodePNG(readFileSync(variantPath));
+  const mask=decodePNG(readFileSync(maskPath));
+  const affected=[],unaffected=[],ratios=[];let eligible=0;
+  for(let y=0;y<normal.h-42;y+=2)for(let x=0;x<normal.w;x+=2){
+    const mi=(y*mask.w+x)*mask.ch;
+    if(mask.data[mi]<160||mask.data[mi+1]<160||mask.data[mi+2]<160)continue;
+    const i=(y*normal.w+x)*normal.ch;
+    const a=relativeLuminance(normal.data[i],normal.data[i+1],normal.data[i+2]);
+    const b=relativeLuminance(variant.data[i],variant.data[i+1],variant.data[i+2]);
+    if(b<0.015)continue;
+    eligible++;const ratio=a/b,delta=Math.abs(a-b);
+    if(delta>=threshold){affected.push(a);ratios.push(ratio);}else unaffected.push(a);
+  }
+  return {eligible,coveragePct:100*affected.length/Math.max(1,eligible),
+    affectedLuminance:quantiles(affected),surroundingLuminance:quantiles(unaffected),
+    deliveredToIsolatedRatio:quantiles(ratios)};
+}
+
+function analyseR3(dir){
+  const labels=['island-02-tip','island-01-open','keeper-midcountry'];
+  const report={measurement:'delivered sRGB decoded to linear relative luminance',maskUse:'semantic masks identify pixels only; RGB values come from delivered.png',references:{}};
+  for(const label of labels){
+    const base=join(dir,label),surfaces={};
+    for(const kind of ['turf','road','scrub','crowns'])surfaces[kind]=surfaceSummary(maskedPixels(join(base,'delivered.png'),join(base,`${kind}-mask.png`),kind));
+    const cloud=pairedIsolation(join(base,'delivered.png'),join(base,'unshadowed.png'),join(base,'turf-mask.png'),0.004);
+    // "Duty" is the proportion of delivered turf pixels changed by at least
+    // 0.004 relative luminance when only cloudShadowAt is returned as 1.0.
+    const row={surfaces,cloudShadow:{...cloud,definition:'turf pixels whose delivered luminance changes by >=0.004 when cloudShadowAt alone is isolated'}};
+    if(label==='island-02-tip')row.sunBleach=pairedIsolation(join(base,'delivered.png'),join(base,'no-bleach.png'),join(base,'turf-mask.png'),0.003);
+    report.references[label]=row;
+  }
+  const a=report.references['island-02-tip'].surfaces.turf.luminance.median;
+  const b=report.references['island-01-open'].surfaces.turf.luminance.median;
+  const c=report.references['keeper-midcountry'].surfaces.turf.luminance.median;
+  report.comparison={
+    island02VsIsland01Pct:(a/b-1)*100,
+    island02VsKeeperPct:(a/c-1)*100,
+    island01VsKeeperPct:(b/c-1)*100,
+    referencesDisagreeByMoreThan10Pct:Math.abs(b/c-1)>0.10,
+  };
+  return report;
+}
+
+if(r3Arg){
+  const dir=r3Arg.slice('--r3='.length);
+  console.log(JSON.stringify(analyseR3(dir),null,2));
+}else{
+  const rows = [];
+  for (const f of ['rows.png', 'headland.png'])
+    rows.push(analyse(join(HERE, 'island-shots', f)));
+  for (const f of readdirSync(join(HERE, 'island-02-shots')).sort())
+    rows.push(analyse(join(HERE, 'island-02-shots', f)));
+
+  console.log('VEGETATION-CLASS PIXELS  (hue/sat/val quartiles, sRGB as displayed)');
+  console.log('file                              n      hue p25/50/75      sat p25/50/75     val p25/50/75    clip%');
+  for (const r of rows) {
+    console.log(`${r.name.padEnd(32)} ${String(r.n).padStart(6)}  ` +
+      `${r.hue.map(v => v.toFixed(0).padStart(3)).join('/')}°        ` +
+      `${r.sat.map(v => v.toFixed(2)).join('/')}   ` +
+      `${r.val.map(v => v.toFixed(2)).join('/')}   ` +
+      `${r.clipPct.toFixed(2)}`);
+  }
+  console.log('\nFAR-MASS BAND  (dark vegetation pixels in the upper 60% of frame)');
+  console.log('file                              n      mean lum   p10-p90 spread');
+  for (const r of rows)
+    console.log(`${r.name.padEnd(32)} ${String(r.farN).padStart(6)}   ${r.farMean.toFixed(1).padStart(6)}      ${r.farSpread.toFixed(1).padStart(6)}`);
+}

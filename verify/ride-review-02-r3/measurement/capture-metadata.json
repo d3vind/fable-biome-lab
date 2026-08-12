@@ -1,0 +1,135 @@
+{
+  "baseCommit": "6d61a976abe465b7a61a6a71b81f7f8f1026f2eb",
+  "candidate": {
+    "source": "working-tree island-02.html",
+    "committedAtCapture": false,
+    "sourceSha256": "f102815dda76bbc83e2f20049d479b612e9acdc75f1ad9ef4ead9fd8d1426fb7"
+  },
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "frameIntervalMs": 50,
+  "quality": "standard",
+  "targetSunRelativeToTravelRad": -1.7231909592699897,
+  "keeper": {
+    "label": "keeper-midcountry",
+    "seed": "SUMMERGLASS-8421",
+    "stationM": 1006,
+    "meta": {
+      "sunAzRad": 1.4661395776085555,
+      "sunElRad": 0.5647948525333777,
+      "localHeadingRad": -3.093854770301041,
+      "routeLengthM": 6439,
+      "chapters": [
+        {
+          "name": "The Dappled Gate",
+          "endM": 689,
+          "endS": 73
+        },
+        {
+          "name": "Sunbank",
+          "endM": 1323,
+          "endS": 139
+        },
+        {
+          "name": "Fernfold",
+          "endM": 2205,
+          "endS": 232
+        },
+        {
+          "name": "The Mosswater Choice",
+          "endM": 2855,
+          "endS": 300
+        },
+        {
+          "name": "Joining Woods",
+          "endM": 3941,
+          "endS": 415
+        },
+        {
+          "name": "Glasswater Shelf",
+          "endM": 4722,
+          "endS": 497
+        },
+        {
+          "name": "Cloudstep Rise",
+          "endM": 5489,
+          "endS": 578
+        },
+        {
+          "name": "Bellroot Exhale",
+          "endM": 6439,
+          "endS": 678
+        }
+      ],
+      "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+      "vendor": "Google Inc. (Apple)",
+      "softwareRenderer": false
+    },
+    "errors": []
+  },
+  "middleComparison": {
+    "label": "island-02-middle-r3",
+    "seed": "PARTING-3311",
+    "stationM": 1200,
+    "yawRad": 0.45,
+    "headingDeg": 0,
+    "meta": {
+      "sunAzRad": 3.1880235361024187,
+      "sunElRad": 0.5964441296365113,
+      "localHeadingRad": 0.5843091435551693,
+      "entryAtG": 280,
+      "routeLengthM": 1904,
+      "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+      "vendor": "Google Inc. (Apple)",
+      "softwareRenderer": false
+    },
+    "errors": []
+  },
+  "references": [
+    {
+      "label": "island-01-open",
+      "file": "island-01.html",
+      "query": "iseed=ISLE-8421&quality=standard&heading=0",
+      "stationM": 900,
+      "yaw": 0,
+      "headingDeg": 7.673999868852913,
+      "meta": {
+        "sunAzRad": 5.455529580339288,
+        "sunElRad": 0.6595461101224647,
+        "localHeadingRad": 0.7615986679205944,
+        "entryAtG": 280,
+        "routeLengthM": 2028,
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+        "vendor": "Google Inc. (Apple)",
+        "softwareRenderer": false
+      },
+      "errors": []
+    },
+    {
+      "label": "island-02-tip",
+      "file": "island-02.html",
+      "query": "iseed=PARTING-3311&quality=standard&heading=0",
+      "stationM": 900,
+      "yaw": 0,
+      "headingDeg": -113.42212193423396,
+      "meta": {
+        "sunAzRad": 3.1880235361024187,
+        "sunElRad": 0.5964441296365113,
+        "localHeadingRad": 0.6076186605436835,
+        "entryAtG": 280,
+        "routeLengthM": 1904,
+        "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)",
+        "vendor": "Google Inc. (Apple)",
+        "softwareRenderer": false
+      },
+      "errors": []
+    }
+  ],
+  "sourceHashes": {
+    "index.html": "cdf21a1cd04cdaa11a58984a9f3f9c5bd537bbbca26ce2a6b14896b961b509ff",
+    "island-01.html": "72b66ded8b3059e1be8cf309960adc4a5a01bff9b4a4d6709cc5a155338365cf",
+    "island-02.html": "f102815dda76bbc83e2f20049d479b612e9acdc75f1ad9ef4ead9fd8d1426fb7"
+  }
+}

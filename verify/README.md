@@ -100,6 +100,8 @@ needs a browser except where noted, and none of them changes anything.
 ```
 node verify/measure-colour.mjs      # authored colour, exactly
 node verify/measure-frames.mjs      # delivered pixels, from the shipped captures
+node verify/measure-captures.mjs    # matched delivered frames + semantic surface masks
+node verify/measure-frames.mjs --r3=verify/ride-review-02-r3/measurement
 node verify/island-02-diagnose.mjs  # runtime probes + term-isolation captures
 node verify/measure-isolation.mjs   # reads what island-02-diagnose.mjs wrote
 ```
@@ -108,6 +110,7 @@ node verify/measure-isolation.mjs   # reads what island-02-diagnose.mjs wrote
 |---|---|
 | `measure-colour.mjs` | what colour did the palette actually author? It replicates three's sRGB→linear working space, so a constant can be read in saturation, hue and luminance instead of guessed at from a hex code. This is what showed the turf's authored saturation was 0.394 while the delivered frames measured 0.470 — the vertex path was right and something downstream was undoing it. |
 | `measure-frames.mjs` | what colour actually arrived on screen? Decodes the shipped PNGs and reports vegetation-class hue/saturation/value quartiles plus channel clipping. Authored colour and delivered colour are different claims and the gap between them is where defects live. |
+| `measure-captures.mjs` + `measure-frames.mjs --r3=...` | what luminance arrived on turf, road, scrub, and crowns under matched sun? The capture serves source read-only, records accelerated Metal provenance, and emits semantic masks only to identify surfaces; all luminance values come from the untouched delivered frame. It also isolates sun bleach and cloud shadow so coverage and duty are measured instead of inferred. |
 | `measure-isolation.mjs` | which term owns an artefact — and is the comparison even valid? It reports the usual per-variant deltas, and it reports them for a **control region no toggled term can touch**. On this island that control moved 5.3–6.1 luminance units between captures, which is cloud-shadow drift on the world clock, and it turned a plausible-looking A/B into a known-void one. A between-frame comparison in a world with its own clock is worthless without that control; the within-frame texture statistics in the same script survive it. |
 
 The runtime probes live on `window.__SUMMERGLASS_TEST__` and are driven by
