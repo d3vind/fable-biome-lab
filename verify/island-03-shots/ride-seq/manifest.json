@@ -1,0 +1,266 @@
+[
+ {
+  "file": "seq-0160.png",
+  "atG": 162,
+  "islandS": null,
+  "movement": "(connective)"
+ },
+ {
+  "file": "seq-0200.png",
+  "atG": 203,
+  "islandS": null,
+  "movement": "(connective)"
+ },
+ {
+  "file": "seq-0240.png",
+  "atG": 240,
+  "islandS": null,
+  "movement": "(connective)"
+ },
+ {
+  "file": "seq-0280.png",
+  "atG": 281,
+  "islandS": 0.9,
+  "movement": "The Last Meadow"
+ },
+ {
+  "file": "seq-0320.png",
+  "atG": 322,
+  "islandS": 41.7,
+  "movement": "The Last Meadow"
+ },
+ {
+  "file": "seq-0360.png",
+  "atG": 363,
+  "islandS": 82.6,
+  "movement": "The Last Meadow"
+ },
+ {
+  "file": "seq-0400.png",
+  "atG": 403,
+  "islandS": 123.3,
+  "movement": "The Last Meadow"
+ },
+ {
+  "file": "seq-0440.png",
+  "atG": 444,
+  "islandS": 163.9,
+  "movement": "The Last Meadow"
+ },
+ {
+  "file": "seq-0480.png",
+  "atG": 481,
+  "islandS": 201.1,
+  "movement": "The Last Meadow"
+ },
+ {
+  "file": "seq-0520.png",
+  "atG": 522,
+  "islandS": 241.8,
+  "movement": "The Last Meadow"
+ },
+ {
+  "file": "seq-0560.png",
+  "atG": 563,
+  "islandS": 282.5,
+  "movement": "The Last Meadow"
+ },
+ {
+  "file": "seq-0600.png",
+  "atG": 603,
+  "islandS": 323.3,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-0640.png",
+  "atG": 648,
+  "islandS": 367.6,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-0680.png",
+  "atG": 682,
+  "islandS": 401.5,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-0720.png",
+  "atG": 722,
+  "islandS": 442.3,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-0760.png",
+  "atG": 763,
+  "islandS": 482.9,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-0800.png",
+  "atG": 803,
+  "islandS": 523.3,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-0840.png",
+  "atG": 840,
+  "islandS": 560.4,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-0880.png",
+  "atG": 881,
+  "islandS": 600.7,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-0920.png",
+  "atG": 928,
+  "islandS": 647.7,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-0960.png",
+  "atG": 965,
+  "islandS": 684.7,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-1000.png",
+  "atG": 1002,
+  "islandS": 721.9,
+  "movement": "The Gathering"
+ },
+ {
+  "file": "seq-1040.png",
+  "atG": 1043,
+  "islandS": 762.6,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1080.png",
+  "atG": 1080,
+  "islandS": 800.1,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1120.png",
+  "atG": 1121,
+  "islandS": 841,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1160.png",
+  "atG": 1162,
+  "islandS": 882.1,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1200.png",
+  "atG": 1203,
+  "islandS": 923.1,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1240.png",
+  "atG": 1241,
+  "islandS": 960.7,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1280.png",
+  "atG": 1282,
+  "islandS": 1001.7,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1320.png",
+  "atG": 1323,
+  "islandS": 1042.5,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1360.png",
+  "atG": 1363,
+  "islandS": 1083.2,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1400.png",
+  "atG": 1400,
+  "islandS": 1120.4,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1440.png",
+  "atG": 1441,
+  "islandS": 1160.9,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1480.png",
+  "atG": 1481,
+  "islandS": 1201.5,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1520.png",
+  "atG": 1522,
+  "islandS": 1242.1,
+  "movement": "The Throat"
+ },
+ {
+  "file": "seq-1560.png",
+  "atG": 1563,
+  "islandS": 1282.8,
+  "movement": "The Mouth"
+ },
+ {
+  "file": "seq-1600.png",
+  "atG": 1600,
+  "islandS": 1320.3,
+  "movement": "The Mouth"
+ },
+ {
+  "file": "seq-1640.png",
+  "atG": 1645,
+  "islandS": 1364.9,
+  "movement": "The Mouth"
+ },
+ {
+  "file": "seq-1680.png",
+  "atG": 1683,
+  "islandS": 1402.9,
+  "movement": "The Mouth"
+ },
+ {
+  "file": "seq-1720.png",
+  "atG": 1721,
+  "islandS": 1440.9,
+  "movement": "The Mouth"
+ },
+ {
+  "file": "seq-1760.png",
+  "atG": 1762,
+  "islandS": 1482.4,
+  "movement": "The Mouth"
+ },
+ {
+  "file": "seq-1800.png",
+  "atG": 1800,
+  "islandS": 1520.3,
+  "movement": "The Mouth"
+ },
+ {
+  "file": "seq-1840.png",
+  "atG": 1841,
+  "islandS": 1561.5,
+  "movement": "The Opened Country"
+ },
+ {
+  "file": "seq-1880.png",
+  "atG": 1882,
+  "islandS": 1602.4,
+  "movement": "The Opened Country"
+ }
+]

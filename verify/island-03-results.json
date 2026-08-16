@@ -1,0 +1,597 @@
+[
+ {
+  "name": "determinism/repeat-load",
+  "pass": true,
+  "detail": {
+   "planA": "8fbbd3b8",
+   "planB": "8fbbd3b8",
+   "realA": "10ef5b71410e9300",
+   "realB": "10ef5b71410e9300"
+  }
+ },
+ {
+  "name": "tiers/plan-identity",
+  "pass": true,
+  "detail": {
+   "low": {
+    "plan": "8fbbd3b8",
+    "real": "f1cff768a800e527",
+    "trees": 213,
+    "families": {
+     "plan": 1,
+     "routeFrames": 1019,
+     "terrain": 9,
+     "formations": 10,
+     "groves": 20,
+     "trees": 213,
+     "lifeEvents": 6,
+     "airPockets": 4
+    },
+    "qReads": 0,
+    "pReads": 0
+   },
+   "standard": {
+    "plan": "8fbbd3b8",
+    "real": "10ef5b71410e9300",
+    "trees": 213,
+    "families": {
+     "plan": 1,
+     "routeFrames": 1019,
+     "terrain": 9,
+     "formations": 10,
+     "groves": 20,
+     "trees": 213,
+     "lifeEvents": 6,
+     "airPockets": 4
+    },
+    "qReads": 0,
+    "pReads": 0
+   },
+   "high": {
+    "plan": "8fbbd3b8",
+    "real": "038f475311052dd1",
+    "trees": 213,
+    "families": {
+     "plan": 1,
+     "routeFrames": 1019,
+     "terrain": 9,
+     "formations": 10,
+     "groves": 20,
+     "trees": 213,
+     "lifeEvents": 6,
+     "airPockets": 4
+    },
+    "qReads": 0,
+    "pReads": 0
+   }
+  }
+ },
+ {
+  "name": "placement/plan-invariance",
+  "pass": true,
+  "detail": [
+   {
+    "h": 0,
+    "g": 0,
+    "plan": "8fbbd3b8",
+    "real": "10ef5b71410e9300",
+    "trees": 213,
+    "excl": true,
+    "noAbs": true,
+    "boundsOutside": 0,
+    "errors": 0
+   },
+   {
+    "h": 137,
+    "g": 1.8,
+    "plan": "8fbbd3b8",
+    "real": "10ef5b71410e9300",
+    "trees": 213,
+    "excl": true,
+    "noAbs": true,
+    "boundsOutside": 0,
+    "errors": 0
+   },
+   {
+    "h": 262,
+    "g": -1.6,
+    "plan": "8fbbd3b8",
+    "real": "10ef5b71410e9300",
+    "trees": 213,
+    "excl": true,
+    "noAbs": true,
+    "boundsOutside": 0,
+    "errors": 0
+   }
+  ]
+ },
+ {
+  "name": "contract/boundary",
+  "pass": true,
+  "detail": {
+   "lengthM": 2036,
+   "entry": {
+    "x": 0,
+    "y": 0,
+    "z": 0,
+    "headingDeg": 0,
+    "gradePct": 0
+   },
+   "exit": {
+    "x": -134.58,
+    "y": 0.15,
+    "z": 2004.93,
+    "headingDeg": -0.22,
+    "gradePct": 0
+   },
+   "netElevationM": 0.15,
+   "headingDeg": -0.22,
+   "maxGradePct": 1.23,
+   "ascentM": 3.8,
+   "descentM": 3.6
+  }
+ },
+ {
+  "name": "contract/narrows",
+  "pass": true,
+  "detail": {
+   "peakMinSideDeg": 54.5,
+   "sustained40M": 550,
+   "releaseRunM": 60,
+   "entryMaxDeg": -2.8,
+   "exitMaxDeg": -0.5,
+   "blindForwardM": 230,
+   "mouthRevealAtM": 1169,
+   "minClearanceAt2mM": 19.1,
+   "wallRuns": [
+    {
+     "side": 1,
+     "runM": 990,
+     "maxHM": 32.4,
+     "maxAnywhereM": 32.4,
+     "ratio": 30.5
+    },
+    {
+     "side": -1,
+     "runM": 980,
+     "maxHM": 31,
+     "maxAnywhereM": 31,
+     "ratio": 31.7
+    }
+   ]
+  }
+ },
+ {
+  "name": "contract/road-leads",
+  "pass": true,
+  "detail": {
+   "seamContrast": 3.4,
+   "worstMovementRatio": 1.32,
+   "byMovement": [
+    [
+     "The Last Meadow",
+     1.85
+    ],
+    [
+     "The Gathering",
+     1.46
+    ],
+    [
+     "The Throat",
+     1.81
+    ],
+    [
+     "The Mouth",
+     1.32
+    ],
+    [
+     "The Opened Country",
+     1.45
+    ]
+   ]
+  }
+ },
+ {
+  "name": "contract/families-and-vocabulary",
+  "pass": true,
+  "detail": {
+   "families": {
+    "plan": 1,
+    "routeFrames": 1019,
+    "terrain": 9,
+    "formations": 10,
+    "groves": 20,
+    "trees": 213,
+    "lifeEvents": 6,
+    "airPockets": 4
+   },
+   "used": [
+    "dappled-gate",
+    "fernfold-shaft",
+    "light-shaft",
+    "wind-sisters"
+   ],
+   "unused": [
+    "fork-wedge",
+    "water-aperture",
+    "orchard-row",
+    "bellroot-approach"
+   ],
+   "spacingM": 131,
+   "failing": []
+  }
+ },
+ {
+  "name": "ground/integrity",
+  "pass": true,
+  "detail": {
+   "samples": 3591,
+   "misses": 0,
+   "largestConnectedMiss": 0,
+   "doubleDrawnSamples": 211,
+   "maxSurfaceGapM": 2.43,
+   "worst": {
+    "s": 474,
+    "u": -56,
+    "gapM": 2.43
+   },
+   "missList": [],
+   "stepM": 18,
+   "reachM": 560,
+   "meshes": 43
+  }
+ },
+ {
+  "name": "ground/continuity",
+  "pass": true,
+  "detail": {
+   "islandMaxStepM": 7.81,
+   "hostMaxStepM": 1.74,
+   "walks": 24,
+   "gate": "island land outside the wall corridor, <= 8 m per 16 m tile",
+   "hostNote": "beyond the island reach the ground is the mount's; reported, not gated"
+  }
+ },
+ {
+  "name": "ground/local-frame-only",
+  "pass": true,
+  "detail": {
+   "checked": 8483,
+   "outside": 0,
+   "skipped": 7,
+   "worstOverM": 0,
+   "worstMesh": null
+  }
+ },
+ {
+  "name": "residency/identity",
+  "pass": true,
+  "detail": {
+   "signature": "2775|{\"trees\":0,\"articulatedNear\":0,\"midTrees\":0,\"farTrees\":"
+  }
+ },
+ {
+  "name": "pause/ambient-continues",
+  "pass": true,
+  "detail": {
+   "exercised": true,
+   "proven": true,
+   "roster": [
+    "resident-daws",
+    "canopy-and-grass-sway",
+    "cloud-shadow-drift",
+    "air-pockets(pollen,leaves,motes)",
+    "host-clouds"
+   ]
+  }
+ },
+ {
+  "name": "grounding",
+  "pass": true,
+  "detail": {
+   "sampled": 213,
+   "floating": 0,
+   "maxAboveM": -0.24,
+   "worst": {
+    "fam": "birch",
+    "x": 8,
+    "z": 156,
+    "aboveM": -0.24
+   },
+   "seated": {
+    "lowered": 213,
+    "raised": 0,
+    "unseatable": 0
+   }
+  }
+ },
+ {
+  "name": "budget/standard/NARROWS-2741",
+  "pass": true,
+  "detail": {
+   "sweptMaxTriangles": 84755,
+   "sweptMaxCalls": 22,
+   "atG": 352,
+   "atYawRad": 0,
+   "bearings": 7,
+   "bearingSetDeg": [
+    0,
+    22,
+    -22,
+    43,
+    -43,
+    63,
+    -63
+   ],
+   "stations": 109,
+   "stepM": 24,
+   "repeatIdentical": true,
+   "planHash": "8fbbd3b8",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "software": true,
+   "errors": 0
+  }
+ },
+ {
+  "name": "budget/standard/CLOVENSTONE-88",
+  "pass": true,
+  "detail": {
+   "sweptMaxTriangles": 78642,
+   "sweptMaxCalls": 21,
+   "atG": 352,
+   "atYawRad": 0,
+   "bearings": 7,
+   "bearingSetDeg": [
+    0,
+    22,
+    -22,
+    43,
+    -43,
+    63,
+    -63
+   ],
+   "stations": 107,
+   "stepM": 24,
+   "repeatIdentical": true,
+   "planHash": "8ab902f6",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "software": true,
+   "errors": 0
+  }
+ },
+ {
+  "name": "budget/standard/DEFILE-517",
+  "pass": true,
+  "detail": {
+   "sweptMaxTriangles": 74864,
+   "sweptMaxCalls": 22,
+   "atG": 352,
+   "atYawRad": 0,
+   "bearings": 7,
+   "bearingSetDeg": [
+    0,
+    22,
+    -22,
+    43,
+    -43,
+    63,
+    -63
+   ],
+   "stations": 103,
+   "stepM": 24,
+   "repeatIdentical": true,
+   "planHash": "6700141b",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "software": true,
+   "errors": 0
+  }
+ },
+ {
+  "name": "budget/standard/THROATGATE-9",
+  "pass": true,
+  "detail": {
+   "sweptMaxTriangles": 75129,
+   "sweptMaxCalls": 21,
+   "atG": 352,
+   "atYawRad": 0,
+   "bearings": 7,
+   "bearingSetDeg": [
+    0,
+    22,
+    -22,
+    43,
+    -43,
+    63,
+    -63
+   ],
+   "stations": 107,
+   "stepM": 24,
+   "repeatIdentical": true,
+   "planHash": "c5263a36",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "software": true,
+   "errors": 0
+  }
+ },
+ {
+  "name": "budget/high/NARROWS-2741",
+  "pass": true,
+  "detail": {
+   "sweptMaxTriangles": 90317,
+   "sweptMaxCalls": 23,
+   "atG": 376,
+   "atYawRad": 0,
+   "bearings": 7,
+   "bearingSetDeg": [
+    0,
+    22,
+    -22,
+    43,
+    -43,
+    63,
+    -63
+   ],
+   "stations": 109,
+   "stepM": 24,
+   "repeatIdentical": true,
+   "planHash": "8fbbd3b8",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "software": true,
+   "errors": 0
+  }
+ },
+ {
+  "name": "budget/high/CLOVENSTONE-88",
+  "pass": true,
+  "detail": {
+   "sweptMaxTriangles": 83174,
+   "sweptMaxCalls": 22,
+   "atG": 376,
+   "atYawRad": 0,
+   "bearings": 7,
+   "bearingSetDeg": [
+    0,
+    22,
+    -22,
+    43,
+    -43,
+    63,
+    -63
+   ],
+   "stations": 107,
+   "stepM": 24,
+   "repeatIdentical": true,
+   "planHash": "8ab902f6",
+   "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+   "software": true,
+   "errors": 0
+  }
+ },
+ {
+  "name": "ride/h0-up",
+  "pass": true,
+  "detail": {
+   "completed": true,
+   "provenance": "accelerated",
+   "timedOut": false,
+   "distanceM": 2652,
+   "marks": {
+    "entered": true,
+    "gatePassed": true,
+    "committed": true,
+    "throated": true,
+    "released": true,
+    "exited": true,
+    "rested": true
+   },
+   "sistersSeen": 4,
+   "throatFrames": 188,
+   "poolSeen": true,
+   "releaseForwardM": 790,
+   "peakIslandCalls": 23,
+   "peakIslandTris": 86389,
+   "assertions": [],
+   "errors": 0
+  }
+ },
+ {
+  "name": "ride/h137-down",
+  "pass": true,
+  "detail": {
+   "completed": true,
+   "provenance": "accelerated",
+   "timedOut": false,
+   "distanceM": 2651,
+   "marks": {
+    "entered": true,
+    "gatePassed": true,
+    "committed": true,
+    "throated": true,
+    "released": true,
+    "exited": true,
+    "rested": true
+   },
+   "sistersSeen": 4,
+   "throatFrames": 188,
+   "poolSeen": true,
+   "releaseForwardM": 790,
+   "peakIslandCalls": 23,
+   "peakIslandTris": 86389,
+   "assertions": [],
+   "errors": 0
+  }
+ },
+ {
+  "name": "ride/h262-up",
+  "pass": true,
+  "detail": {
+   "completed": true,
+   "provenance": "accelerated",
+   "timedOut": false,
+   "distanceM": 2651,
+   "marks": {
+    "entered": true,
+    "gatePassed": true,
+    "committed": true,
+    "throated": true,
+    "released": true,
+    "exited": true,
+    "rested": true
+   },
+   "sistersSeen": 4,
+   "throatFrames": 188,
+   "poolSeen": true,
+   "releaseForwardM": 790,
+   "peakIslandCalls": 23,
+   "peakIslandTris": 86389,
+   "assertions": [],
+   "errors": 0
+  }
+ },
+ {
+  "name": "ride/double",
+  "pass": true,
+  "detail": {
+   "completed": true,
+   "timedOut": false,
+   "distanceM": 4877,
+   "sistersSeen": 8,
+   "bandsRealized": 24,
+   "bandsDisposed": 24,
+   "peakIslandTris": 86389,
+   "errors": 0
+  }
+ },
+ {
+  "name": "shots",
+  "pass": true,
+  "detail": {
+   "dir": "/home/user/fable-biome-lab/verify/island-03-shots",
+   "count": 17,
+   "seamAtG": 2506,
+   "seamVertexGapM": 0.0012,
+   "worstBoundaryGapM": 0.0084,
+   "errors": 0
+  }
+ },
+ {
+  "name": "ride-sequence",
+  "pass": true,
+  "detail": {
+   "frames": 44,
+   "dir": "/home/user/fable-biome-lab/verify/island-03-shots/ride-seq",
+   "provenance": "accelerated",
+   "marks": {
+    "entered": true,
+    "gatePassed": true,
+    "committed": true,
+    "throated": true,
+    "released": true,
+    "exited": false,
+    "rested": false
+   },
+   "timedOut": false,
+   "errors": 0
+  }
+ }
+]
