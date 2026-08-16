@@ -564,8 +564,12 @@ for(const B of BENCHES) H.terrain.feed(B.side,B.s0,B.s1,B.frac,B.run);
 // ---- the massif: the broad mass the narrows is cut through. It shoulders
 // out beyond the walls' along-extent and holds laterally well past the rims,
 // so the cut sits IN a hill rather than between two screens of rock. ----
+// hold + fade + base must finish INSIDE the island's reach with slopes a
+// sixteen-metre tile can draw: the first pass held to 180 and fell in 70,
+// which is a 26-degree shoulder — 12 m steps at the tile grid, four over
+// the 8 m gate — and the reach cut-off then guillotined what was left
 const MASSIF={ s0:NAR.s0-FORM.r(60,110), s1:NAR.s1+FORM.r(50,100),
-  topExtra:FORM.r(2.5,5.0), hold:FORM.r(140,180), fade:FORM.r(50,70) };
+  topExtra:FORM.r(2.5,5.0), hold:FORM.r(105,125), fade:FORM.r(85,105) };
 H.terrain.feed(MASSIF.s0,MASSIF.s1,MASSIF.topExtra,MASSIF.hold,MASSIF.fade);
 
 // the terrain family, as records: the intake reads counts, not code
@@ -1983,8 +1987,17 @@ function buildTileMesh(cells,cell,sampler,colorer,xform,island,copy,name){
     for(let ix=Math.floor((minX-R)/cell);ix<=Math.ceil((maxX+R)/cell);ix++){
       const x=(ix+0.5)*cell, z=(iz+0.5)*cell;
       const ri=routeInfoL(x,z);
-      if(ri.d<FIELD_HOLD||ri.d>R) continue;
-      if(islandInfluence(x,z,ri)<0.02) continue;
+      // THE KEEPER'S RULE, relearned the keeper's way: a tile is dropped only
+      // when the WHOLE tile is inside the corridor's reach, and kept if any
+      // corner of it still owns ground. Judging by the centre left a sawtooth
+      // of skipped tiles along the apron seam — an undrawn ring at seventy
+      // metres that the integrity rays found on the first honest scan.
+      let dMin=1e9,dMax=0;
+      for(const cx2 of [ix*cell,(ix+1)*cell]) for(const cz2 of [iz*cell,(iz+1)*cell]){
+        const dd=routeInfoL(cx2,cz2).d; if(dd<dMin)dMin=dd; if(dd>dMax)dMax=dd;
+      }
+      if(dMax<FIELD_HOLD||dMin>R) continue;
+      if(islandInfluence(x,z,ri)<0.02&&dMin>FIELD_HOLD) continue;
       groups[clamp(Math.floor(ri.s/L_ISL*4),0,3)].push([ix,iz]);
     }
   }
@@ -2025,12 +2038,15 @@ function buildTileMesh(cells,cell,sampler,colorer,xform,island,copy,name){
     }
     return false;
   };
+  const halfDiag=cell*Math.SQRT2*0.5, farHalfDiag=farCell*Math.SQRT2*0.5;
   for(let iz=Math.floor((wminZ-bboxPad)/cell);iz<=Math.ceil((wmaxZ+bboxPad)/cell);iz++){
     for(let ix=Math.floor((wminX-bboxPad)/cell);ix<=Math.ceil((wmaxX+bboxPad)/cell);ix++){
       const x=(ix+0.5)*cell, z=(iz+0.5)*cell;
       const d=routeInfoW(x,z).d;
-      if(d>bboxPad) continue;
-      if(d<FIELD_HOLD&&!insideIsland(x,z)) continue;
+      // the same most-owning-corner rule at every boundary this grid has:
+      // a tile straddling a line is drawn, never dropped
+      if(d-halfDiag>bboxPad) continue;
+      if(d+halfDiag<FIELD_HOLD&&!insideIsland(x,z)) continue;
       if(insideIsland(x,z)) continue;
       hostCells.push([ix,iz]);
     }
@@ -2039,7 +2055,7 @@ function buildTileMesh(cells,cell,sampler,colorer,xform,island,copy,name){
     for(let ix=Math.floor((wminX-farPad)/farCell);ix<=Math.ceil((wmaxX+farPad)/farCell);ix++){
       const x=(ix+0.5)*farCell, z=(iz+0.5)*farCell;
       const d=routeInfoW(x,z).d;
-      if(d<=bboxPad-farCell*0.5||d>farPad) continue;
+      if(d+farHalfDiag<=bboxPad-farCell*0.5||d-farHalfDiag>farPad) continue;
       hostCellsFar.push([ix,iz]);
     }
   }
@@ -4454,10 +4470,38 @@ window.__SUMMERGLASS_TEST__={
     return {sisters:out, everInvisible:out.filter(o=>o.visibleStations===0).length};
   },
   localBounds(){ return localBoundsProbe(); },
+  // who owns a strip of ground, and does anyone draw it? For each lateral
+  // sample: the route distance, the island influence, both ground functions,
+  // and what a vertical ray through the renderer's own scene actually finds.
+  // Written to find a hole; kept because the next hole will want it.
+  coverProbe(s,u0,u1,step){
+    const T=XFORMS[0], fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
+    const targets=terrainMeshes.concat(corridorMeshes).filter(m=>m.geometry);
+    const ray=new THREE.Raycaster(); ray.far=5000;
+    const dir=new THREE.Vector3(0,-1,0), org=new THREE.Vector3();
+    const out=[];
+    const lo=Math.min(u0,u1), hi=Math.max(u0,u1), st=Math.abs(step||8);
+    for(let u=lo;u<=hi;u+=st){
+      const lx=fr.x+fr.lx*u, lz=fr.z+fr.lz*u;
+      const ri=routeInfoL(lx,lz);
+      const w=T.fwd(lx,lz);
+      org.set(w[0],T.fwdY(fr.y)+700,w[1]);
+      ray.set(org,dir);
+      const hits=ray.intersectObjects(targets,false);
+      out.push({u, riLd:+ri.d.toFixed(1), infl:+islandInfluence(lx,lz,ri).toFixed(3),
+        gL:+groundL(lx,lz).toFixed(2), gW:+(groundW(w[0],w[1])-XFORMS[0].wy).toFixed(2),
+        hits:hits.slice(0,3).map(h=>[h.object.name,+h.point.y.toFixed(2)])});
+    }
+    return out;
+  },
   groundWalk(s,u0,u1,step){
     const T=XFORMS[0], fr=getFrame(LFRAME,clamp(s,0,LFRAME.len-1));
     const out=[];
-    for(let u=u0;u<=u1;u+=(step||4)){
+    // a walk called downhill (u0 > u1) walks downhill: the inherited probe
+    // silently returned an empty profile for every negative-side call, and
+    // an instrument that measures nothing reports it as perfection
+    const lo=Math.min(u0,u1), hi=Math.max(u0,u1), st=Math.abs(step||4);
+    for(let u=lo;u<=hi;u+=st){
       const w=T.fwd(fr.x+fr.lx*u,fr.z+fr.lz*u);
       out.push([u,+groundW(w[0],w[1]).toFixed(2)]);
     }
@@ -4478,6 +4522,7 @@ window.__SUMMERGLASS_TEST__={
     const dir=new THREE.Vector3(0,-1,0), org=new THREE.Vector3();
     const cols=Math.floor(rr*2/st)+1;
     const rows=[];
+    const missList=[];
     let samples=0, misses=0, multi=0, maxGap=0, worst=null;
     for(let s=6;s<LFRAME.len-6;s+=st*2){
       const fr=getFrame(LFRAME,s);
@@ -4489,7 +4534,8 @@ window.__SUMMERGLASS_TEST__={
         ray.set(org,dir);
         const hits=ray.intersectObjects(targets,false);
         samples++;
-        if(!hits.length){ misses++; row.push(1); }
+        if(!hits.length){ misses++; row.push(1);
+          if(missList.length<40) missList.push([Math.round(s),Math.round(u)]); }
         else {
           row.push(0);
           if(hits.length>1){
@@ -4518,7 +4564,7 @@ window.__SUMMERGLASS_TEST__={
     }
     return {samples,misses,largestConnectedMiss:biggest,
       doubleDrawnSamples:multi,maxSurfaceGapM:Math.round(maxGap*100)/100,worst,
-      stepM:st,reachM:rr,meshes:targets.length};
+      missList,stepM:st,reachM:rr,meshes:targets.length};
   },
 };
 
