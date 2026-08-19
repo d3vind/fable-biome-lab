@@ -522,6 +522,7 @@ function newFeatureSet() {
     swales: [], drainLines: [], landLobes: [], airPockets: [], events: [],
     pond: null, creek: null, bridge: null, boundaryL: [], boundaryR: [],
     natives: [], evCurve: [], slots: [], farFlags: [], emptyRings: [],
+    mowBlocks: [], nativeSweeps: [], freeBunkers: [],
   };
 }
 /* Blocking geometry may never sit inside the sovereign radius. */
@@ -636,7 +637,7 @@ function mkHole(F, streams, spec) {
   }
   const pinAng = R.range(0, TAU), pinR = R.range(0.2, 0.55);
   const hole = span({
-    id, par, line, side, backward: !!backward,
+    id, par, line, side, backward: !!backward, mowCross: !!spec.mowCross,
     fwHalf0: R.range(11, 14), fwHalf1: R.range(15, 21), pinch: R.range(0.55, 0.75),
     tFw0: 0.10, tFw1: 0.90,
     green, tees, bunkers,
@@ -917,6 +918,52 @@ function authorS2(piece, streams) {
   mkStand(F, streams, { kind: 'pine', s: 420, l: 128, discs: 2, rLo: 20, rHi: 30, minAbsL: 96, tag: 's2tlA' });
   mkStand(F, streams, { kind: 'pine', s: 1240, l: 138, discs: 2, rLo: 22, rHi: 34, minAbsL: 104, tag: 's2tlB' });
   mkStand(F, streams, { kind: 'pine', s: 860, l: -142, discs: 2, rLo: 20, rHi: 30, minAbsL: 110, tag: 's2tlC' });
+  mkStand(F, streams, { kind: 'pine', s: 1680, l: 126, discs: 2, rLo: 18, rHi: 28, minAbsL: 100, tag: 's2tlD' });
+
+  // ---- the far field: structure that survives when the 3.6 m bands can't ----
+  // mowing panels: the rough is cut in large alternating-heading blocks, each
+  // with the slight value offset a different pass leaves behind. A panel is
+  // hundreds of metres wide even when its bands are below a pixel.
+  {
+    const M = streams.maintenance;
+    for (const side of [1, -1]) {
+      let bs = 170 + M.range(0, 60);
+      let ti = M.chance(0.5) ? 0 : 1;
+      while (bs < L - 190) {
+        const s1b = Math.min(L - 170, bs + 290 + M.range(0, 150));
+        F.mowBlocks.push(span({
+          s0: bs, s1: s1b, side,
+          ang: (ti % 2 ? -1 : 1) * (0.50 + M.range(0, 0.28)),
+          band: 4.6 + M.range(0, 0.5),
+          tone: (ti % 2 ? -0.026 : 0.034) + M.range(-0.005, 0.005),
+        }, bs, s1b));
+        bs = s1b; ti++;
+      }
+    }
+  }
+  // native sweeps: two broad waste masses inside the property, deliberate
+  // forms with a kept cut edge — the far field composes as big value shapes
+  F.nativeSweeps.push(span({
+    poly: [[1080, 102], [1210, 92], [1360, 86], [1500, 96], [1600, 112]],
+    halfW: 22 + streams.terrain.range(-2, 3),
+  }, 1040, 1640));
+  F.nativeSweeps.push(span({
+    poly: [[620, -112], [770, -103], [920, -108], [1010, -121]],
+    halfW: 17 + streams.terrain.range(-2, 2),
+  }, 580, 1050));
+  // waste-line bunker complexes: clustered white punctuation that reads at
+  // range where a single bunker cannot
+  {
+    const B = streams.holes;
+    for (let i = 0; i < 4; i++) {
+      F.freeBunkers.push(mkBunker(streams, 1150 + i * 52 + B.range(-8, 8), 66 + B.range(-4, 6),
+        { r: 4.6 + B.range(-0.8, 1.0), lobes: 2, faceDir: Math.PI / 2, faceH: 0.4 }));
+    }
+    for (let i = 0; i < 3; i++) {
+      F.freeBunkers.push(mkBunker(streams, 690 + i * 44 + B.range(-6, 6), -(68 + B.range(-3, 5)),
+        { r: 4.0 + B.range(-0.6, 0.8), lobes: 1, faceDir: -Math.PI / 2, faceH: 0.35 }));
+    }
+  }
 
   // groundworks
   commonGroundworks(F, streams, L);
@@ -1079,13 +1126,14 @@ function authorS4(piece, streams) {
   const jh4 = streams.holes;
   const h2 = mkHole(F, streams, { id: 'S4-2', par: 3, s0: 1008 + jh4.range(-6, 6), s1: 1124 + jh4.range(-6, 6),
     side: -1, lNear: 40 + jh4.range(-3, 3), lFar: 30 + jh4.range(-2, 2),
-    backward: true, allowRoadside: true, green: { rx: 15, rz: 12, padH: 1.15, tier: 0.3 } });
+    backward: true, allowRoadside: true, mowCross: true,
+    green: { rx: 15, rz: 12, padH: 1.15, tier: 0.3 } });
   h2.bunkers.push(mkBunker(streams, h2.green.cs - 16 + jh4.range(-3, 3), -13.6 + jh4.range(-0.6, 0.6),
     { r: 5.4, lobes: 2, faceH: 0.9, faceDir: Math.atan2(-16, 14) }));
   // par 3 over the pond tail
   const h3 = mkHole(F, streams, { id: 'S4-3', par: 3, s0: 1190 + jh4.range(-10, 10), s1: 1345 + jh4.range(-10, 10),
     side: 1, lNear: 58 + jh4.range(-5, 5), lFar: 26 + jh4.range(-3, 3),
-    green: { rx: 12, rz: 10 } });
+    mowCross: true, green: { rx: 12, rz: 10 } });
 
   // banks of azalea and dogwood — the hollow's colour, planted in beds
   mkBed(F, streams, { poly: [[818, 60], [900, 66], [1000, 62], [1080, 54]], halfW: 8, kind: 'azalea', tag: 's4bankL' });
@@ -1100,6 +1148,14 @@ function authorS4(piece, streams) {
     t.l = guardLat(t.l, t.crownR);
     F.trees.push(t);
   }
+  // the kept bank: a mown spectator bank on the rising shoulder past the
+  // creek, cross-cut the way banks are mown — up and down the slope — so its
+  // bands stand across the rider's view instead of lying along it. This is
+  // the hollow's stripe read at rider height, the stronger read it was owed.
+  F.lawns.push(span({ s0: 712 + streams.groundworks.range(0, 10), s1: 838 + streams.groundworks.range(0, 10),
+    l0: 22, l1: 46, mow: 'angle', ang: 1.45, band: 3.6, keptBank: true }, 700, 856));
+  piece.stripeBoost = 1.3;   // hollow lawns and fairways read stronger (albedo only)
+
   const willowOak = mkTree(streams, 'oak', 1238, 72, { specimen: true, h: 17, crownR: 11 });
   const bridgeDogwood = mkTree(streams, 'dogwood', 916, -14.5, { specimen: true });
   bridgeDogwood.l = guardLat(bridgeDogwood.l, bridgeDogwood.crownR * 0.5);
@@ -1341,7 +1397,7 @@ function gatherFeatures(piece, s0, s1) {
   const ctx = {
     piece, s0, s1, holes,
     greens: holes.map(h => h.green),
-    bunkers: holes.flatMap(h => h.bunkers),
+    bunkers: holes.flatMap(h => h.bunkers).concat((F.freeBunkers || []).filter(inSpan)),
     tees: holes.flatMap(h => h.tees),
     beds: F.beds.filter(inSpan),
     stands: F.stands.filter(inSpan),
@@ -1354,6 +1410,8 @@ function gatherFeatures(piece, s0, s1) {
     rings: F.trees.filter(t => t.specimen && t.s >= s0 - 20 && t.s <= s1 + 20)
       .map(t => ({ s: t.s, l: t.l, r: clamp(t.crownR * 0.9, 3.5, 7) }))
       .concat((F.emptyRings || []).filter(inSpan).map(er => ({ s: er.s, l: er.l, r: er.r }))),
+    blocks: (F.mowBlocks || []).filter(inSpan),
+    sweeps: (F.nativeSweeps || []).filter(inSpan),
     practiceGreen: F.practiceGreen && inSpan(F.practiceGreen) ? F.practiceGreen : null,
   };
   if (ctx.practiceGreen) ctx.greens = ctx.greens.concat([ctx.practiceGreen]);
@@ -1493,13 +1551,14 @@ function baseHeight(piece, ctx, s, l, rfd) {
 }
 
 /* Final realized ground sample: height + class + stripe + wet, no shadows. */
-const CLS_OUT = { h: 0, cls: CLS.ROUGH, clsB: CLS.ROUGH, edge: 9, ms: 1, ml: 0, phase: 0, phase2: 0, amp: 0, wet: 0, water: 0 };
+const CLS_OUT = { h: 0, cls: CLS.ROUGH, clsB: CLS.ROUGH, edge: 9, ms: 1, ml: 0, phase: 0, phase2: 0, amp: 0, tone: 0, wet: 0, water: 0 };
 function groundSample(piece, ctx, s, l, out) {
   out = out || CLS_OUT;
   const rf = roadField(piece, s, l);
   const natural = baseHeight(piece, ctx, s, l, rf.d);
   const h = roadEdgeShape(piece, s, l, natural, rf);
   let cls = CLS.ROUGH, clsB = CLS.ROUGH, edge = 9, ms = 1, ml = 0, phase = 0, phase2 = 0, amp = 0;
+  let tone = 0, fwOut = 1e9;
   const bridge = onBridge(piece, s);
   let done = false;
   // 1. asphalt
@@ -1613,8 +1672,16 @@ function groundSample(piece, ctx, s, l, out) {
       if (fw.t > hole.tFw0 && fw.t < hole.tFw1) {
         if (fw.d < fw.wid) {
           cls = CLS.FAIRWAY; clsB = CLS.FIRSTCUT; edge = fw.wid - fw.d;
-          ms = fw.tanS; ml = fw.tanL;
-          phase = fw.perp / 3.6; amp = 1.0;
+          if (hole.mowCross) {
+            // short holes cut across the line of play: their bands stand
+            // across the approaching view instead of lying along it
+            ms = -fw.tanL; ml = fw.tanS;
+            phase = (s * fw.tanS + l * fw.tanL) / 3.6;
+          } else {
+            ms = fw.tanS; ml = fw.tanL;
+            phase = fw.perp / 3.6;
+          }
+          amp = piece.stripeBoost || 1.0;
           done = true; break;
         } else if (fw.d < fw.wid + 2.4) {
           cls = CLS.FIRSTCUT; clsB = fw.d - fw.wid < 1.2 ? CLS.FAIRWAY : CLS.ROUGH;
@@ -1622,6 +1689,7 @@ function groundSample(piece, ctx, s, l, out) {
           ms = fw.tanS; ml = fw.tanL; phase = fw.perp / 2.2; amp = 0.45;
           done = true; break;
         }
+        fwOut = Math.min(fwOut, fw.d - (fw.wid + 2.4));
       }
     }
   }
@@ -1632,7 +1700,7 @@ function groundSample(piece, ctx, s, l, out) {
         edge = Math.min(s - lw.s0, lw.s1 - s, l - lw.l0, lw.l1 - l);
         if (lw.mow === 'route') { ms = 1; ml = 0; phase = l / lw.band; }
         else { ms = Math.cos(lw.ang); ml = Math.sin(lw.ang); phase = (s * -ml + l * ms) / lw.band; }
-        amp = 0.9; done = true; break;
+        amp = 0.9 * (piece.stripeBoost || 1); done = true; break;
       }
     }
   }
@@ -1649,12 +1717,43 @@ function groundSample(piece, ctx, s, l, out) {
       }
     }
   }
+  // 10.95 native sweeps: massed waste areas inside the property (kept cut edge)
+  if (!done) {
+    for (const sw2 of ctx.sweeps) {
+      const pd = polyDist(sw2.poly, s, l);
+      if (pd.d < sw2.halfW) { cls = CLS.NATIVE; clsB = CLS.ROUGH; edge = sw2.halfW - pd.d; done = true; break; }
+    }
+  }
   // 11. native beyond the property boundary
   if (!done) {
     const bl = boundaryAt(piece.F, s, 1), br = boundaryAt(piece.F, s, -1);
     const beyond = l > 0 ? l - bl : -l - br;
     if (beyond > 0) { cls = CLS.NATIVE; clsB = CLS.ROUGH; edge = beyond; done = true; }
-    else { edge = -beyond; clsB = CLS.NATIVE; } // rough default, edged against native
+    else {
+      // rough default. Its cut edge is against whichever maintained or waste
+      // boundary is nearest: property native, a sweep, or a fairway's collar —
+      // so the far field's edges stay crisp at any grid density.
+      edge = -beyond; clsB = CLS.NATIVE;
+      for (const sw2 of ctx.sweeps) {
+        const pd = polyDist(sw2.poly, s, l);
+        const d = pd.d - sw2.halfW;
+        if (d > 0 && d < edge) { edge = d; clsB = CLS.NATIVE; }
+      }
+      if (fwOut > 0 && fwOut < edge) { edge = fwOut; clsB = CLS.FIRSTCUT; }
+      // mowing panels: the rough is cut in large alternating-heading blocks
+      for (const mb of ctx.blocks) {
+        if (s < mb.s0 || s >= mb.s1) continue;
+        if ((l > 0 ? 1 : -1) !== mb.side) continue;
+        const al = Math.abs(l);
+        if (al < 11) break;
+        const ca = Math.cos(mb.ang), sa = Math.sin(mb.ang) * mb.side;
+        ms = ca; ml = sa;
+        phase = (s * -sa + l * ca) / mb.band;
+        amp = 0.5 * sstep(11, 19, al);
+        tone = mb.tone * sstep(26, 46, al);
+        break;
+      }
+    }
   }
   // irrigation wetness + french drain lines
   let wet = 0;
@@ -1668,6 +1767,7 @@ function groundSample(piece, ctx, s, l, out) {
   }
   out.h = h; out.cls = cls; out.clsB = clsB; out.edge = edge;
   out.ms = ms; out.ml = ml; out.phase = phase; out.phase2 = phase2; out.amp = amp;
+  out.tone = tone;
   out.wet = clamp(wet, -1, 1);
   out.water = cls === CLS.WATER ? 1 : 0;
   return out;
@@ -1685,8 +1785,10 @@ function buildCasters(piece, s0, s1, sunTo) {
     const groundY = coarseBase(piece, t.s, t.l);
     pw(piece, loc.x, groundY, loc.z, v);
     const cy = groundY + t.crownBase + (t.h - t.crownBase) * 0.45;
+    // pine crowns ride high and thin: they transmit more scattered light than
+    // a low broadleaf canopy, so their shade on turf is a brighter shade
     casters.push({ kind: 'crown', x: v.x, z: v.z, y: piece.T.oy + cy, r: t.crownR * 0.92,
-      op: t.kind === 'pine' ? 0.88 : 0.94 });
+      op: t.kind === 'pine' ? 0.80 : 0.94 });
     if (t.kind === 'pine' || t.kind === 'oak' || t.kind === 'magnolia') {
       casters.push({ kind: 'trunk', x: v.x, z: v.z, baseY: piece.T.oy + groundY,
         topY: piece.T.oy + groundY + t.crownBase + t.crownR * 0.5, r: Math.max(0.22, t.trunkR * 1.35), op: 0.85 });
@@ -1861,9 +1963,10 @@ function makeTurfMaterial() {
       bool isSand = abs(cls - 7.0) < 0.5;
       bool isWater = abs(cls - 12.0) < 0.5;
       float stripe = vAmp * (isSand ? 0.0 : 1.0);
+      float stripeN = min(stripe, 1.0);   // boosted amps stay albedo-only
       vec3 N = normalize(vNorm);
       vec3 mow3 = vec3(vMow.x, 0.0, vMow.y);
-      vec3 Nb = normalize(N + mow3 * (par * 0.24 * stripe));
+      vec3 Nb = normalize(N + mow3 * (par * 0.24 * stripeN));
       if (isSand) {
         // concentric rake arcs consistent with the bunker's own shape
         float rake = sin(vPhase * 6.2831853);
@@ -1873,7 +1976,7 @@ function makeTurfMaterial() {
       vec3 V = normalize(uCamPos - vPos);
       float diff = max(dot(Nb, uSunDir), 0.0);
       // grass lies away/toward the eye per band: the view-angle value change
-      float viewTilt = dot(normalize(vec3(V.x, 0.0, V.z)).xz, vMow) * par * 0.17 * stripe;
+      float viewTilt = dot(normalize(vec3(V.x, 0.0, V.z)).xz, vMow) * par * 0.17 * stripeN;
       albedo *= 1.0 + viewTilt + par * 0.10 * stripe;
       albedo *= 1.0 - clamp(vWet, 0.0, 1.0) * 0.13;
       albedo = mix(albedo, albedo * vec3(0.88, 1.02, 0.88), clamp(vWet, 0.0, 1.0) * 0.5);
@@ -2465,8 +2568,9 @@ function terrainRows(piece, chunk, ctx, casters, sunTo, state) {
       let clsLo = out.cls, clsHi = out.clsB, e = out.edge;
       if (clsHi < clsLo) { const t = clsLo; clsLo = clsHi; clsHi = t; e = -e; }
       const cA = clsColor(clsLo), cB = clsColor(clsHi);
-      A.colA[i * 3] = cA[0]; A.colA[i * 3 + 1] = cA[1]; A.colA[i * 3 + 2] = cA[2];
-      A.colB[i * 3] = cB[0]; A.colB[i * 3 + 1] = cB[1]; A.colB[i * 3 + 2] = cB[2];
+      const tn = 1 + out.tone;   // mowing-panel value offset, baked as albedo
+      A.colA[i * 3] = cA[0] * tn; A.colA[i * 3 + 1] = cA[1] * tn; A.colA[i * 3 + 2] = cA[2] * tn;
+      A.colB[i * 3] = cB[0] * tn; A.colB[i * 3 + 1] = cB[1] * tn; A.colB[i * 3 + 2] = cB[2] * tn;
       A.edge[i] = clamp(e, -8, 8);
       A.clsAB[i * 2] = clsLo; A.clsAB[i * 2 + 1] = clsHi;
       // mow direction into world space
@@ -4634,7 +4738,11 @@ function buildComposition(world, piece) {
     it('plan', 'identity', 0, { name: piece.name, idea: piece.idea, lengthM: piece.length,
       neutral: { entryM: NEUTRAL_M, exitM: NEUTRAL_M } }),
     it('plan', 'route', 0, { bends: piece.bends, swells: piece.swells }),
-    it('plan', 'holesRouting', 0, F.holes.map(h => ({ id: h.id, par: h.par, line: h.line, backward: h.backward }))),
+    it('plan', 'holesRouting', 0, F.holes.map(h => {
+      const o = { id: h.id, par: h.par, line: h.line, backward: h.backward };
+      if (h.mowCross) o.mowCross = true;   // only when set: other pieces' items stay byte-stable
+      return o;
+    })),
     it('plan', 'eventSchedule', 0, F.events.map(e => ({ kind: e.kind, s: e.s, l: e.l ?? 0, count: e.count ?? 1 }))),
   ];
   if (piece.fork) {
@@ -4679,12 +4787,24 @@ function buildComposition(world, piece) {
     { inPoly: F.creek.inPoly, outPoly: F.creek.outPoly, spillPoly: F.creek.spillPoly, w: F.creek.w }));
   (F.emptyRings || []).forEach((er, i) => terrainItems.push(it('terrain', 'mownRing-empty-' + i, er.s,
     { s: er.s, l: er.l, r: er.r })));
+  (F.lawns || []).filter(lw => lw.keptBank).forEach((lw, i) => terrainItems.push(it('terrain', 'keptBank-' + i, lw.s0,
+    { s0: lw.s0, s1: lw.s1, l0: lw.l0, l1: lw.l1, mow: lw.mow, band: lw.band })));
+  (F.mowBlocks || []).forEach((mb, i) => terrainItems.push(it('terrain', 'mowPanel-' + i, mb.s0,
+    { s0: mb.s0, s1: mb.s1, side: mb.side, ang: mb.ang, band: mb.band, tone: mb.tone })));
+  (F.nativeSweeps || []).forEach((sw, i) => terrainItems.push(it('terrain', 'nativeSweep-' + i, sw.poly[0][0],
+    { poly: sw.poly, halfW: sw.halfW })));
+  if (piece.stripeBoost && piece.stripeBoost !== 1) {
+    terrainItems.push(it('terrain', 'stripeSchedule', 0, { fairwayLawnBoost: piece.stripeBoost }));
+  }
   terrainItems.push(it('terrain', 'boundary', 0, { left: F.boundary.left, right: F.boundary.right, step: F.boundary.step }));
 
   const formationItems = [];
   F.holes.forEach((h) => h.bunkers.forEach((b, i) =>
     formationItems.push(it('formations', 'bunker-' + h.id + '-' + i, b.cs, {
       cs: b.cs, cl: b.cl, lobes: b.lobes, floorDrop: b.floorDrop, faceH: b.faceH, faceDir: b.faceDir }))));
+  (F.freeBunkers || []).forEach((b, i) =>
+    formationItems.push(it('formations', 'wasteBunker-' + i, b.cs, {
+      cs: b.cs, cl: b.cl, lobes: b.lobes, floorDrop: b.floorDrop, faceH: b.faceH, faceDir: b.faceDir })));
   F.structures.forEach((st, i) => {
     const { sMin, sMax, ...rest } = st;
     formationItems.push(it('formations', st.kind + '-' + i, st.s ?? st.s0, rest));
@@ -5544,6 +5664,166 @@ function makeQA(app, rider) {
       worstStation: stripe.s,
     };
   };
+  /* ---- far field (third pass): does the plane survive 250 m? ------------ */
+  /* World-space sight line vs plan trees and coarse terrain. */
+  const slWorld = (piece, s, l) => {
+    const ctx2 = gatherFeatures(piece, s - 30, s + 30);
+    const o = {};
+    groundSample(piece, ctx2, s, l, o);
+    const loc = slToLocal(piece, s, l, 'A');
+    return pw(piece, loc.x, o.h + 0.05, loc.z, new THREE.Vector3());
+  };
+  const losClear = (piece, camW, tW) => {
+    const dx = tW.x - camW.x, dy = tW.y - camW.y, dz = tW.z - camW.z;
+    const len2 = dx * dx + dz * dz;
+    const tv = new THREE.Vector3();
+    for (const t of piece.F.trees) {
+      const loc = slToLocal(piece, t.s, t.l, 'A');
+      pw(piece, loc.x, 0, loc.z, tv);
+      const px = tv.x - camW.x, pz = tv.z - camW.z;
+      const tt = clamp((px * dx + pz * dz) / len2, 0.03, 0.97);
+      const cx = camW.x + dx * tt, cz = camW.z + dz * tt;
+      const dd = Math.hypot(tv.x - cx, tv.z - cz);
+      if (dd < t.crownR * 0.85) {
+        const groundY = piece.T.oy + coarseBase(piece, t.s, t.l);
+        const sightY = camW.y + dy * tt;
+        if (sightY > groundY + t.crownBase - 1.5 && sightY < groundY + t.h + 1.5) return false;
+      }
+    }
+    for (let k = 1; k <= 11; k++) {
+      const tt = k / 12;
+      const wx = camW.x + dx * tt, wz = camW.z + dz * tt;
+      const sl = worldToSL(piece, wx, wz);
+      const h = piece.T.oy + coarseBase(piece, sl.s, sl.l);
+      if (h > camW.y + dy * tt + 0.5) return false;
+    }
+    return true;
+  };
+  /* Widest contiguous fairway run on the lateral transect at station st. */
+  const farFieldRun = (piece, st) => {
+    const ctx2 = gatherFeatures(piece, st - 30, st + 30);
+    const o = {};
+    const runs = [];
+    let cur = null;
+    for (let l = -132; l <= 132.01; l += 1.5) {
+      if (Math.abs(l) < 9.5) { cur = null; continue; }
+      groundSample(piece, ctx2, st, l, o);
+      if (o.cls === CLS.FAIRWAY) {
+        if (cur && l - cur.b < 1.6) cur.b = l;
+        else { cur = { a: l, b: l }; runs.push(cur); }
+      } else cur = null;
+    }
+    let best = null;
+    for (const r of runs) if (!best || r.b - r.a > best.b - best.a) best = r;
+    return best;
+  };
+  /* Value contrast across the widest visible fairway/rough boundary at the
+     given ground distance, from the realized frame buffer. Caller sets the
+     light mode; the shipped numbers are taken under light=flat. */
+  const farFieldContrast = (pieceIdx, dist, debug) => {
+    const piece = app.world.pieces[pieceIdx];
+    let picked = null;
+    for (let sv = 280; sv + dist <= piece.length - 260; sv += 30) {
+      const run = farFieldRun(piece, sv + dist);
+      if (!run) continue;
+      if (!picked || run.b - run.a > picked.run.b - picked.run.a) picked = { sv, run };
+    }
+    if (!picked) return null;
+    const { sv, run } = picked;
+    const st = sv + dist;
+    const ctx2 = gatherFeatures(piece, st - 30, st + 30);
+    const o = {};
+    const W = app.renderer.domElement.width, H = app.renderer.domElement.height;
+    const inScreen = (p) => !p.behind && p.x > 10 && p.x < W - 10 && p.y > 10 && p.y < H - 10;
+    // prefer the run edge farther from the road; fall back to the nearer one
+    const edges = Math.abs(run.a) > Math.abs(run.b) ? [run.a, run.b] : [run.b, run.a];
+    for (const eL of edges) {
+      const sgn = eL === run.a ? -1 : 1;   // outward across the cut line
+      // probes sit in class INTERIORS, scaled with the run so a distant pixel's
+      // ground footprint stays on one side of the wandering cut line
+      const runW = run.b - run.a;
+      const fwL = eL - sgn * clamp(runW * 0.25, 3.0, runW - 2.0);
+      let roughL = null;
+      for (let d = 3.0; d <= 15; d += 1.0) {
+        groundSample(piece, ctx2, st, eL + sgn * d, o);
+        if (o.cls === CLS.ROUGH || o.cls === CLS.NATIVE) { roughL = eL + sgn * d; break; }
+      }
+      if (roughL === null) continue;
+      groundSample(piece, ctx2, st, roughL + sgn * 4.0, o);
+      if (o.cls === CLS.ROUGH || o.cls === CLS.NATIVE) roughL += sgn * 4.0;
+      const yaw = clamp(Math.atan2((fwL + roughL) / 2, dist), -0.85, 0.85);
+      seekSync(pieceIdx, sv, 'A', 0, yaw, -0.04);
+      const camW = app.camera.position;
+      const prF = project(piece, st, fwL, 0.05);
+      const prR = project(piece, st, roughL, 0.05);
+      if (!inScreen(prF) || !inScreen(prR)) continue;
+      if (!losClear(piece, camW, slWorld(piece, st, fwL)) ||
+          !losClear(piece, camW, slWorld(piece, st, roughL))) continue;
+      const a = readPatch(Math.round(prF.x), Math.round(prF.y), 0);
+      const b = readPatch(Math.round(prR.x), Math.round(prR.y), 0);
+      if (a.luma < 0.004 || b.luma < 0.004) continue;
+      const c = Math.abs(a.luma - b.luma) / Math.max(a.luma, b.luma, 1e-5);
+      const res = { contrast: c, vantageS: sv, boundaryL: eL, fwLuma: a.luma, roughLuma: b.luma };
+      if (debug) { res.run = run; res.fwL = fwL; res.roughL = roughL; res.st = st; }
+      return res;
+    }
+    return null;
+  };
+  /* Separable value regions along the full transect at the given distance:
+     adjacent regions count as distinct when their means differ by >= 0.10
+     (relative) and each is at least 9 m wide on the ground. */
+  const farFieldBands = (pieceIdx, dist, debug) => {
+    const piece = app.world.pieces[pieceIdx];
+    const base = farFieldContrast(pieceIdx, dist, true);
+    if (!base) return { bands: 0 };
+    const sv = base.vantageS, st = sv + dist;
+    seekSync(pieceIdx, sv, 'A', 0, 0, -0.04);
+    const camW = app.camera.position;
+    const ctx2 = gatherFeatures(piece, st - 30, st + 30);
+    const o = {};
+    const W = app.renderer.domElement.width, H = app.renderer.domElement.height;
+    const samples = [];
+    const rej = { road: 0, water: 0, screen: 0, los: 0, dark: 0, ok: 0 };
+    for (let l = -130; l <= 130.01; l += 3) {
+      if (Math.abs(l) < 9.5) { samples.push(null); rej.road++; continue; }
+      groundSample(piece, ctx2, st, l, o);
+      if (o.cls === CLS.WATER) { samples.push(null); rej.water++; continue; }
+      const pr = project(piece, st, l, 0.05);
+      if (pr.behind || pr.x < 8 || pr.x > W - 8 || pr.y < 8 || pr.y > H - 8) { samples.push(null); rej.screen++; continue; }
+      if (!losClear(piece, camW, slWorld(piece, st, l))) { samples.push(null); rej.los++; continue; }
+      const patch = readPatch(Math.round(pr.x), Math.round(pr.y), 0);
+      if (patch.luma < 0.004) { samples.push(null); rej.dark++; continue; }
+      rej.ok++;
+      samples.push({ l, luma: patch.luma });
+    }
+    const raw = [];
+    let cur = null;
+    for (const sm of samples) {
+      if (!sm) { cur = null; continue; }
+      if (cur) {
+        const m = cur.sum / cur.n;
+        if (Math.abs(sm.luma - m) / Math.max(sm.luma, m, 1e-5) < 0.10) {
+          cur.sum += sm.luma; cur.n++; cur.b = sm.l; continue;
+        }
+      }
+      cur = { a: sm.l, b: sm.l, sum: sm.luma, n: 1 };
+      raw.push(cur);
+    }
+    // outlier regions dissolve; adjacent near-equal regions merge back
+    const good = raw.filter(r => r.b - r.a >= 9 && r.n >= 3);
+    const merged = [];
+    for (const r of good) {
+      const m = r.sum / r.n;
+      const last = merged[merged.length - 1];
+      if (last && r.a - last.b <= 6 &&
+          Math.abs(m - last.m) / Math.max(m, last.m, 1e-5) < 0.10) {
+        last.b = r.b; last.sum += r.sum; last.n += r.n; last.m = last.sum / last.n;
+      } else merged.push({ a: r.a, b: r.b, sum: r.sum, n: r.n, m });
+    }
+    return { bands: merged.length, vantageS: sv,
+      regions: debug ? merged.map(r => ({ a: r.a, b: r.b, mean: +r.m.toFixed(4) })) : undefined,
+      rej: debug ? rej : undefined };
+  };
   const clearanceScan = () => {
     const report = [];
     for (const piece of app.world.pieces) {
@@ -5595,6 +5875,10 @@ function makeQA(app, rider) {
     for (let i = 0; i < 4; i++) contrastGraded.push(stripeContrastOf(i));
     app.setFlat(true);          // rebuild under flat neutral daylight
     for (let i = 0; i < 4; i++) contrastFlat.push(stripeContrastOf(i));
+    // far field is measured under the light that ships: flat
+    const ff250 = farFieldContrast(1, 250, false);
+    const ff400 = farFieldContrast(1, 400, false);
+    const ffBands = farFieldBands(1, 250, false);
     app.setFlat(false);
     for (let i = 0; i < 4; i++) {
       const piece = app.world.pieces[i];
@@ -5611,6 +5895,16 @@ function makeQA(app, rider) {
         fairwayLumaDark: canonNum(vs.fairwayLumaDark), sandLuma: canonNum(vs.sandLuma),
         ratioToFairwayWorstPhase: canonNum(vs.ratioToFairwayWorstPhase), ratioToSand: canonNum(vs.ratioToSand),
       };
+      if (i === 1) {
+        entry.measured.farField = {
+          lightMode: 'flat',
+          contrastAt250m: canonNum(ff250 ? ff250.contrast : 0),
+          contrastAt400m: canonNum(ff400 ? ff400.contrast : 0),
+          distinctBands: ffBands.bands,
+          vantageS: canonNum(ff250 ? ff250.vantageS : 0),
+          boundaryL: canonNum(ff250 ? ff250.boundaryL : 0),
+        };
+      }
       // standard budget at the piece midpoint
       seekSync(i, piece.length / 2, 'A', 0);
       app.renderer.render(app.scene, app.camera);
@@ -5631,6 +5925,7 @@ function makeQA(app, rider) {
     planHashes: app.world.capsule.map(e => ({ id: e.setPieceId, planHash: e.planHash, composition: e.compositionSha256 })),
     seek: seekSync,
     measureAt, stripeSweep, clearanceScan, finalizeCapsule, measureValueSeparation,
+    farFieldContrast, farFieldBands,
     __contrastDebug: (p) => { const a = stripeAnchorOf(p); return a ? contrastAtAnchor(p, a, 0, true) : null; },
     chunkChecksum: (pieceIdx, ci) => {
       const st = app.mgr.built.get(pieceIdx + ':' + ci);

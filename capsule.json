@@ -14767,7 +14767,7 @@
   "setPieceId": "azalea-s1",
   "standardBudget": {
    "drawCalls": 138,
-   "triangles": 473700
+   "triangles": 473631
   }
  },
  {
@@ -14810,7 +14810,7 @@
     "sha256": "82ab658b80bf0f689874a673248b8175173da7023ecd828ac71f79000fdf5098"
    },
    "formations": {
-    "count": 23,
+    "count": 30,
     "items": [
      {
       "content": {
@@ -15272,6 +15272,174 @@
      },
      {
       "content": {
+       "cl": 70.813,
+       "cs": 1154.277,
+       "faceDir": 1.571,
+       "faceH": 0.4,
+       "floorDrop": 0.476,
+       "lobes": [
+        {
+         "dl": 0,
+         "ds": 0,
+         "rot": 1.412,
+         "rx": 4.427,
+         "rz": 2.851
+        },
+        {
+         "dl": 2.635,
+         "ds": 3.002,
+         "rot": 1.331,
+         "rx": 4.579,
+         "rz": 3.734
+        }
+       ]
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::formations/wasteBunker-0",
+      "stationOffsetM": 1154.277
+     },
+     {
+      "content": {
+       "cl": 65.449,
+       "cs": 1200.173,
+       "faceDir": 1.571,
+       "faceH": 0.4,
+       "floorDrop": 0.451,
+       "lobes": [
+        {
+         "dl": 0,
+         "ds": 0,
+         "rot": 1.782,
+         "rx": 3.76,
+         "rz": 3.39
+        },
+        {
+         "dl": -1.702,
+         "ds": 3.241,
+         "rot": 2.164,
+         "rx": 3.977,
+         "rz": 3.06
+        }
+       ]
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::formations/wasteBunker-1",
+      "stationOffsetM": 1200.173
+     },
+     {
+      "content": {
+       "cl": 63.757,
+       "cs": 1253.668,
+       "faceDir": 1.571,
+       "faceH": 0.4,
+       "floorDrop": 0.421,
+       "lobes": [
+        {
+         "dl": 0,
+         "ds": 0,
+         "rot": 3.016,
+         "rx": 3.056,
+         "rz": 3.544
+        },
+        {
+         "dl": 3.411,
+         "ds": -1.387,
+         "rot": 1.392,
+         "rx": 3.621,
+         "rz": 3.541
+        }
+       ]
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::formations/wasteBunker-2",
+      "stationOffsetM": 1253.668
+     },
+     {
+      "content": {
+       "cl": 69.307,
+       "cs": 1313.238,
+       "faceDir": 1.571,
+       "faceH": 0.4,
+       "floorDrop": 0.449,
+       "lobes": [
+        {
+         "dl": 0,
+         "ds": 0,
+         "rot": 2.947,
+         "rx": 3.697,
+         "rz": 3.352
+        },
+        {
+         "dl": 2.256,
+         "ds": 4.753,
+         "rot": 1.825,
+         "rx": 4.543,
+         "rz": 4.163
+        }
+       ]
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::formations/wasteBunker-3",
+      "stationOffsetM": 1313.238
+     },
+     {
+      "content": {
+       "cl": -65.715,
+       "cs": 691.291,
+       "faceDir": -1.571,
+       "faceH": 0.35,
+       "floorDrop": 0.523,
+       "lobes": [
+        {
+         "dl": 0,
+         "ds": 0,
+         "rot": 1.153,
+         "rx": 2.387,
+         "rz": 2.587
+        }
+       ]
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::formations/wasteBunker-4",
+      "stationOffsetM": 691.291
+     },
+     {
+      "content": {
+       "cl": -71.158,
+       "cs": 732.498,
+       "faceDir": -1.571,
+       "faceH": 0.35,
+       "floorDrop": 0.364,
+       "lobes": [
+        {
+         "dl": 0,
+         "ds": 0,
+         "rot": 1.37,
+         "rx": 2.76,
+         "rz": 2.454
+        }
+       ]
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::formations/wasteBunker-5",
+      "stationOffsetM": 732.498
+     },
+     {
+      "content": {
+       "cl": -65.209,
+       "cs": 782.031,
+       "faceDir": -1.571,
+       "faceH": 0.35,
+       "floorDrop": 0.35,
+       "lobes": [
+        {
+         "dl": 0,
+         "ds": 0,
+         "rot": 2.275,
+         "rx": 2.86,
+         "rz": 2.417
+        }
+       ]
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::formations/wasteBunker-6",
+      "stationOffsetM": 782.031
+     },
+     {
+      "content": {
        "kind": "clubhouse",
        "l": -98,
        "rot": 0.35,
@@ -15321,10 +15489,10 @@
       "stationOffsetM": 1510
      }
     ],
-    "sha256": "c93738cebe4502769e0145fbbde08b97e52af4e602d61e3917e8059377488877"
+    "sha256": "c32f68d77112c3ab0579203be17459c0daee3d0411a4f1851ec6db6412693cf5"
    },
    "groves": {
-    "count": 5,
+    "count": 6,
     "items": [
      {
       "content": {
@@ -15394,6 +15562,28 @@
      },
      {
       "content": {
+       "discs": [
+        {
+         "cl": 126,
+         "cs": 1680,
+         "r": 18.099
+        },
+        {
+         "cl": 116.455,
+         "cs": 1696.496,
+         "r": 19.069
+        }
+       ],
+       "kind": "pine",
+       "straw": true,
+       "tag": "s2tlD",
+       "treeCount": 13
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::groves/stand-s2tlD",
+      "stationOffsetM": 1680
+     },
+     {
+      "content": {
        "halfW": 3.4,
        "kind": "azalea",
        "poly": [
@@ -15435,7 +15625,7 @@
       "stationOffsetM": 300
      }
     ],
-    "sha256": "abfcfafb8b0f98e99e69da3a43dc3d443134c0b25ae29576e63d16be9ea76b34"
+    "sha256": "1082360b6db2d743db8a4bfc11c2163a43324330a384f15f1cc8f7fed0723a58"
    },
    "lifeEvents": {
     "count": 12,
@@ -27626,7 +27816,7 @@
     "sha256": "7b6a969c1674b2565f28ea4db931d88fda79068756f290a7dbeb41870a7cd96d"
    },
    "terrain": {
-    "count": 41,
+    "count": 55,
     "items": [
      {
       "content": {
@@ -28209,6 +28399,204 @@
      },
      {
       "content": {
+       "ang": -0.766,
+       "band": 4.766,
+       "s0": 173.031,
+       "s1": 484.972,
+       "side": 1,
+       "tone": -0.03
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-0",
+      "stationOffsetM": 173.031
+     },
+     {
+      "content": {
+       "ang": 0.661,
+       "band": 4.738,
+       "s0": 484.972,
+       "s1": 779.442,
+       "side": 1,
+       "tone": 0.033
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-1",
+      "stationOffsetM": 484.972
+     },
+     {
+      "content": {
+       "ang": -0.722,
+       "band": 4.865,
+       "s0": 779.442,
+       "s1": 1141.592,
+       "side": 1,
+       "tone": -0.028
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-2",
+      "stationOffsetM": 779.442
+     },
+     {
+      "content": {
+       "ang": 0.718,
+       "band": 4.721,
+       "s0": 1141.592,
+       "s1": 1480.13,
+       "side": 1,
+       "tone": 0.036
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-3",
+      "stationOffsetM": 1141.592
+     },
+     {
+      "content": {
+       "ang": -0.696,
+       "band": 5.057,
+       "s0": 1480.13,
+       "s1": 1816.96,
+       "side": 1,
+       "tone": -0.025
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-4",
+      "stationOffsetM": 1480.13
+     },
+     {
+      "content": {
+       "ang": 0.524,
+       "band": 4.87,
+       "s0": 1816.96,
+       "s1": 1866,
+       "side": 1,
+       "tone": 0.034
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-5",
+      "stationOffsetM": 1816.96
+     },
+     {
+      "content": {
+       "ang": 0.648,
+       "band": 4.615,
+       "s0": 226.195,
+       "s1": 516.971,
+       "side": -1,
+       "tone": 0.039
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-6",
+      "stationOffsetM": 226.195
+     },
+     {
+      "content": {
+       "ang": -0.506,
+       "band": 5.036,
+       "s0": 516.971,
+       "s1": 874.52,
+       "side": -1,
+       "tone": -0.026
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-7",
+      "stationOffsetM": 516.971
+     },
+     {
+      "content": {
+       "ang": 0.63,
+       "band": 4.715,
+       "s0": 874.52,
+       "s1": 1217.726,
+       "side": -1,
+       "tone": 0.03
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-8",
+      "stationOffsetM": 874.52
+     },
+     {
+      "content": {
+       "ang": -0.58,
+       "band": 4.639,
+       "s0": 1217.726,
+       "s1": 1530.695,
+       "side": -1,
+       "tone": -0.022
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-9",
+      "stationOffsetM": 1217.726
+     },
+     {
+      "content": {
+       "ang": 0.648,
+       "band": 5.044,
+       "s0": 1530.695,
+       "s1": 1845.87,
+       "side": -1,
+       "tone": 0.033
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-10",
+      "stationOffsetM": 1530.695
+     },
+     {
+      "content": {
+       "ang": -0.569,
+       "band": 4.813,
+       "s0": 1845.87,
+       "s1": 1866,
+       "side": -1,
+       "tone": -0.026
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mowPanel-11",
+      "stationOffsetM": 1845.87
+     },
+     {
+      "content": {
+       "halfW": 24.201,
+       "poly": [
+        [
+         1080,
+         102
+        ],
+        [
+         1210,
+         92
+        ],
+        [
+         1360,
+         86
+        ],
+        [
+         1500,
+         96
+        ],
+        [
+         1600,
+         112
+        ]
+       ]
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/nativeSweep-0",
+      "stationOffsetM": 1080
+     },
+     {
+      "content": {
+       "halfW": 17.51,
+       "poly": [
+        [
+         620,
+         -112
+        ],
+        [
+         770,
+         -103
+        ],
+        [
+         920,
+         -108
+        ],
+        [
+         1010,
+         -121
+        ]
+       ]
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/nativeSweep-1",
+      "stationOffsetM": 620
+     },
+     {
+      "content": {
        "left": [
         24,
         74.284,
@@ -28255,7 +28643,7 @@
       "stationOffsetM": 0
      }
     ],
-    "sha256": "697c5203f88a8d78a4fa4f29477bd09cf8c6a08cef22a9a8abed9e09ff75731c"
+    "sha256": "526457417cf35aab02f3e41623ff53d820edbc292436bb132215b4fb5730fff5"
    },
    "trees": {
     "count": 17,
@@ -28502,7 +28890,7 @@
     "sha256": "586c03e4d688b758027defda374647cb9e728c0a11757aa1ac11378f92ccba20"
    }
   },
-  "compositionSha256": "3780afbf5405ce81b0faf1c6fcad1ff534ef3558754a6b6b97047634ca8a9dbd",
+  "compositionSha256": "2c6b3f663d25d45f79c45e6eb8ee5adc51c90428ce813ac02db7e235f0de59b0",
   "declaredVocabularyIds": [
    "orchard-row",
    "bellroot-approach"
@@ -28542,6 +28930,14 @@
   },
   "lengthM": 2036,
   "measured": {
+   "farField": {
+    "boundaryL": -51,
+    "contrastAt250m": 0.427,
+    "contrastAt400m": 0.136,
+    "distinctBands": 5,
+    "lightMode": "flat",
+    "vantageS": 280
+   },
    "grade": {
     "maxPercent": 2.1,
     "meanAbsPercent": 0.556
@@ -28555,15 +28951,15 @@
    "maintenanceClasses": {
     "approach": 0.003,
     "bed": 0.004,
-    "bunker": 0.002,
+    "bunker": 0.003,
     "cartPath": 0.053,
     "collar": 0.002,
-    "fairway": 0.088,
+    "fairway": 0.087,
     "firstCut": 0.014,
     "green": 0.006,
-    "native": 0.21,
-    "pineStraw": 0.008,
-    "rough": 0.609,
+    "native": 0.276,
+    "pineStraw": 0.011,
+    "rough": 0.54,
     "tee": 0.001
    },
    "relief": {
@@ -28583,8 +28979,8 @@
      "approach",
      "tee"
     ],
-    "contrastFlat": 0.096,
-    "contrastGraded": 0.433
+    "contrastFlat": 0.09,
+    "contrastGraded": 0.43
    },
    "valueSeparation": {
     "fairwayLumaDark": 0.069,
@@ -28595,11 +28991,11 @@
     "sandLuma": 0.333
    }
   },
-  "planHash": "5eaa3bc4d7b2d586cf2e0304a595613dc6c208e925df874f6ae02012860ed291",
+  "planHash": "3c61095f30e6b4ad88120810d6ae7702dffa6b0410fdcf3df2029b9a4cfe2488",
   "setPieceId": "azalea-s2",
   "standardBudget": {
-   "drawCalls": 163,
-   "triangles": 359507
+   "drawCalls": 166,
+   "triangles": 366066
   }
  },
  {
@@ -41111,9 +41507,9 @@
     "contrastGraded": 0.032
    },
    "valueSeparation": {
-    "fairwayLumaDark": 0.012,
-    "fairwayLumaLight": 0.021,
-    "ratioToFairwayWorstPhase": 3.052,
+    "fairwayLumaDark": 0.013,
+    "fairwayLumaLight": 0.022,
+    "ratioToFairwayWorstPhase": 3.409,
     "ratioToSand": 0,
     "roadLuma": 0.004,
     "sandLuma": 0
@@ -41123,7 +41519,7 @@
   "setPieceId": "azalea-s3",
   "standardBudget": {
    "drawCalls": 150,
-   "triangles": 471945
+   "triangles": 471925
   }
  },
  {
@@ -41760,6 +42156,7 @@
           -28.81
          ]
         ],
+        "mowCross": true,
         "par": 3
        },
        {
@@ -41783,6 +42180,7 @@
           23.085
          ]
         ],
+        "mowCross": true,
         "par": 3
        }
       ],
@@ -41841,7 +42239,7 @@
       "stationOffsetM": 529.765
      }
     ],
-    "sha256": "cbda0dca6b26f29fdebd1ee83f2bc6a8530751c79fa3eeec65fc7b9c1f8a7519"
+    "sha256": "c7320ed4e84082f04dccfd4819590fe335d1516e2a277082d46bfc56889af702"
    },
    "routeFrames": {
     "count": 17,
@@ -59770,7 +60168,7 @@
     "sha256": "bfbd1ce4bf075afb72dfa5fb2ad04da562a8f7fb03307919d75cd937f3697f48"
    },
    "terrain": {
-    "count": 29,
+    "count": 31,
     "items": [
      {
       "content": {
@@ -60217,6 +60615,25 @@
      },
      {
       "content": {
+       "band": 3.6,
+       "l0": 22,
+       "l1": 46,
+       "mow": "angle",
+       "s0": 712.061,
+       "s1": 840.853
+      },
+      "sourceId": "azalea-s4::AZALEA-HOUR-01::terrain/keptBank-0",
+      "stationOffsetM": 712.061
+     },
+     {
+      "content": {
+       "fairwayLawnBoost": 1.3
+      },
+      "sourceId": "azalea-s4::AZALEA-HOUR-01::terrain/stripeSchedule",
+      "stationOffsetM": 0
+     },
+     {
+      "content": {
        "left": [
         24,
         62.708,
@@ -60263,7 +60680,7 @@
       "stationOffsetM": 0
      }
     ],
-    "sha256": "efc10bb7612622cc3345e7ea7fd3ea19e69cac5f78c7a8512d0c47a4ea0efe30"
+    "sha256": "eb4d310487c9876583aea8ef77592d96121d7a61bb5d2d10d54e2462c73a83d8"
    },
    "trees": {
     "count": 10,
@@ -60412,7 +60829,7 @@
     "sha256": "277f353af0a022a7020f5be11fdab3280bc73571696d768248e21a5071216369"
    }
   },
-  "compositionSha256": "aca1dbafba8b81e73e4a4b561821367ab6048f17fb9f46d39bf9aa2251aafcd1",
+  "compositionSha256": "f6a83bb01c61ed97e696705f28ab4bcfbb3ea52df3a05a42d64f56e94f72cc2a",
   "declaredVocabularyIds": [
    "water-aperture",
    "fork-wedge",
@@ -60468,11 +60885,11 @@
     "bunker": 0.001,
     "cartPath": 0.067,
     "collar": 0.009,
-    "fairway": 0.047,
+    "fairway": 0.053,
     "firstCut": 0.005,
     "green": 0.002,
     "native": 0.253,
-    "rough": 0.568,
+    "rough": 0.562,
     "stone": 0.009,
     "tee": 0.001,
     "water": 0.028
@@ -60494,23 +60911,23 @@
      "approach",
      "tee"
     ],
-    "contrastFlat": 0.045,
-    "contrastGraded": 0.199
+    "contrastFlat": 0.067,
+    "contrastGraded": 0.36
    },
    "valueSeparation": {
-    "fairwayLumaDark": 0.255,
-    "fairwayLumaLight": 0.296,
-    "ratioToFairwayWorstPhase": 14.692,
+    "fairwayLumaDark": 0.217,
+    "fairwayLumaLight": 0.313,
+    "ratioToFairwayWorstPhase": 13.252,
     "ratioToSand": 38.204,
-    "roadLuma": 0.017,
+    "roadLuma": 0.016,
     "sandLuma": 0.608
    }
   },
-  "planHash": "61c4f592e85074674076a7b3ee654b42d6e0e583db11867a092166165bcabb91",
+  "planHash": "94a7c23588778a3cce7889833a16b3e90bc0eb532717cd2577e6fe78a29307a2",
   "setPieceId": "azalea-s4",
   "standardBudget": {
-   "drawCalls": 161,
-   "triangles": 554151
+   "drawCalls": 175,
+   "triangles": 582240
   }
  }
 ]
