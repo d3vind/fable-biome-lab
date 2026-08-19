@@ -14750,12 +14750,14 @@
      "collar",
      "approach",
      "tee"
-    ]
+    ],
+    "contrastFlat": 0.283,
+    "contrastGraded": 0.171
    },
    "valueSeparation": {
-    "fairwayLumaDark": 0.088,
-    "fairwayLumaLight": 0.129,
-    "ratioToFairwayWorstPhase": 5.018,
+    "fairwayLumaDark": 0.09,
+    "fairwayLumaLight": 0.131,
+    "ratioToFairwayWorstPhase": 5.156,
     "ratioToSand": 1.957,
     "roadLuma": 0.017,
     "sandLuma": 0.044
@@ -14764,8 +14766,8 @@
   "planHash": "5b1f9db033e3e6755d30a706644606a3dfb9cb4feabc12d63b351573e4317155",
   "setPieceId": "azalea-s1",
   "standardBudget": {
-   "drawCalls": 141,
-   "triangles": 539597
+   "drawCalls": 138,
+   "triangles": 473700
   }
  },
  {
@@ -15482,7 +15484,7 @@
       "content": {
        "duty": 0.5,
        "group": "far",
-       "l": 59.509,
+       "l": 59.608,
        "period": 44,
        "phase": 0,
        "r": 13,
@@ -15496,7 +15498,7 @@
       "content": {
        "duty": 0.5,
        "group": "far",
-       "l": 59.601,
+       "l": 60.755,
        "period": 44,
        "phase": 0.25,
        "r": 13,
@@ -15510,7 +15512,7 @@
       "content": {
        "duty": 0.5,
        "group": "far",
-       "l": 54.532,
+       "l": 60.367,
        "period": 44,
        "phase": 0.5,
        "r": 13,
@@ -15524,7 +15526,7 @@
       "content": {
        "duty": 0.5,
        "group": "far",
-       "l": 59.608,
+       "l": 58.555,
        "period": 44,
        "phase": 0.75,
        "r": 13,
@@ -15585,7 +15587,7 @@
       "stationOffsetM": 0
      }
     ],
-    "sha256": "57867efe418f8579401b98fb09254ed238812f57fecc8e45ca93b21d9794a4ab"
+    "sha256": "57d3f330db12a2020fd798e24ea6afceac8ce58515857a296ba3d14f66d26c42"
    },
    "plan": {
     "count": 4,
@@ -27624,7 +27626,7 @@
     "sha256": "7b6a969c1674b2565f28ea4db931d88fda79068756f290a7dbeb41870a7cd96d"
    },
    "terrain": {
-    "count": 40,
+    "count": 41,
     "items": [
      {
       "content": {
@@ -28198,6 +28200,15 @@
      },
      {
       "content": {
+       "l": -67.2,
+       "r": 5.493,
+       "s": 741.314
+      },
+      "sourceId": "azalea-s2::AZALEA-HOUR-01::terrain/mownRing-empty-0",
+      "stationOffsetM": 741.314
+     },
+     {
+      "content": {
        "left": [
         24,
         74.284,
@@ -28244,7 +28255,7 @@
       "stationOffsetM": 0
      }
     ],
-    "sha256": "817a3d74a563bbf1b1080ff7be3931a89cc9a4fd17a152d4bee068bdb038e64a"
+    "sha256": "697c5203f88a8d78a4fa4f29477bd09cf8c6a08cef22a9a8abed9e09ff75731c"
    },
    "trees": {
     "count": 17,
@@ -28491,7 +28502,7 @@
     "sha256": "586c03e4d688b758027defda374647cb9e728c0a11757aa1ac11378f92ccba20"
    }
   },
-  "compositionSha256": "ff98e6b9f7716bb654f86e62ac6e75fa4ec7c81f292a8223b5fa842062ec541d",
+  "compositionSha256": "3780afbf5405ce81b0faf1c6fcad1ff534ef3558754a6b6b97047634ca8a9dbd",
   "declaredVocabularyIds": [
    "orchard-row",
    "bellroot-approach"
@@ -28548,11 +28559,11 @@
     "cartPath": 0.053,
     "collar": 0.002,
     "fairway": 0.088,
-    "firstCut": 0.013,
+    "firstCut": 0.014,
     "green": 0.006,
     "native": 0.21,
     "pineStraw": 0.008,
-    "rough": 0.61,
+    "rough": 0.609,
     "tee": 0.001
    },
    "relief": {
@@ -28571,22 +28582,24 @@
      "collar",
      "approach",
      "tee"
-    ]
+    ],
+    "contrastFlat": 0.096,
+    "contrastGraded": 0.433
    },
    "valueSeparation": {
-    "fairwayLumaDark": 0.067,
-    "fairwayLumaLight": 0.079,
-    "ratioToFairwayWorstPhase": 4.334,
-    "ratioToSand": 20.97,
+    "fairwayLumaDark": 0.069,
+    "fairwayLumaLight": 0.082,
+    "ratioToFairwayWorstPhase": 4.462,
+    "ratioToSand": 20.51,
     "roadLuma": 0.016,
-    "sandLuma": 0.34
+    "sandLuma": 0.333
    }
   },
-  "planHash": "43d11d041d6602d104592d962c1964159582b0c67aa6666418d98d81b5547666",
+  "planHash": "5eaa3bc4d7b2d586cf2e0304a595613dc6c208e925df874f6ae02012860ed291",
   "setPieceId": "azalea-s2",
   "standardBudget": {
-   "drawCalls": 159,
-   "triangles": 359622
+   "drawCalls": 163,
+   "triangles": 359507
   }
  },
  {
@@ -41093,7 +41106,9 @@
      "collar",
      "approach",
      "tee"
-    ]
+    ],
+    "contrastFlat": 0.011,
+    "contrastGraded": 0.032
    },
    "valueSeparation": {
     "fairwayLumaDark": 0.012,
@@ -41108,7 +41123,7 @@
   "setPieceId": "azalea-s3",
   "standardBudget": {
    "drawCalls": 150,
-   "triangles": 474007
+   "triangles": 471945
   }
  },
  {
@@ -60478,22 +60493,24 @@
      "collar",
      "approach",
      "tee"
-    ]
+    ],
+    "contrastFlat": 0.045,
+    "contrastGraded": 0.199
    },
    "valueSeparation": {
-    "fairwayLumaDark": 0.256,
-    "fairwayLumaLight": 0.3,
-    "ratioToFairwayWorstPhase": 14.726,
-    "ratioToSand": 38.141,
+    "fairwayLumaDark": 0.255,
+    "fairwayLumaLight": 0.296,
+    "ratioToFairwayWorstPhase": 14.692,
+    "ratioToSand": 38.204,
     "roadLuma": 0.017,
-    "sandLuma": 0.607
+    "sandLuma": 0.608
    }
   },
   "planHash": "61c4f592e85074674076a7b3ee654b42d6e0e583db11867a092166165bcabb91",
   "setPieceId": "azalea-s4",
   "standardBudget": {
    "drawCalls": 161,
-   "triangles": 554980
+   "triangles": 554151
   }
  }
 ]
